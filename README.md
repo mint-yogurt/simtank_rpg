@@ -41,8 +41,10 @@ debuggable.
 - **Journal.** Terse, scripted event log. Structured events in, dry retro-log
   narration out. `PARTY FOUGHT LVL 2 GOBLIN... AND WON. BILLY REACHED LEVEL 3.`
 - **Inventory.** Simple. 3 items per member, basic effects.
-- **RNG.** d6-based. Compare a stat or two vs. the enemy, roll N d6, resolve on
-  threshold. Numbers stay small — no 1000-damage hits.
+- **RNG.** Percentage-based checks for now. To-hit, crit, parry, saving throw,
+  and damage each use float probability knobs tuned against normalized stat
+  fractions. May re-express as d6 rolls later for animated dice. Number ranges
+  TBD.
 - **Viewing.** Watchable on the website. One-directional data flow
   (engine → viewer) over Server-Sent Events. Text panel + `<canvas>` tile map.
   CLI text output first; graphics bolted on later.
@@ -86,7 +88,7 @@ simtank_rpg/
 │   ├── game.py             # main loop; drives turns, owns the tick
 │   ├── state.py            # full game state (party, world, scene, vote)
 │   ├── party.py            # character model: stats, inventory, personality
-│   ├── combat.py           # d6 resolver — all dice live here
+│   ├── combat.py           # 
 │   ├── voting.py           # proposal/vote state machine
 │   ├── journal.py          # event log (structured + narrative views)
 │   ├── memory.py           # builds the context blob for each LLM call
@@ -100,8 +102,8 @@ simtank_rpg/
 │   ├── schema.py           # action schemas + forgiving JSON parse/validate
 │   └── prompts.py          # prompt templates
 ├── procgen/
-│   ├── names.py            # procedural name generation (scope TBD)
-│   ├── sprites.py          # 16x16 pixel gen (later)
+│   ├── names.py            # procedural name generation
+│   ├── spritegen.py        # 16x16 enemy sprite generator
 │   └── world.py            # map gen (later)
 ├── data/
 │   └── party/              # character sheet JSONs
@@ -137,15 +139,15 @@ stream. Get the whole game working in text, then bolt on the web layer.
 ## Roadmap
 
 1. [x] Scaffold + README
-2. [ ] Procedural name generator (`procgen/names.py`) — scope pending
+2. [x] Procedural name generator (`procgen/names.py`)
 3. [ ] Engine skeleton: state, party model, journal
-4. [ ] d6 combat resolver
+4. [x] combat resolver (proof of concept)
 5. [ ] Voting state machine
 6. [ ] LLM client + schema + prompts (Ollama first)
 7. [ ] Hub scene, CLI loop
 8. [ ] Overworld + battle scenes
 9. [ ] Memory tiers wired into calls
 10. [ ] SSE web viewer (text panel)
-11. [ ] Sprite gen + canvas tile map
+11. [x] Sprite gen (proof of concept) / [ ] canvas tile map
 12. [ ] World gen
 13. [ ] (later) player inputs
