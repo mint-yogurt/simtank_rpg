@@ -26,9 +26,9 @@
 
 0,2 = mountain1, impassable
 1,2 = mowdenpass, 
-2,2 = mowden_E, impassable
+2,2 = mowden_W, impassable
 3,2 = mowden_mid, impassable
-4,2 = mowden_W, impassable
+4,2 = mowden_E, impassable
 5,2 =
 6,2 =
 7,2 =
