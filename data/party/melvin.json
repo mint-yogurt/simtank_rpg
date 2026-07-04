@@ -1,0 +1,21 @@
+{
+  "name": "MELVIN",
+  "lvl": 1,
+  "hp": 25,
+  "max_hp": 25,
+  "xp": 0,
+  "sweat": 5,
+  "iq": 140,
+  "weight": 160,
+  "hair": 65,
+  "personality": "MELVIN, brother of the Joker. Wanna-be super villain. Megalomaniacal, comedically fails a lot. Has an over-bearing Mother and lives under his brother, the famous villain the Joker's shadow.",
+  "special": {
+    "name": "LAUGH",
+    "description": "Does his best 'Joker Laugh', embarassing the enemy and making them CRINGE. The CRINGE status effect causes the enemy to occasionally attack itself, lasting for 3-5 turns.",
+    "target": "enemy",
+    "status_effect": "CRINGE",
+    "status_duration_min": 3,
+    "status_duration_max": 5
+  },
+  "items": []
+}

@@ -1,0 +1,19 @@
+{
+  "name": "BILLY",
+  "lvl": 1,
+  "hp": 25,
+  "max_hp": 25,
+  "xp": 0,
+  "sweat": 6,
+  "iq": 200,
+  "weight": 2,
+  "hair": 0,
+  "personality": "Big-Mouth Billy Bass, animatronic singing fish. Very famous. Made of rubber and plastic gears. Sings 'Take me to the River' and 'Don't Worry, Be Happy'",
+  "special": {
+    "name": "SING",
+    "description": "Billy SINGs, mesmerizing an enemy. If successful, they cannot move or attack 50% of the time.",
+    "target": "enemy",
+    "status_effect": "MESMERIZED"
+  },
+  "items": []
+}

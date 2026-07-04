@@ -1,0 +1,21 @@
+{
+  "name": "SMELTRUD",
+  "lvl": 1,
+  "hp": 25,
+  "max_hp": 25,
+  "xp": 0,
+  "sweat": 4,
+  "iq": 80,
+  "weight": 500,
+  "hair": 0,
+  "personality": "Completely bald alien. Very insecure about being bald. Extremely fat.",
+  "special": {
+    "name": "TICKLE",
+    "description": "Tickles a party member, increasing their damage output by 15% for 2 turns.",
+    "target": null,
+    "effect_type": "buff_damage",
+    "buff_mult": 1.15,
+    "buff_turns": 2
+  },
+  "items": []
+}

@@ -1,0 +1,21 @@
+{
+  "name": "POOTS",
+  "lvl": 1,
+  "hp": 25,
+  "max_hp": 25,
+  "xp": 0,
+  "sweat": 8,
+  "iq": 121,
+  "weight": 290,
+  "hair": 50,
+  "personality": "Obese, chuckling fat guy. Ocassionally angry. Loves eating.",
+  "special": {
+    "name": "SNACK",
+    "description": "Heals one party member for 15-25%",
+    "target": "",
+    "effect_type": "heal",
+    "heal_pct_min": 0.15,
+    "heal_pct_max": 0.25
+  },
+  "items": []
+}

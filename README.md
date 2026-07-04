@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha / scaffolding. CLI-first, web viewer later.
+**Status:** pre-alpha. Battle loop is functional end-to-end — LLM-driven party vs. enemy, CLI output. Web viewer and hub/overworld scenes not yet built.
 
 ---
 
@@ -19,6 +19,36 @@ memory. All of that is engine code.
 
 This keeps token usage low, output reliable, runs reproducible, and bugs
 debuggable.
+
+---
+
+## What's built
+
+### LLM decision layer
+
+Each party member's turn works like this:
+
+1. `llm/prompts.py` renders a compact battle context — member's own stats, party HP with `[FULL]`/`[DEAD]`/`[TICKLED]` tags, enemy HP and active status, last-round action history, and a numbered action menu. The character sheet (personality + special move) lives in the system prompt, not repeated here.
+2. `llm/client.py` sends (system prompt, context) to the configured provider — either Ollama cloud or Mistral API. Provider is set via `secrets.py`; no fallback chaining.
+3. `llm/schema.py` parses the JSON response, validates the action, and silently reroutes known synonyms (e.g. an LLM returning the special's name instead of `"SPECIAL"`).
+4. `run_cli.py` executes the resolved action — the engine does all resolution, the LLM only picked.
+
+### Battle loop
+
+Turn order: all four party members act, then the enemy. After each member's action, enemy death is checked. The loop ends on enemy defeat, party wipe, or after 100 rounds.
+
+**Party members and specials:**
+
+| Member | Special | Effect |
+|---|---|---|
+| BILLY | SING | Attempts to MESMERIZE the enemy — 50% skip chance, escalating break probability each turn |
+| MELVIN | LAUGH | Attempts to inflict CRINGE — 35% chance enemy self-attacks each turn, lasts 3–5 turns |
+| POOTS | SNACK | Heals a party member for 15–25% of max HP |
+| SMELTRUD | TICKLE | Buffs an ally's damage by +15% for 2 turns |
+
+**Status effects** are blocked from stacking — only one active at a time on the enemy. MESMERIZE uses an escalating drop-chance mechanic (10% → 25% → 50% → 80% per turn). CRINGE has a fixed randomly-rolled duration.
+
+**Prompt tuning:** The action menu is situationally adjusted. SNACK is flagged as "low value" when nobody in the party is below 70% HP. SING and LAUGH are flagged as "no additional effect" when the enemy already has an active status, preventing the LLM from wasting turns trying to stack.
 
 ---
 
@@ -140,14 +170,13 @@ stream. Get the whole game working in text, then bolt on the web layer.
 
 1. [x] Scaffold + README
 2. [x] Procedural name generator (`procgen/names.py`)
-3. [ ] Engine skeleton: state, party model, journal
-4. [x] combat resolver (proof of concept)
-5. [ ] Voting state machine
-6. [ ] LLM client + schema + prompts (Ollama first)
-7. [ ] Hub scene, CLI loop
-8. [ ] Overworld + battle scenes
-9. [ ] Memory tiers wired into calls
-10. [ ] SSE web viewer (text panel)
-11. [x] Sprite gen (proof of concept) / [ ] canvas tile map
-12. [ ] World gen
-13. [ ] (later) player inputs
+3. [x] Engine skeleton: combat resolver, journal
+4. [x] LLM client + schema + prompts (Ollama cloud / Mistral)
+5. [x] Battle loop — full LLM-driven party vs. enemy, CLI output
+6. [x] Sprite gen (proof of concept)
+7. [ ] Hub scene + free-roam / pet-sim mode
+8. [ ] Voting state machine
+9. [ ] Overworld scene + world gen
+10. [ ] Memory tiers: short-term journal window + compressed long-term
+11. [ ] SSE web viewer (text panel + canvas tile map)
+12. [ ] (later) player inputs
