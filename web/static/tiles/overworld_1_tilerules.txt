@@ -3,26 +3,26 @@
 2,0 = tower1, enterable
 3,0 = pond1,
 4,0 = grass 2 #the main walkable tile variation 1
-5,0 = grass 1 # plain green walkable tile
-6,0 =
-7,0 =
-8,0 =
-9,0 =
-10,0 =
-11,0 =
+5,0 = grass3 # grass variation 
+6,0 = dirt_NW # transition between basic grass tile and dirt, NW corner
+7,0 = dirt_N # northmost dirt tile
+8,0 = dirt_NE 
+9,0 = forest_NW, impassable # northwest corner of forest blob, 3x3 minimum size - follows same logic as lake blobs, no inverted corners.
+10,0 = forest_N, impassable
+11,0 = forest_NE, impassable # ne corner of forest blob
 
 0,1 = hub, enterable,
 1,1 = town1, enterable
 2,1 = tower2, enterable
 3,1 = treedead1, impassable
 4,1 = tree1, impassable
-5,1 =
+5,1 = grass1, plain walkable grass tile
 6,1 =
 7,1 =
 8,1 =
-9,1 =
-10,1 =
-11,1 =
+9,1 = forest_W, impassable
+10,1 = forest_mid, impassable
+11,1 = forest_E, impassable
 
 0,2 = mountain1, impassable
 1,2 = mowdenpass, # normal walkable tile, can be placed on its own or near other impassable mountains to get through
@@ -33,9 +33,9 @@
 6,2 =
 7,2 =
 8,2 =
-9,2 =
-10,2 =
-11,2 =
+9,2 = forest_SW, impassable
+10,2 = forest_S, impassable
+11,2 = forest_SE, impassable
 
 0,3 = lake_NW, impassable #nw-most tile of lakes
 1,3 = lake_N, impassable #northmost tile of lake, can be tiled horizontally with more lake_N tiles
@@ -46,9 +46,9 @@
 6,3 =
 7,3 =
 8,3 =
-9,3 =
-10,3 =
-11,3 =
+9,3 = mnt_NW, impassable # big mountain blob tileset, denoted by "mnt" - maximum 3 tiles high, any width
+10,3 = mnt_N, impassable
+11,3 = mnt_NE, impassable
 
 0,4 = lake_W, impassable
 1,4 = lake_mid, impassable
@@ -59,22 +59,22 @@
 6,4 =
 7,4 =
 8,4 =
-9,4 =
-10,4 =
-11,4 =
+9,4 = mnt_W, impassable
+10,4 = mnt_mid, impassable
+11,4 = mnt_E, impassable
 
 0,5 = lake_SW, impassable
 1,5 = lake_S, impassable
 2,5 = lake_SE, impassable
-3,5 =
-4,5 =
-5,5 =
-6,5 =
+3,5 = lake_invCorner_W+S, impassable
+4,5 = lake_invCorner_S+E, impassable
+5,5 = lake_invCorner_W+N, impassable
+6,5 = lake_invCorner_N+E, impassable
 7,5 =
 8,5 =
-9,5 =
-10,5 =
-11,5 =
+9,5 = mnt_SW, impassable
+10,5 = mnt_S, impassable
+11,5 = mnt_SE, impassable
 
 0,6 = path_vertical, # vertical path that connects N to S paths can vertically be placed next to more vertical paths, or any path that touches N or S
 1,6 = path_horizontal # same as vertical path but for horizontal, connects W to E
@@ -87,7 +87,7 @@
 8,6 =
 9,6 =
 10,6 =
-11,6 =
+11,6 = mnt_cave, enterable # variant of 10,5 to add entrance to S edge of mnt blob
 
 0,7 = path_terminus_W #ends a horizontal path
 1,7 = path_terminus_S # ends a path leading south
@@ -101,4 +101,3 @@
 9,7 =
 10,7 =
 11,7 =
-
