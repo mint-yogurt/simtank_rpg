@@ -2,8 +2,8 @@
 1,0 =
 2,0 = tower1, enterable
 3,0 = pond1,
-4,0 = grass 2
-5,0 = grass 1
+4,0 = grass 2 #the main walkable tile variation 1
+5,0 = grass 1 # plain green walkable tile
 6,0 =
 7,0 =
 8,0 =
@@ -25,10 +25,10 @@
 11,1 =
 
 0,2 = mountain1, impassable
-1,2 = mowdenpass, 
-2,2 = mowden_W, impassable
-3,2 = mowden_mid, impassable
-4,2 = mowden_E, impassable
+1,2 = mowdenpass, # normal walkable tile, can be placed on its own or near other impassable mountains to get through
+2,2 = mowden_W, impassable # westtmost tile of the mountain range. these blobs are always built in horizontal rows
+3,2 = mowden_mid, impassable # always horizontally followed by mowden_mid, or mowden_E and mowden_W on its corresponding sides
+4,2 = mowden_E, impassable # east end of horizonal mountain blobs
 5,2 =
 6,2 =
 7,2 =
@@ -37,9 +37,9 @@
 10,2 =
 11,2 =
 
-0,3 = lake_NW, impassable
-1,3 = lake_N, impassable
-2,3 = lake_NE, impassable
+0,3 = lake_NW, impassable #nw-most tile of lakes
+1,3 = lake_N, impassable #northmost tile of lake, can be tiled horizontally with more lake_N tiles
+2,3 = lake_NE, impassable # ''
 3,3 = tree2_ impassable
 4,3 = castle1, enterable
 5,3 = skullhouse1, enterable
@@ -76,12 +76,12 @@
 10,5 =
 11,5 =
 
-0,6 = path_vertical, 
-1,6 = path_horizontal
-2,6 = path_xroad_4way
-3,6 = path_xroad_W+S+E, rotatable
-4,6 = path_corner_S+E
-5,6 = path_corner_W+S
+0,6 = path_vertical, # vertical path that connects N to S paths can vertically be placed next to more vertical paths, or any path that touches N or S
+1,6 = path_horizontal # same as vertical path but for horizontal, connects W to E
+2,6 = path_xroad_4way # 4 way crossroads, connects N S E W
+3,6 = path_xroad_W+S+E, rotatable # in its default orientation, 3-ways to W, S and E. Can be rotated to connect to other directions
+4,6 = path_corner_S+E # corner that connects S and E paths
+5,6 = path_corner_W+S # corner for connecting W and S paths
 6,6 =
 7,6 =
 8,6 =
@@ -89,15 +89,16 @@
 10,6 =
 11,6 =
 
-0,7 = path_terminus_W
-1,7 = path_terminus_S
-2,7 = path_terminus_N
-3,7 = path_terminus_E
-4,7 = path_corner_N+E
-5,7 = path_corner_W+N
+0,7 = path_terminus_W #ends a horizontal path
+1,7 = path_terminus_S # ends a path leading south
+2,7 = path_terminus_N # ends a path leading North
+3,7 = path_terminus_E # East terminus for paths
+4,7 = path_corner_N+E # 90 degree path for connecting N + E
+5,7 = path_corner_W+N # 90 degree path for connecting W to N
 6,7 =
 7,7 =
 8,7 =
 9,7 =
 10,7 =
 11,7 =
+
