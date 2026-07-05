@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Web viewer and hub/overworld scenes not yet wired up.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules and SQLite world DB are in place (procgen/engine bridge complete). Hub/overworld scenes not yet wired up.
 
 ---
 
@@ -50,9 +50,30 @@ Turn order: all four party members act, then the enemy. After each member's acti
 
 **Prompt tuning:** The action menu is situationally adjusted. SNACK is flagged as "low value" when nobody in the party is below 70% HP. SING and LAUGH are flagged as "no additional effect" when the enemy already has an active status, preventing the LLM from wasting turns trying to stack.
 
+### Tile rules (`engine/tiles.py`)
+
+Parses both tilerules files once on first call. Three public functions:
+
+- `is_passable(tile)` — False if tile has `impassable` tag, or `wall` without `enterable`
+- `is_enterable(tile)` — True if tile triggers a scene entry (cave, town, castle…)
+- `tile_quality(tile)` — raw frozenset of quality strings from the tilerules file
+
+Handles `:rot` rotation suffixes (e.g. `path_corner_N+E:90`). No PIL, no game-state deps.
+
+### World database (`engine/worlddb.py`)
+
+SQLite persistence for the discovered world. Two tables:
+
+- **screens** — one row per coordinate pair; grid cached on first visit, exits pre-computed
+- **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state
+
+`WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed. Replay guarantee: a fresh DB with the same world seed must produce identical grids, exits, and features.
+
 ### Procedural world generation
 
 Two standalone test harnesses in `procgen/`, both output PNGs to `procgen/out/`.
+
+Both generators expose a data/render split: `generate_*_data(seed)` → dataclass (no PIL), `render_*_data(data, raw_tiles)` → PIL image. The data layer is what `engine/worlddb.py` consumes.
 
 **Overworld** (`procgen/overworld_test.py`) — infinite tiled world, one screen per coordinate pair:
 - Base grass fill → blob placement (lakes with corner cuts, forest blobs, mountain rows, mnt blobs) → dirt patches → feature placement (towns, caves, castles, etc.) → jittered A\* path network → scatter (trees, ponds, individual mountains)
@@ -140,10 +161,12 @@ simtank_rpg/
 │   ├── game.py             # main loop; drives turns, owns the tick
 │   ├── state.py            # full game state (party, world, scene, vote)
 │   ├── party.py            # character model: stats, inventory, personality
-│   ├── combat.py           # 
+│   ├── combat.py           #
 │   ├── voting.py           # proposal/vote state machine
 │   ├── journal.py          # event log (structured + narrative views)
 │   ├── memory.py           # builds the context blob for each LLM call
+│   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
+│   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features)
 │   └── scenes/
 │       ├── base.py         # Scene interface
 │       ├── hub.py          # free-roam pet-sim mode
@@ -157,7 +180,8 @@ simtank_rpg/
 │   ├── names.py            # procedural name generation
 │   ├── spritegen.py        # 16x16 enemy sprite generator
 │   ├── overworld_test.py   # overworld screen generator — outputs PNGs to procgen/out/
-│   └── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
+│   ├── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
+│   └── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
@@ -204,9 +228,10 @@ stream. Get the whole game working in text, then bolt on the web layer.
 6. [x] Sprite gen (proof of concept)
 7. [x] Overworld map generator — infinite tiled world, NES palette, full feature set
 8. [x] Cave/dungeon interior generator — rooms, hallways, water, waterfalls, palette
-9. [ ] Hub scene + free-roam / pet-sim mode
-10. [ ] Voting state machine
-11. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-12. [ ] Memory tiers: short-term journal window + compressed long-term
-13. [ ] SSE web viewer (text panel + canvas tile map)
-14. [ ] (later) player inputs
+9. [x] Procgen/engine bridge — data/render split in both generators; `engine/tiles.py` (passability/quality); `engine/worlddb.py` (SQLite world state, replay-guaranteed)
+10. [ ] Hub scene + free-roam / pet-sim mode
+11. [ ] Voting state machine
+12. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+13. [ ] Memory tiers: short-term journal window + compressed long-term
+14. [ ] SSE web viewer (text panel + canvas tile map)
+15. [ ] (later) player inputs

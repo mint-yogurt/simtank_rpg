@@ -9,6 +9,7 @@ import heapq
 import os
 import random
 import struct
+from dataclasses import dataclass, field
 
 from PIL import Image
 
@@ -745,20 +746,35 @@ def render_screen(grid, tiles):
     return out
 
 # ── SCREEN GENERATION ─────────────────────────────────────────────────────────
-def generate_screen(world_seed, sx, sy, raw_tiles, config_key=ACTIVE_CONFIG):
+@dataclass
+class ScreenData:
+    world_seed:    int
+    sx:            int
+    sy:            int
+    screen_seed:   int
+    rows:          int
+    cols:          int
+    grid:          list         # 2D list of tile-name strings
+    feature_cells: dict         # (row, col) → feature_type string
+    blob_cells:    set          # set of (row, col)
+    palette:       tuple        # (green, blue, brown) as RGB tuples
+    log:           list = field(default_factory=list)
+
+
+def generate_screen_data(world_seed, sx, sy, config_key=ACTIVE_CONFIG):
+    """Generate structured screen data without rendering. No PIL, no raw_tiles needed."""
     cfg = SCREEN_CONFIGS[config_key]
     rows, cols = cfg["rows"], cfg["cols"]
 
-    seed = derive_screen_seed(world_seed, sx, sy)
-    rng  = random.Random(seed)
+    screen_seed = derive_screen_seed(world_seed, sx, sy)
+    rng = random.Random(screen_seed)
 
     green, blue, brown = pick_palette(rng)
-    tiles = remap_tileset(raw_tiles, green, blue, brown)
 
     pal_hex = (f"#{green[0]:02x}{green[1]:02x}{green[2]:02x} "
                f"#{blue[0]:02x}{blue[1]:02x}{blue[2]:02x} "
                f"#{brown[0]:02x}{brown[1]:02x}{brown[2]:02x}")
-    log = [f"screen ({sx},{sy})  seed={seed}  palette={pal_hex}"]
+    log = [f"screen ({sx},{sy})  seed={screen_seed}  palette={pal_hex}"]
 
     grid = [[None] * cols for _ in range(rows)]
     step_base_fill(grid, rng)
@@ -768,7 +784,30 @@ def generate_screen(world_seed, sx, sy, raw_tiles, config_key=ACTIVE_CONFIG):
     _             = step_paths(grid, rng, blob_cells, feature_cells, log)
     step_scatter(grid, rng, log)
 
-    return render_screen(grid, tiles), log
+    return ScreenData(
+        world_seed=world_seed,
+        sx=sx, sy=sy,
+        screen_seed=screen_seed,
+        rows=rows, cols=cols,
+        grid=grid,
+        feature_cells=feature_cells,
+        blob_cells=blob_cells,
+        palette=(green, blue, brown),
+        log=log,
+    )
+
+
+def render_screen_data(data, raw_tiles):
+    """Render a ScreenData to a PIL image."""
+    green, blue, brown = data.palette
+    tiles = remap_tileset(raw_tiles, green, blue, brown)
+    return render_screen(data.grid, tiles)
+
+
+def generate_screen(world_seed, sx, sy, raw_tiles, config_key=ACTIVE_CONFIG):
+    """Backward-compatible wrapper: returns (PIL image, log)."""
+    data = generate_screen_data(world_seed, sx, sy, config_key)
+    return render_screen_data(data, raw_tiles), data.log
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():

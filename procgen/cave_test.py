@@ -14,7 +14,7 @@ Pipeline per run:
 
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image
 
@@ -508,31 +508,26 @@ def render_cave(floor_grid, wall_grid, tiles):
 
     return out
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
-def main():
-    seed = int.from_bytes(os.urandom(8), 'big') & 0x7FFFFFFFFFFFFFFF
-    rng  = random.Random(seed)
-    print(f"Cave seed: {seed}\n")
+# ── CAVE GENERATION ───────────────────────────────────────────────────────────
+@dataclass
+class CaveData:
+    seed:       int
+    rooms:      list        # list of Room objects
+    floor_grid: dict        # (row, col) → tile_name string
+    wall_grid:  dict        # (row, col) → tile_name string
+    palette:    tuple       # (grey, teal, gold) as RGB tuples
+    spawn:      object      # (row, col) where party spawns, 1 tile south of enter
+    entry_tile: object      # (row, col) of the enter tile itself (None if empty cave)
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for f in os.listdir(OUTPUT_DIR):
-        if f.startswith('cave_'):
-            os.unlink(os.path.join(OUTPUT_DIR, f))
 
-    raw_tiles        = load_raw_tiles(TILESET_PATH, TILERULES_PATH)
+def generate_cave_data(seed):
+    """Generate structured cave data without rendering. No PIL, no raw_tiles needed."""
+    rng = random.Random(seed)
+
     grey, teal, gold = pick_palette(rng)
-    tiles            = remap_tileset(raw_tiles, grey, teal, gold)
-    pal_hex = (f"grey=#{grey[0]:02x}{grey[1]:02x}{grey[2]:02x} "
-               f"teal=#{teal[0]:02x}{teal[1]:02x}{teal[2]:02x} "
-               f"gold=#{gold[0]:02x}{gold[1]:02x}{gold[2]:02x}")
-    print(f"Palette: {pal_hex}\n")
 
     n_rooms = rng.randint(MIN_ROOMS, MAX_ROOMS)
     rooms   = place_rooms(rng, n_rooms)
-    print(f"Requested {n_rooms} rooms, placed {len(rooms)}:")
-    for i, room in enumerate(rooms):
-        print(f"  {i}: {room.kind}/{room.floor_style}/{room.wall_style}"
-              f"  pos=({room.r0},{room.c0})  size={room.w}w×{room.h}h")
 
     floor_grid, style_grid = build_floor(rooms, rng)
 
@@ -546,12 +541,56 @@ def main():
     place_water(rooms, floor_grid, rng)
     place_features(rooms, floor_grid, rng)
 
-    img   = render_cave(floor_grid, wall_grid, tiles)
+    entry_tile = (spawn[0] - 1, spawn[1]) if spawn is not None else None
+
+    return CaveData(
+        seed=seed,
+        rooms=rooms,
+        floor_grid=floor_grid,
+        wall_grid=wall_grid,
+        palette=(grey, teal, gold),
+        spawn=spawn,
+        entry_tile=entry_tile,
+    )
+
+
+def render_cave_data(data, raw_tiles):
+    """Render a CaveData to a PIL image."""
+    grey, teal, gold = data.palette
+    tiles = remap_tileset(raw_tiles, grey, teal, gold)
+    return render_cave(data.floor_grid, data.wall_grid, tiles)
+
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+def main():
+    seed = int.from_bytes(os.urandom(8), 'big') & 0x7FFFFFFFFFFFFFFF
+    print(f"Cave seed: {seed}\n")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    for f in os.listdir(OUTPUT_DIR):
+        if f.startswith('cave_'):
+            os.unlink(os.path.join(OUTPUT_DIR, f))
+
+    raw_tiles = load_raw_tiles(TILESET_PATH, TILERULES_PATH)
+    data      = generate_cave_data(seed)
+
+    grey, teal, gold = data.palette
+    pal_hex = (f"grey=#{grey[0]:02x}{grey[1]:02x}{grey[2]:02x} "
+               f"teal=#{teal[0]:02x}{teal[1]:02x}{teal[2]:02x} "
+               f"gold=#{gold[0]:02x}{gold[1]:02x}{gold[2]:02x}")
+    print(f"Palette: {pal_hex}\n")
+
+    print(f"Requested rooms, placed {len(data.rooms)}:")
+    for i, room in enumerate(data.rooms):
+        print(f"  {i}: {room.kind}/{room.floor_style}/{room.wall_style}"
+              f"  pos=({room.r0},{room.c0})  size={room.w}w×{room.h}h")
+
+    img   = render_cave_data(data, raw_tiles)
     fname = f"cave_{seed}.png"
     img.save(os.path.join(OUTPUT_DIR, fname))
 
-    print(f"\nFloor cells: {len(floor_grid)}  Wall cells: {len(wall_grid)}")
-    print(f"Spawn point: {spawn}")
+    print(f"\nFloor cells: {len(data.floor_grid)}  Wall cells: {len(data.wall_grid)}")
+    print(f"Entry tile:  {data.entry_tile}  Spawn point: {data.spawn}")
     print(f"-> {os.path.join(OUTPUT_DIR, fname)}")
 
 if __name__ == "__main__":
