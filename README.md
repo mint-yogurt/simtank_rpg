@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules and SQLite world DB are in place (procgen/engine bridge complete). Hub/overworld scenes not yet wired up.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, and line-of-sight tile scan are in place. Hub/overworld scenes not yet wired up.
 
 ---
 
@@ -68,6 +68,26 @@ SQLite persistence for the discovered world. Two tables:
 - **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state
 
 `WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed. Replay guarantee: a fresh DB with the same world seed must produce identical grids, exits, and features.
+
+### Viewscan (`engine/viewscan.py`)
+
+Pure, headless, deterministic line-of-sight scan from the party's tile position
+outward in the four cardinal directions. Used to build the spatial situational
+context fed to each LLM call — no visual analysis, just a scripted data query.
+
+Each ray walks tile-by-tile and terminates at the first:
+
+- **enterable** tile (town, cave, castle…) → `kind='enterable'`
+- **impassable** tile (cliff, lake, forest…) → `kind='blocker'`
+- **screen edge** (walked off the grid) → `kind='edge'`
+
+Returns a `ViewScan` dataclass with one frozen `DirectionScan` per direction
+(`kind`, `tile`, `distance`, `adjacent_passable`). Distance 1 = the adjacent
+tile. `adjacent_passable` tells the movement layer whether a step is legal
+without re-querying the grid.
+
+No display, no LLM, no DB. `procgen/viewscan_test.py` runs synthetic grid
+assertions and real overworld screens with ASCII ray overlays.
 
 ### Procedural world generation
 
@@ -166,6 +186,7 @@ simtank_rpg/
 │   ├── journal.py          # event log (structured + narrative views)
 │   ├── memory.py           # builds the context blob for each LLM call
 │   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
+│   ├── viewscan.py         # line-of-sight tile scan (N/S/E/W rays → ViewScan dataclass)
 │   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features)
 │   └── scenes/
 │       ├── base.py         # Scene interface
@@ -181,7 +202,9 @@ simtank_rpg/
 │   ├── spritegen.py        # 16x16 enemy sprite generator
 │   ├── overworld_test.py   # overworld screen generator — outputs PNGs to procgen/out/
 │   ├── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
-│   └── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
+│   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
+│   ├── preview_test.py     # visual harness: party sprite composited onto generated screen → PNG
+│   └── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
@@ -229,9 +252,10 @@ stream. Get the whole game working in text, then bolt on the web layer.
 7. [x] Overworld map generator — infinite tiled world, NES palette, full feature set
 8. [x] Cave/dungeon interior generator — rooms, hallways, water, waterfalls, palette
 9. [x] Procgen/engine bridge — data/render split in both generators; `engine/tiles.py` (passability/quality); `engine/worlddb.py` (SQLite world state, replay-guaranteed)
-10. [ ] Hub scene + free-roam / pet-sim mode
-11. [ ] Voting state machine
-12. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-13. [ ] Memory tiers: short-term journal window + compressed long-term
-14. [ ] SSE web viewer (text panel + canvas tile map)
-15. [ ] (later) player inputs
+10. [x] Viewscan — `engine/viewscan.py`: line-of-sight tile scan (N/S/E/W rays, terminates at enterable/blocker/edge); `procgen/preview_test.py`: party sprite preview harness
+11. [ ] Hub scene + free-roam / pet-sim mode
+12. [ ] Voting state machine
+13. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+14. [ ] Memory tiers: short-term journal window + compressed long-term
+15. [ ] SSE web viewer (text panel + canvas tile map)
+16. [ ] (later) player inputs
