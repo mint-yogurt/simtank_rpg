@@ -131,7 +131,7 @@ def _dir_summary_line(label: str, ds) -> str:
 
 
 def build_overworld_context(member, party: list, vs, voting_state,
-                            available_actions: set) -> str:
+                            available_actions: set, member_journal=None) -> str:
     """Build the overworld/voting prompt for a single member's turn.
 
     Args:
@@ -140,6 +140,7 @@ def build_overworld_context(member, party: list, vs, voting_state,
         vs:               ViewScan at current party position
         voting_state:     VotingState
         available_actions: set[str] from engine.voting.available_actions()
+        member_journal:   MemberJournal for this member, or None if empty/unavailable
     """
     parts = []
 
@@ -159,6 +160,12 @@ def build_overworld_context(member, party: list, vs, voting_state,
             hp_str = f"HP {m.hp}/{m.max_hp}"
         you = " ← YOU" if m.name == member.name else ""
         parts.append(f"  {m.name}: LVL {m.lvl}  {hp_str}{you}")
+
+    # Short-term memory window — what this member has observed recently
+    if member_journal and not member_journal.is_empty():
+        parts.append("")
+        parts.append("RECENT EVENTS (your memory)")
+        parts.extend(member_journal.render())
 
     # Proposal state
     if voting_state.is_open:

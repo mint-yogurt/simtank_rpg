@@ -17,6 +17,7 @@ Coordinate convention: row-first throughout.
 import json
 from dataclasses import dataclass, field
 
+from engine.journal import journals_append
 from engine.tiles import is_enterable
 from engine.viewscan import scan
 
@@ -62,7 +63,8 @@ def enter_screen(pos: PartyPos, db, generator, tick: int = 0) -> dict:
     return screen
 
 
-def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db) -> MoveResult:
+def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db,
+                 journals: dict | None = None, tick: int = 0) -> MoveResult:
     """Execute a scripted single-screen move plan, scanning before each step.
 
     Args:
@@ -101,6 +103,9 @@ def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db) -> M
                 after_col=pos.col, after_row=pos.row,
                 note=note,
             ))
+            move_desc = (f"blocked {direction}" if steps_taken == 0
+                         else f"moved {direction} {steps_taken} → {reason}")
+            journals_append(journals, tick, 'MOVE', move_desc)
             return MoveResult(steps_taken=steps_taken, stop_reason=reason, log=log)
 
         pos.col += dc
@@ -120,6 +125,9 @@ def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db) -> M
                 after_col=pos.col, after_row=pos.row,
                 note=f'arrived_enterable({tile})',
             ))
+            journals_append(journals, tick, 'MOVE',
+                            f"moved {direction} {steps_taken} → enterable")
+            journals_append(journals, tick, 'ENTERED', f"entered {tile}")
             return MoveResult(steps_taken=steps_taken, stop_reason='enterable', log=log)
 
         log.append(StepRecord(
@@ -130,4 +138,6 @@ def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db) -> M
             note='moved',
         ))
 
+    journals_append(journals, tick, 'MOVE',
+                    f"moved {direction} {steps_taken} → completed")
     return MoveResult(steps_taken=steps_taken, stop_reason='completed', log=log)

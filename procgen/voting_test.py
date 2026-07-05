@@ -1,8 +1,9 @@
-"""CLI harness for the voting state machine (Job 7).
+"""CLI harness for the voting state machine + per-member journal (Jobs 7 & 8).
 
 Runs a real overworld screen with real LLM calls. Party members vote on
 proposed moves; a passed proposal triggers single-screen movement via the
-existing execute_move() from party_state.py.
+existing execute_move() from party_state.py. Journal entries accumulate per
+member and are injected into each member's prompt context.
 
 Run from the repo root:
     python procgen/voting_test.py
@@ -11,6 +12,7 @@ Output:
   - ASCII maps (overlay for debug, clean in prompts)
   - Each member's raw LLM response alongside the parsed action
   - Vote math assertions before any LLM call (fast; catches logic bugs)
+  - Journal state at the end of each round and a full dump at exit
   - Tally of real LLM decisions vs fallbacks at the end
 """
 
@@ -23,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from dataclasses import dataclass
 from pathlib import Path
 
+from engine.journal import MemberJournal, journals_append
 from engine.party_state import PartyPos, enter_screen, execute_move
 from engine.tiles import is_passable, is_enterable
 from engine.viewscan import scan
@@ -35,7 +38,7 @@ from llm.schema import parse_overworld_action
 from procgen.overworld_test import generate_screen_data
 
 WORLD_SEED = 77777
-MAX_ROUNDS = 3
+MAX_ROUNDS = 6   # enough to fill and roll the 12-entry journal window
 
 
 # ── party member ─────────────────────────────────────────────────────────────
@@ -158,15 +161,19 @@ def _find_walkable_center(grid, rows, cols):
 
 # ── movement execution ────────────────────────────────────────────────────────
 
-def _execute_proposal(pos, direction, steps, grid, db) -> str:
-    """Execute movement for a passed proposal; print maps and step log."""
+def _execute_proposal(pos, direction, steps, grid, db, journals, tick) -> str:
+    """Execute movement for a passed proposal; print maps and step log.
+
+    journals and tick are passed through to execute_move so events are logged
+    the same way they will be in the full game loop.
+    """
     rows, cols = len(grid), len(grid[0])
 
     vs_before = scan(grid, pos.row, pos.col)
     print(f"\n  MAP before move (row={pos.row},col={pos.col}):")
     print(render_map_overlay(grid, rows, cols, vs_before))
 
-    result = execute_move(pos, direction, steps, grid, db)
+    result = execute_move(pos, direction, steps, grid, db, journals=journals, tick=tick)
 
     vs_after = scan(grid, pos.row, pos.col)
     print(f"\n  MAP after move (row={pos.row},col={pos.col}):")
@@ -182,25 +189,29 @@ def _execute_proposal(pos, direction, steps, grid, db) -> str:
 # ── voting round ──────────────────────────────────────────────────────────────
 
 def _run_voting_round(party, pos, grid, db, voting_state, round_num,
-                      decision_tally) -> str | None:
+                      decision_tally, journals, tick) -> str | None:
     """One full round of turns (one per alive member).
 
     Returns the movement stop_reason if a proposal passed and was executed,
-    else None. Abandoned proposals are noted and cleared.
+    else None. Abandoned proposals are noted and cleared. Journal entries are
+    appended for propose, vote, and resolution events.
     """
     alive       = [m for m in party if m.alive]
     alive_count = len(alive)
 
     print(f"\n{'─'*60}")
-    print(f"ROUND {round_num}  alive={alive_count}  pos=(row={pos.row},col={pos.col})")
+    print(f"ROUND {round_num}  t={tick}  alive={alive_count}  "
+          f"pos=(row={pos.row},col={pos.col})")
     print(f"{'─'*60}")
 
     for member in alive:
         vs   = scan(grid, pos.row, pos.col)
         acts = available_actions(member.name, voting_state)
+        mj   = journals[member.name]
 
         sys_prompt  = build_overworld_system_prompt(member)
-        user_prompt = build_overworld_context(member, party, vs, voting_state, acts)
+        user_prompt = build_overworld_context(
+            member, party, vs, voting_state, acts, member_journal=mj)
 
         # Fallback: safe default that is valid for the current available_actions
         fallback = ({"action": "VOTE", "vote": "no"}
@@ -222,7 +233,7 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
         validator = lambda raw, _acts=acts: parse_overworld_action(raw, _acts)
         decision  = ask_with_retry(user_prompt, sys_prompt, validator, reprompt, fallback)
 
-        decision_tally['total']   += 1
+        decision_tally['total']    += 1
         decision_tally['fallback'] += decision.used_fallback
         decision_tally['retried']  += (decision.raw_retry is not None
                                        and not decision.used_fallback)
@@ -230,7 +241,7 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
         raw_shown    = decision.raw_retry if decision.raw_retry else decision.raw_first
         fallback_tag = (' [FALLBACK]' if decision.used_fallback else
                         ' [retry ok]' if decision.raw_retry else '')
-        print(f"\n{member.name} | acts={sorted(acts)}{fallback_tag}")
+        print(f"\n{member.name} | acts={sorted(acts)}  journal={len(mj)} entries{fallback_tag}")
         if raw_shown:
             print(f"  raw: {raw_shown.strip()[:120]}")
         print(f"  parsed: {decision.result}")
@@ -243,21 +254,34 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
             print(f"  → {member.name} PROPOSES: move {direction} {steps} steps")
             proposal, outcome = voting_state.open_proposal(
                 member.name, direction, steps, alive_count)
+            # Log proposal — all members hear it
+            journals_append(journals, tick, 'PROPOSE',
+                            f"{member.name}: propose {direction} {steps}")
             if outcome == 'passed':
+                # Single-survivor auto-pass
                 print("  → AUTO-PASS (single survivor)")
-                return _execute_proposal(pos, direction, steps, grid, db)
+                journals_append(journals, tick, 'RESOLVED',
+                                f"move {direction} {steps} → PASSED (auto)")
+                return _execute_proposal(pos, direction, steps, grid, db, journals, tick)
 
         elif action == 'VOTE' and voting_state.is_open:
-            # Capture direction/steps BEFORE cast_vote may clear the proposal on resolution
+            # Capture direction/steps and yes_count BEFORE cast_vote may clear the proposal
             saved_dir   = voting_state.proposal.direction
             saved_steps = voting_state.proposal.steps
             vote_yes    = decision.result['vote'] == 'yes'
             outcome     = voting_state.cast_vote(member.name, vote_yes)
-            print(f"  → {member.name} votes {'YES' if vote_yes else 'NO'}")
+            vote_word   = 'YES' if vote_yes else 'NO'
+            print(f"  → {member.name} votes {vote_word}")
+            journals_append(journals, tick, 'VOTE', f"{member.name}: {vote_word}")
             if outcome == 'passed':
+                journals_append(journals, tick, 'RESOLVED',
+                                f"move {saved_dir} {saved_steps} → PASSED")
                 print(f"  → Proposal PASSED! Executing: move {saved_dir} {saved_steps}")
-                return _execute_proposal(pos, saved_dir, saved_steps, grid, db)
+                return _execute_proposal(pos, saved_dir, saved_steps, grid, db,
+                                         journals, tick)
             elif outcome == 'failed':
+                journals_append(journals, tick, 'RESOLVED',
+                                f"move {saved_dir} {saved_steps} → FAILED")
                 print("  → Proposal FAILED")
 
         else:
@@ -269,6 +293,10 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
         print(f"\n  Round {round_num} ended: proposal open "
               f"({p.yes_count}Y/{p.no_count}N/{p.threshold} needed) — abandoning")
         voting_state.abandon()
+
+    # Journal size summary after each round
+    sizes = {m.name: len(journals[m.name]) for m in alive}
+    print(f"\n  Journal sizes: {sizes}")
 
     return None
 
@@ -285,6 +313,9 @@ def main():
     data_dir = Path(__file__).parent.parent / 'data' / 'party'
     party = load_party(data_dir)
     print(f"Party: {[m.name for m in party]}")
+
+    # Per-member journals (one per member, all receive the same events for now)
+    journals = {m.name: MemberJournal(m.name) for m in party}
 
     # Generate and cache screen (0,0)
     screen_data = generate_screen_data(WORLD_SEED, 0, 0)
@@ -317,17 +348,26 @@ def main():
     decision_tally = {'total': 0, 'fallback': 0, 'retried': 0}
     movement_count = 0
     last_round     = 0
+    tick           = 0
 
     for round_num in range(1, MAX_ROUNDS + 1):
         last_round = round_num
+        tick += 1
         stop = _run_voting_round(
-            party, pos, grid, db, voting_state, round_num, decision_tally)
+            party, pos, grid, db, voting_state, round_num, decision_tally,
+            journals, tick)
         if stop:
             movement_count += 1
             print(f"\n  Movement complete (round {round_num}, stop={stop!r})")
-            if stop == 'enterable':
-                print("  Party reached an enterable feature — stopping harness.")
-                break
+            # Don't break on enterable — party stays on feature tile and continues voting
+
+    # Full journal dump for one member as validation of accumulation and rollover
+    sample_member = party[0]
+    mj = journals[sample_member.name]
+    print(f"\n{'='*60}")
+    print(f"JOURNAL DUMP — {sample_member.name}  ({len(mj)}/{mj._entries.maxlen} entries)")
+    for line in mj.render():
+        print(line)
 
     # Summary
     print(f"\n{'='*60}")
