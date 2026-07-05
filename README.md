@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end — LLM-driven party vs. enemy, CLI output. Web viewer and hub/overworld scenes not yet built.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Web viewer and hub/overworld scenes not yet wired up.
 
 ---
 
@@ -49,6 +49,28 @@ Turn order: all four party members act, then the enemy. After each member's acti
 **Status effects** are blocked from stacking — only one active at a time on the enemy. MESMERIZE uses an escalating drop-chance mechanic (10% → 25% → 50% → 80% per turn). CRINGE has a fixed randomly-rolled duration.
 
 **Prompt tuning:** The action menu is situationally adjusted. SNACK is flagged as "low value" when nobody in the party is below 70% HP. SING and LAUGH are flagged as "no additional effect" when the enemy already has an active status, preventing the LLM from wasting turns trying to stack.
+
+### Procedural world generation
+
+Two standalone test harnesses in `procgen/`, both output PNGs to `procgen/out/`.
+
+**Overworld** (`procgen/overworld_test.py`) — infinite tiled world, one screen per coordinate pair:
+- Base grass fill → blob placement (lakes with corner cuts, forest blobs, mountain rows, mnt blobs) → dirt patches → feature placement (towns, caves, castles, etc.) → jittered A\* path network → scatter (trees, ponds, individual mountains)
+- Per-screen NES palette: 3 non-adjacent palette cells swapped into placeholder green/blue/brown
+- Stable deterministic seed per (world\_seed, sx, sy) so any screen reproduces exactly
+
+**Cave / dungeon** (`procgen/cave_test.py`) — interior maps for cave entrances placed on the overworld:
+- Variable-size screen fitted to generated content
+- Up to 8 rooms (tunable), two flavours mixed per map:
+  - **Cave rooms** — cobble floor, 2-tile-tall cave walls (topper + wall) on north, `cavewallS` on south, void sides
+  - **Dungeon rooms** — mixed `dungfloor`/`minidungfloor` tiles, brick walls; north wall is either `brickwallN` (1-tall) or `dungwallN + topper` (2-tall) per room
+- Rooms connected by 1-tile-wide L-shaped or zig-zag hallways (random cave or dungeon style); hallways never receive south walls
+- Two-pass wall derivation: north walls claim cells first so hallway side walls never cut off room north walls, and room side walls never block hallway north walls at junctions
+- Entry tile (`enter`) placed on north wall of northernmost room; party spawns 1 tile south
+- Water pools: 2×2 corner-only or 3×3+ edge+mid layout, size biased toward room size; `waterNW/N/NE/W/Mid/E/SW/S/SE` tiles
+- Waterfalls: `waterfall1/2` alternating frames on cave north walls, terminating in `puddle1/2` on floor
+- Scatter: skulls, socks, puddles in cave rooms; chests and trashcans in dungeon rooms
+- Per-run NES palette: 3 placeholder colours (`#787878` grey, `#004058` teal, `#ac7c00` gold) swapped; black and white preserved
 
 ---
 
@@ -134,7 +156,8 @@ simtank_rpg/
 ├── procgen/
 │   ├── names.py            # procedural name generation
 │   ├── spritegen.py        # 16x16 enemy sprite generator
-│   └── world.py            # map gen (later)
+│   ├── overworld_test.py   # overworld screen generator — outputs PNGs to procgen/out/
+│   └── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
@@ -142,7 +165,12 @@ simtank_rpg/
 │   └── static/
 │       ├── index.html
 │       ├── app.js
-│       └── style.css
+│       ├── style.css
+│       └── tiles/
+│           ├── overworld_1.png             # overworld tileset (placeholder-coloured)
+│           ├── overworld_1_tilerules.txt   # tile name ↔ grid coord map
+│           ├── tiles_cave1.png             # cave/dungeon tileset
+│           └── tiles_cave_rules.txt        # cave tile name ↔ grid coord map
 ├── run_cli.py              # dev entry: loop → terminal text
 ├── run_web.py              # loop + web server
 ├── secrets.py              # API keys (gitignored)
@@ -174,9 +202,11 @@ stream. Get the whole game working in text, then bolt on the web layer.
 4. [x] LLM client + schema + prompts (Ollama cloud / Mistral)
 5. [x] Battle loop — full LLM-driven party vs. enemy, CLI output
 6. [x] Sprite gen (proof of concept)
-7. [ ] Hub scene + free-roam / pet-sim mode
-8. [ ] Voting state machine
-9. [ ] Overworld scene + world gen
-10. [ ] Memory tiers: short-term journal window + compressed long-term
-11. [ ] SSE web viewer (text panel + canvas tile map)
-12. [ ] (later) player inputs
+7. [x] Overworld map generator — infinite tiled world, NES palette, full feature set
+8. [x] Cave/dungeon interior generator — rooms, hallways, water, waterfalls, palette
+9. [ ] Hub scene + free-roam / pet-sim mode
+10. [ ] Voting state machine
+11. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+12. [ ] Memory tiers: short-term journal window + compressed long-term
+13. [ ] SSE web viewer (text panel + canvas tile map)
+14. [ ] (later) player inputs
