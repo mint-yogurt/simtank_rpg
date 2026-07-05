@@ -14,63 +14,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.tiles import is_enterable, is_passable
 from engine.viewscan import _DIRS, scan
+from llm.ascii_map import render_map_overlay
 from procgen.overworld_test import generate_screen_data
 
 WORLD_SEED = 77777
-
-
-# ─── ASCII tile display ──────────────────────────────────────────────────────
-
-_ENTRY_CHARS = {
-    'hub': 'H', 'town1': 'T', 'castle1': 'K', 'cave1': 'c',
-    'building1': 'B', 'house1': 'h', 'tower1': 'W', 'tower2': 'W',
-    'skullhouse1': 'S', 'mnt_cave': 'M', 'enter': 'E',
-}
-
-
-def _tile_char(raw):
-    base = (raw or 'grass1').split(':')[0]
-    if is_enterable(base):
-        return _ENTRY_CHARS.get(base, base[0].upper())
-    if not is_passable(base):
-        return '#'
-    if base.startswith('path_'):
-        return '+'
-    if base.startswith('dirt_'):
-        return ','
-    return '.'
-
-
-def _ascii_with_scan(grid, rows, cols, vs):
-    """ASCII grid with party '@' and ray overlay.
-
-    Legend: . passable  # blocker  letters=enterable  + path  , dirt
-    Ray:    n/s/e/w = ray path  X = blocker hit  ! = enterable hit
-            N/S/E/W = last passable tile before screen edge
-    """
-    chars = [[_tile_char(grid[r][c]) for c in range(cols)] for r in range(rows)]
-    pc, pr = vs.party_col, vs.party_row
-
-    for label, (dc, dr) in _DIRS.items():
-        ds = getattr(vs, label)
-        # Mark ray path (passable tiles the ray traversed)
-        for d in range(1, ds.distance):
-            c, r = pc + dc * d, pr + dr * d
-            if 0 <= r < rows and 0 <= c < cols:
-                chars[r][c] = label.lower()
-        # Mark termination
-        tc, tr = pc + dc * ds.distance, pr + dr * ds.distance
-        if ds.kind == 'blocker' and 0 <= tr < rows and 0 <= tc < cols:
-            chars[tr][tc] = 'X'
-        elif ds.kind == 'enterable' and 0 <= tr < rows and 0 <= tc < cols:
-            chars[tr][tc] = '!'
-        elif ds.kind == 'edge' and ds.distance > 1:
-            lc, lr = pc + dc * (ds.distance - 1), pr + dr * (ds.distance - 1)
-            if 0 <= lr < rows and 0 <= lc < cols:
-                chars[lr][lc] = label  # uppercase = last in-bounds tile before edge
-
-    chars[pr][pc] = '@'
-    return '\n'.join('  ' + ' '.join(row) for row in chars)
 
 
 # ─── assertion helper ─────────────────────────────────────────────────────────
@@ -225,7 +172,7 @@ def test_real_screen(sx=0, sy=0):
         vs = scan(grid, party_col=pc, party_row=pr, feature_cells=data.feature_cells)
 
         print(f"\n  [{tag}]  party col={pc} row={pr}  tile={tile_name!r}")
-        print(_ascii_with_scan(grid, rows, cols, vs))
+        print(render_map_overlay(grid, rows, cols, vs))
         print()
 
         for label in ('N', 'S', 'E', 'W'):

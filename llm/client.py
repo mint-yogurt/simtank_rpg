@@ -3,6 +3,7 @@
 import json
 import logging
 import urllib.request
+from dataclasses import dataclass
 
 import secrets
 
@@ -65,3 +66,44 @@ def ask(prompt: str, system: str) -> str | None:
     if secrets.PROVIDER == "mistral":
         return _ask_mistral(prompt, system)
     return _ask_ollama(prompt, system)
+
+
+@dataclass
+class LLMDecision:
+    result: dict
+    raw_first: str | None   # raw response from first attempt
+    raw_retry: str | None   # raw response from retry; None if no retry happened
+    used_fallback: bool     # True when both attempts failed validation
+
+    @property
+    def was_real(self) -> bool:
+        """True if we got a valid parse from the LLM on either attempt."""
+        return not self.used_fallback
+
+
+def ask_with_retry(prompt: str, system: str, validator, reprompt_suffix: str,
+                   fallback: dict) -> LLMDecision:
+    """Call the LLM, validate, retry once on bad output, then fall back.
+
+    Args:
+        validator:       callable(raw: str | None) → dict | None
+        reprompt_suffix: appended to the prompt on the corrective retry
+        fallback:        returned as result if both attempts fail validation
+
+    Never raises. Always returns an LLMDecision.
+    """
+    raw_first = ask(prompt, system)
+    result = validator(raw_first)
+    if result is not None:
+        return LLMDecision(result=result, raw_first=raw_first,
+                           raw_retry=None, used_fallback=False)
+
+    correction = prompt + "\n\n---\n" + reprompt_suffix
+    raw_retry = ask(correction, system)
+    result = validator(raw_retry)
+    if result is not None:
+        return LLMDecision(result=result, raw_first=raw_first,
+                           raw_retry=raw_retry, used_fallback=False)
+
+    return LLMDecision(result=fallback, raw_first=raw_first,
+                       raw_retry=raw_retry, used_fallback=True)
