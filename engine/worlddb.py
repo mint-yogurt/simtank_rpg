@@ -11,6 +11,16 @@ identically as screens are visited (determinism / replay guarantee).
 Coordinate convention: all (row, col) tuples match the grid indexing used in
 ScreenData. local_row and local_col columns in the features table follow the
 same convention.
+
+Known interface warts:
+  No read-only get_screen() — get_or_create_screen requires a generator even
+  when the screen is already cached.  Add get_screen(world_seed, sx, sy) before
+  any job that needs ad-hoc grid reads without a generator on hand.
+
+  set_feature_state silently no-ops if the feature row is missing (UPDATE on a
+  non-existent PK does nothing).  Safe today because get_or_create_screen always
+  pre-inserts all features; a mistyped coordinate goes undetected.  Consider
+  raising on zero rowcount if this becomes a bug magnet.
 """
 
 import json

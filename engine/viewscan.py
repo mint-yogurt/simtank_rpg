@@ -42,13 +42,13 @@ class ViewScan:
 _DIRS = {'N': (0, -1), 'S': (0, 1), 'E': (1, 0), 'W': (-1, 0)}
 
 
-def scan(grid, party_col, party_row, feature_cells=None):
-    """Scan from (party_col, party_row) outward in N/S/E/W.
+def scan(grid, party_row, party_col, feature_cells=None):
+    """Scan from (party_row, party_col) outward in N/S/E/W.
 
     Args:
         grid:          2D list of tile-name strings; indexed as grid[row][col].
-        party_col:     party's tile column.
         party_row:     party's tile row.
+        party_col:     party's tile column.
         feature_cells: (row, col) → feature_type map from generate_screen_data.
                        Accepted for interface consistency; not used internally —
                        grid tile names already encode feature types, and
