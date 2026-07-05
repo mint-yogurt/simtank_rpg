@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, and line-of-sight tile scan are in place. Hub/overworld scenes not yet wired up.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, line-of-sight tile scan, voting state machine, per-member journal, and overworld movement are all in place. Hub/overworld scenes not yet wired into the main game loop.
 
 ---
 
@@ -28,10 +28,10 @@ debuggable.
 
 Each party member's turn works like this:
 
-1. `llm/prompts.py` renders a compact battle context — member's own stats, party HP with `[FULL]`/`[DEAD]`/`[TICKLED]` tags, enemy HP and active status, last-round action history, and a numbered action menu. The character sheet (personality + special move) lives in the system prompt, not repeated here.
-2. `llm/client.py` sends (system prompt, context) to the configured provider — either Ollama cloud or Mistral API. Provider is set via `secrets.py`; no fallback chaining.
-3. `llm/schema.py` parses the JSON response, validates the action, and silently reroutes known synonyms (e.g. an LLM returning the special's name instead of `"SPECIAL"`).
-4. `run_cli.py` executes the resolved action — the engine does all resolution, the LLM only picked.
+1. `llm/prompts.py` renders a compact context — member's own stats, party HP, situation, open vote tally if any, member's short-term journal window, and a numbered action menu that exactly matches the valid `available_actions` set. The character sheet (personality + special move) lives in the system prompt, not repeated here. Target: ~600–800 tokens in.
+2. `llm/client.py` sends (system prompt, context) to the configured provider — either Ollama (local, primary) or Mistral API. `ask_with_retry` validates the response, reprompts once on bad output, then falls back to a safe default — never crashes. `LLMDecision` dataclass records raw output, retry, and whether fallback was used.
+3. `llm/schema.py` parses the JSON response and validates the action against the `available_actions` set passed in — structural enforcement means the LLM cannot produce an action that isn't valid this turn even if it tries.
+4. The controller (harness or future `game.py`) executes the resolved action. The engine does all resolution; the LLM only picked.
 
 ### Battle loop
 
@@ -68,6 +68,46 @@ SQLite persistence for the discovered world. Two tables:
 - **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state
 
 `WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed. Replay guarantee: a fresh DB with the same world seed must produce identical grids, exits, and features.
+
+### Voting state machine (`engine/voting.py`)
+
+Group movement decisions run through a proposal → vote state machine. Any alive
+member can `PROPOSE` a direction and step count. Each subsequent member votes
+`YES` or `NO` on their turn. The proposal resolves as soon as the outcome is
+mathematically locked — no need to wait for remaining votes.
+
+Thresholds: 4 alive → 3 yes required; 3 alive → 2; 2 alive → unanimous; 1 alive → auto-pass.
+
+`available_actions(member_name, voting_state)` returns the exact action set for
+each member's turn: `{PROPOSE, WAIT}` when no proposal is open; `{VOTE, WAIT}`
+when one is open and they haven't voted; `{WAIT}` if already voted. This set is
+threaded into both the prompt menu and the schema parser — the LLM cannot output
+an invalid action even if it tries.
+
+Validated end-to-end against a real overworld screen in `procgen/voting_test.py`.
+
+### Overworld movement (`engine/party_state.py`)
+
+`execute_move(pos, direction, steps, grid, db, journals=None, tick=0)` steps the
+party one tile at a time, scanning before each step. Stops on blocker, screen
+edge, or arrival at an enterable feature (which marks it entered in the DB).
+Mutates `PartyPos` in place. Accepts an optional journals dict and tick — MOVE and
+ENTERED events fire inside the engine function so any caller (harness or future
+game loop) gets journaling for free.
+
+### Per-member journal (`engine/journal.py`)
+
+Two independent layers:
+
+- **`Journal`** — global milestone log. Structured events in; ALL-CAPS retro
+  narrative out (`PARTY DEFEATED LVL 2 GOBLIN.`). Unbounded; for display/recap.
+- **`MemberJournal`** — per-member FIFO rolling window (default 12 entries,
+  ~120 tokens). Each entry: `(tick, event_type, terse_desc)`. Events: MOVE,
+  ENTERED, PROPOSE, VOTE, RESOLVED. Injected into each member's overworld prompt
+  as `RECENT EVENTS (your memory)`. Oldest entries drop automatically when the
+  window is full. Battle events will be wired when the battle loop integrates.
+
+`journals_append(journals, tick, type, desc)` broadcasts to all members' windows and is None-safe, so engine functions work cleanly in tests without journals.
 
 ### Viewscan (`engine/viewscan.py`)
 
@@ -131,8 +171,9 @@ Both generators expose a data/render split: `generate_*_data(seed)` → dataclas
   it. Threshold is configurable per situation.
 - **Combat.** Members decide their own actions (attack / defend / run / item).
   Whole party gets combat context.
-- **Journal.** Terse, scripted event log. Structured events in, dry retro-log
-  narration out. `PARTY FOUGHT LVL 2 GOBLIN... AND WON. BILLY REACHED LEVEL 3.`
+- **Journal.** Two layers. Global milestone log (`Journal`) for display/recap.
+  Per-member short-term rolling window (`MemberJournal`, 12 entries) injected
+  into each LLM call as `RECENT EVENTS`. Long-term compression is a later job.
 - **Inventory.** Simple. 3 items per member, basic effects.
 - **RNG.** Percentage-based checks for now. To-hit, crit, parry, saving throw,
   and damage each use float probability knobs tuned against normalized stat
@@ -152,9 +193,10 @@ Tiered context, rebuilt each call. Only the last tier is non-trivial.
 2. **Situation** — code renders the current scene to a compact description:
    location, what's happening, whose turn, valid actions this turn, open vote
    tally. Written by code, not the model.
-3. **Short-term memory** — rolling window of the last ~6–10 journal lines.
+3. **Short-term memory** — `MemberJournal`: FIFO rolling window, last 12 events
+   per member (~120 tokens). Built. Rendered as `RECENT EVENTS (your memory)`.
 4. **Long-term memory** — old journal entries compressed into a few terse lines
-   **in code** (templating, not a GM LLM call).
+   **in code** (templating, not a GM LLM call). Not yet built.
 
 Rough budget: ~600–800 tokens in, tiny out. Comfortable on free tiers.
 
@@ -182,8 +224,8 @@ simtank_rpg/
 │   ├── state.py            # full game state (party, world, scene, vote)
 │   ├── party.py            # character model: stats, inventory, personality
 │   ├── combat.py           #
-│   ├── voting.py           # proposal/vote state machine
-│   ├── journal.py          # event log (structured + narrative views)
+│   ├── voting.py           # proposal/vote state machine; available_actions()
+│   ├── journal.py          # Journal (global narrative) + MemberJournal (per-member LLM window)
 │   ├── memory.py           # builds the context blob for each LLM call
 │   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
 │   ├── viewscan.py         # line-of-sight tile scan (N/S/E/W rays → ViewScan dataclass)
@@ -194,9 +236,10 @@ simtank_rpg/
 │       ├── overworld.py    # travel / exploration
 │       └── battle.py       # combat mode
 ├── llm/
-│   ├── client.py           # provider-agnostic call + routing (Ollama/Mistral/Horde)
-│   ├── schema.py           # action schemas + forgiving JSON parse/validate
-│   └── prompts.py          # prompt templates
+│   ├── client.py           # provider-agnostic call + routing; LLMDecision; ask_with_retry
+│   ├── schema.py           # action schemas; parse_overworld_action (strict available_actions)
+│   ├── prompts.py          # battle + overworld/voting prompt builders
+│   └── ascii_map.py        # ASCII tile renderer (harness/debug only — not in LLM prompts)
 ├── procgen/
 │   ├── names.py            # procedural name generation
 │   ├── spritegen.py        # 16x16 enemy sprite generator
@@ -204,7 +247,8 @@ simtank_rpg/
 │   ├── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
 │   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
 │   ├── preview_test.py     # visual harness: party sprite composited onto generated screen → PNG
-│   └── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
+│   ├── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
+│   └── voting_test.py      # voting + journal harness: real LLM, real movement, journal rollover
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
@@ -253,9 +297,10 @@ stream. Get the whole game working in text, then bolt on the web layer.
 8. [x] Cave/dungeon interior generator — rooms, hallways, water, waterfalls, palette
 9. [x] Procgen/engine bridge — data/render split in both generators; `engine/tiles.py` (passability/quality); `engine/worlddb.py` (SQLite world state, replay-guaranteed)
 10. [x] Viewscan — `engine/viewscan.py`: line-of-sight tile scan (N/S/E/W rays, terminates at enterable/blocker/edge); `procgen/preview_test.py`: party sprite preview harness
-11. [ ] Hub scene + free-roam / pet-sim mode
-12. [ ] Voting state machine
-13. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-14. [ ] Memory tiers: short-term journal window + compressed long-term
-15. [ ] SSE web viewer (text panel + canvas tile map)
-16. [ ] (later) player inputs
+11. [x] Voting state machine — `engine/voting.py`: proposal/vote SM, early-lock resolution, threshold logic; overworld LLM prompts + `parse_overworld_action`; `ask_with_retry` + `LLMDecision`; `engine/party_state.py`: `execute_move`; `procgen/voting_test.py`: CLI harness with real LLM + movement
+12. [x] Per-member short-term journal — `engine/journal.py`: `MemberJournal` FIFO window (12 entries), `journals_append` broadcast helper; `llm/prompts.py`: `RECENT EVENTS` section injected into overworld context; engine wiring in `execute_move`; validated with journal rollover in `voting_test.py`
+13. [ ] Hub scene + free-roam / pet-sim mode
+14. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+15. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+16. [ ] SSE web viewer (text panel + canvas tile map)
+17. [ ] (later) player inputs
