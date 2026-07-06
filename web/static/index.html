@@ -1,1 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>simtank_rpg</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; color: #ddd; font-family: monospace;
+         display: flex; flex-direction: column; align-items: center;
+         padding: 16px; gap: 12px; }
+  h1 { font-size: 14px; color: #888; letter-spacing: 2px; }
+  #viewport { position: relative; }
+  #map { display: block; image-rendering: pixelated; }
+  #sprite-layer { position: absolute; top: 0; left: 0;
+                  image-rendering: pixelated; pointer-events: none; }
+  #log { width: 100%; max-width: 768px; height: 160px; overflow-y: auto;
+         background: #1a1a1a; border: 1px solid #333; padding: 8px;
+         font-size: 12px; line-height: 1.6; }
+  #log .propose { color: #8af; }
+  #log .vote    { color: #af8; }
+  #log .resolve { color: #fa8; }
+  #log .screen  { color: #f8f; }
+  #status { font-size: 11px; color: #666; }
+</style>
+</head>
+<body>
+<h1>SIMTANK RPG — OVERWORLD</h1>
 
+<div id="viewport">
+  <canvas id="map"></canvas>
+  <canvas id="sprite-layer"></canvas>
+</div>
+
+<div id="log"></div>
+<div id="status">connecting…</div>
+
+<script src="static/app.js"></script>
+</body>
+</html>

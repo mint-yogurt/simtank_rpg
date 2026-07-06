@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, line-of-sight tile scan, voting state machine, per-member journal, single-screen and multi-screen overworld movement (with seamless crossing) are all in place. Hub/overworld scenes not yet wired into the main game loop.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld loop (propose → vote → move → journal, with seamless multi-screen crossing) is wired into the production runners — `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Hub scene and battle-entry trigger not yet built.
 
 ---
 
@@ -272,8 +272,9 @@ simtank_rpg/
 │           ├── overworld_1_tilerules.txt   # tile name ↔ grid coord map
 │           ├── tiles_cave1.png             # cave/dungeon tileset
 │           └── tiles_cave_rules.txt        # cave tile name ↔ grid coord map
-├── run_cli.py              # dev entry: loop → terminal text
-├── run_web.py              # loop + web server
+├── overworld_loop.py       # production overworld loop (propose→vote→move→journal); shared by both runners
+├── run_cli.py              # dev entry: overworld by default; `battle` arg for single fight
+├── run_web.py              # loop + web server (SSE layer pending; currently runs overworld headlessly)
 ├── secrets.py              # API keys (gitignored)
 ├── .gitignore
 └── README.md
@@ -310,8 +311,10 @@ stream. Get the whole game working in text, then bolt on the web layer.
 11. [x] Voting state machine — `engine/voting.py`: proposal/vote SM, early-lock resolution, threshold logic; overworld LLM prompts + `parse_overworld_action`; `ask_with_retry` + `LLMDecision`; `engine/party_state.py`: `execute_move`; `procgen/voting_test.py`: CLI harness with real LLM + movement
 12. [x] Per-member short-term journal — `engine/journal.py`: `MemberJournal` FIFO window (12 entries), `journals_append` broadcast helper; `llm/prompts.py`: `RECENT EVENTS` section injected into overworld context; engine wiring in `execute_move`; validated with journal rollover in `voting_test.py`
 13. [x] Multi-screen crossing — `execute_move` seamlessly crosses screen edges when a generator is supplied: updates `pos.sx/sy`, calls `enter_screen()` for the adjacent screen, places party at mirrored entry tile, continues remaining steps on new screen; `MoveResult.final_grid` carries the new grid back to callers; SCREEN journal event per crossing; `llm/prompts.py` surfaces open exits as `"crossing available"` in the direction summary; `voting_test.py`: direct crossing assertion test (no LLM) + LLM rounds that naturally span screen boundaries
-14. [ ] Hub scene + free-roam / pet-sim mode
-15. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-16. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
-17. [ ] SSE web viewer (text panel + canvas tile map)
-18. [ ] (later) player inputs
+14. [x] Wire overworld loop into production runners — `overworld_loop.py` extracts the propose→vote→move→journal cycle from the test harness (all test scaffolding removed; starts at walkable center; runs until interrupted); `run_cli.py` defaults to overworld, `battle` arg runs the battle loop; `run_web.py` wired headlessly (SSE layer deferred); confirmed end-to-end: real LLM decisions, 2+ screen crossings through the runner, journal populating, graceful-exit summary
+15. [x] SSE web viewer (Part 1) — `web/server.py`: Flask SSE endpoint with per-client queue fan-out, late-joiner snapshot, heartbeat; screen PNGs rendered server-side via existing Pillow pipeline (per-screen palette applied, cached to `web/static/screens/`); `web/static/app.js` + canvas: two-layer canvas (map + sprite overlay), `billyS1` placeholder sprite, `updateSpriteFrame()` no-op stub; `run_web.py` runs loop in daemon thread alongside Flask; proposer rotation fix (round-robin by index so each member leads in turn); confirmed: `init`→`vote`/`resolve`→tile-by-tile `move`→`screen` on crossing, both screen PNGs visually correct
+16. [ ] **Known issue — overworld oscillation:** after crossing a screen boundary the party tends to immediately reverse direction, oscillating between two screens. Root cause: the journal has no spatial entries (crossing events not written, screen position not in prompt), so the LLM has no memory of where it just came from. Proposed fixes (pick one or combine): **(D)** write a SCREEN journal event on each crossing (`"crossed N → screen (0,-1)"`) so the LLM sees it just arrived; **(E)** inject current `sx/sy` + arrival direction into every prompt context block; **(G)** engine-level cooldown — after crossing in direction X, mark the reverse direction as unavailable for N steps; **(H)** give the party an explicit goal/objective (hardcoded, seed-derived, or LLM-generated at session start) to pull them forward rather than drifting
+17. [ ] Hub scene + free-roam / pet-sim mode
+18. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+19. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+20. [ ] (later) player inputs

@@ -1,8 +1,14 @@
-"""Dev entry point: run the loop, print to terminal."""
+"""Dev entry point: run the loop, print to terminal.
+
+Usage:
+  python run_cli.py            # overworld mode (default)
+  python run_cli.py battle     # battle mode (single fight, then exit)
+"""
 
 import json
 import logging
 import random
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -429,7 +435,8 @@ def _print_journal(journal: Journal) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def _run_battle_main() -> None:
+    """Single battle, then exit."""
     seed = random.randint(0, 2**32 - 1)
     rng = random.Random(seed)
     print(f"SEED: {seed}", flush=True)
@@ -442,6 +449,17 @@ def main() -> None:
     enemy = BattleEnemy(enemy_fighter)
 
     run_battle(party, enemy, rng)
+
+
+def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "overworld"
+
+    if mode == "battle":
+        _run_battle_main()
+    else:
+        from overworld_loop import run_overworld
+        seed = random.randint(0, 2**32 - 1)
+        run_overworld(seed)
 
 
 if __name__ == "__main__":
