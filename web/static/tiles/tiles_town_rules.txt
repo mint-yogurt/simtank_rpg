@@ -24,6 +24,7 @@ placeholders to swap with colours from the palette randomly:
 356d00,
 df7026,
 5ecde4,
+31baa7,
 
 unless a tile has the tag "impassable", it is able to be walked upon freely.
 
@@ -157,7 +158,7 @@ unless a tile has the tag "impassable", it is able to be walked upon freely.
 8,7 = stoneWindow4, impassable # ground floor var of stonewindow2
 9,7 = stoneTopper1, impassable # topper tile for stone buildings if they dont use roof1
 10,7 = stoneTopper2, impassable # topper tile 2 for stone buildings
-11,7 =
+11,7 = stoneWallAccent, impassable # essentially a topper but horizontal for sides of stone buildings
 12,7 = stoneCross1, impassable, scatter, transparentbg # used as topper for stone buildings, as well as scatter decor (ground tile blob agnostic as it has a transparent bg)
 13,7 =
 14,7 =

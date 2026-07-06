@@ -141,7 +141,7 @@ assertions and real overworld screens with ASCII ray overlays.
 
 ### Procedural world generation
 
-Two standalone test harnesses in `procgen/`, both output PNGs to `procgen/out/`.
+Three standalone test harnesses in `procgen/`, all output PNGs to `procgen/out/`.
 
 Both generators expose a data/render split: `generate_*_data(seed)` → dataclass (no PIL), `render_*_data(data, raw_tiles)` → PIL image. The data layer is what `engine/worlddb.py` consumes.
 
@@ -149,6 +149,15 @@ Both generators expose a data/render split: `generate_*_data(seed)` → dataclas
 - Base grass fill → blob placement (lakes with corner cuts, forest blobs, mountain rows, mnt blobs) → dirt patches → feature placement (towns, caves, castles, etc.) → jittered A\* path network → scatter (trees, ponds, individual mountains)
 - Per-screen NES palette: 3 non-adjacent palette cells swapped into placeholder green/blue/brown
 - Stable deterministic seed per (world\_seed, sx, sy) so any screen reproduces exactly
+
+**Town** (`procgen/towngen.py`) — interior town maps:
+- Canvas sized to building count (min 16×14); cropped to actual building bounding box + 5-tile ground margin
+- Healer hut (always present, fixed 3×2) seeds a cluster box; 1–9 additional buildings (houseA, houseB, stone) placed 92% within that cluster, 8% outlier
+- Ground blobs: grass fill, gravel blobs (set-based neighbor derivation to fix overlap artifacts), dirt courtyards/paths
+- Cobble paths via MST on building south-edges: ~50% of edges kept (min 1), one path trails to nearest crop-box boundary
+- Vegetation clusters: density-falloff rings (radius 2–4) of bush/cactus/tall-bush tiles, never blocking building doors
+- Scatter decorations: stumps, chairs, tyres, containers
+- Per-run NES palette: 8 placeholder colours swapped to 8 non-adjacent palette cells; black and white preserved
 
 **Cave / dungeon** (`procgen/cave_test.py`) — interior maps for cave entrances placed on the overworld:
 - Variable-size screen fitted to generated content
@@ -255,6 +264,7 @@ simtank_rpg/
 │   ├── spritegen.py        # 16x16 enemy sprite generator
 │   ├── overworld_test.py   # overworld screen generator — outputs PNGs to procgen/out/
 │   ├── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
+│   ├── towngen.py          # town interior generator — outputs PNGs to procgen/out/
 │   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
 │   ├── preview_test.py     # visual harness: party sprite composited onto generated screen → PNG
 │   ├── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
@@ -306,6 +316,7 @@ stream. Get the whole game working in text, then bolt on the web layer.
 6. [x] Sprite gen (proof of concept)
 7. [x] Overworld map generator — infinite tiled world, NES palette, full feature set
 8. [x] Cave/dungeon interior generator — rooms, hallways, water, waterfalls, palette
+8a. [x] Town interior generator — healer hut, buildings (houseA/B/stone), gravel/dirt/cobble ground, vegetation clusters, MST cobble paths, scatter; 8-colour NES palette
 9. [x] Procgen/engine bridge — data/render split in both generators; `engine/tiles.py` (passability/quality); `engine/worlddb.py` (SQLite world state, replay-guaranteed)
 10. [x] Viewscan — `engine/viewscan.py`: line-of-sight tile scan (N/S/E/W rays, terminates at enterable/blocker/edge); `procgen/preview_test.py`: party sprite preview harness
 11. [x] Voting state machine — `engine/voting.py`: proposal/vote SM, early-lock resolution, threshold logic; overworld LLM prompts + `parse_overworld_action`; `ask_with_retry` + `LLMDecision`; `engine/party_state.py`: `execute_move`; `procgen/voting_test.py`: CLI harness with real LLM + movement
