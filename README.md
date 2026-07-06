@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, line-of-sight tile scan, voting state machine, per-member journal, and overworld movement are all in place. Hub/overworld scenes not yet wired into the main game loop.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld and cave/dungeon map generators are working with tile art, palette randomisation, and full feature scatter. Engine tile rules, SQLite world DB, line-of-sight tile scan, voting state machine, per-member journal, single-screen and multi-screen overworld movement (with seamless crossing) are all in place. Hub/overworld scenes not yet wired into the main game loop.
 
 ---
 
@@ -28,7 +28,7 @@ debuggable.
 
 Each party member's turn works like this:
 
-1. `llm/prompts.py` renders a compact context — member's own stats, party HP, situation, open vote tally if any, member's short-term journal window, and a numbered action menu that exactly matches the valid `available_actions` set. The character sheet (personality + special move) lives in the system prompt, not repeated here. Target: ~600–800 tokens in.
+1. `llm/prompts.py` renders a compact context — member's own stats, party HP, situation, open vote tally if any, member's short-term journal window, and a numbered action menu that exactly matches the valid `available_actions` set. Edge directions with an open screen exit show `"can step? YES — screen edge (crossing available)"` so the LLM can propose crossing moves. The character sheet (personality + special move) lives in the system prompt, not repeated here. Target: ~600–800 tokens in.
 2. `llm/client.py` sends (system prompt, context) to the configured provider — either Ollama (local, primary) or Mistral API. `ask_with_retry` validates the response, reprompts once on bad output, then falls back to a safe default — never crashes. `LLMDecision` dataclass records raw output, retry, and whether fallback was used.
 3. `llm/schema.py` parses the JSON response and validates the action against the `available_actions` set passed in — structural enforcement means the LLM cannot produce an action that isn't valid this turn even if it tries.
 4. The controller (harness or future `game.py`) executes the resolved action. The engine does all resolution; the LLM only picked.
@@ -88,12 +88,21 @@ Validated end-to-end against a real overworld screen in `procgen/voting_test.py`
 
 ### Overworld movement (`engine/party_state.py`)
 
-`execute_move(pos, direction, steps, grid, db, journals=None, tick=0)` steps the
-party one tile at a time, scanning before each step. Stops on blocker, screen
-edge, or arrival at an enterable feature (which marks it entered in the DB).
-Mutates `PartyPos` in place. Accepts an optional journals dict and tick — MOVE and
-ENTERED events fire inside the engine function so any caller (harness or future
-game loop) gets journaling for free.
+`execute_move(pos, direction, steps, grid, db, journals=None, tick=0, generator=None)`
+steps the party one tile at a time, scanning before each step. Stops on blocker,
+screen edge (no generator), or arrival at an enterable feature (which marks it
+entered in the DB). Mutates `PartyPos` in place.
+
+**Multi-screen crossing:** when `generator` is provided and a step would exit the
+screen edge, the function crosses seamlessly instead of stopping — `pos.sx/sy`
+updates, `enter_screen()` generates/caches the adjacent screen via `get_or_create_screen`,
+and the party appears at the mirrored entry tile (same column for N/S crossings,
+same row for E/W). Remaining steps continue on the new screen. The crossing counts
+as one step. `MoveResult.final_grid` always carries the grid the party ended on —
+callers use it to refresh their local grid reference after any movement.
+
+MOVE and ENTERED events fire at each stop. SCREEN events fire on each crossing.
+All are journal-broadcast-safe (journals=None is fine in tests).
 
 ### Per-member journal (`engine/journal.py`)
 
@@ -103,7 +112,8 @@ Two independent layers:
   narrative out (`PARTY DEFEATED LVL 2 GOBLIN.`). Unbounded; for display/recap.
 - **`MemberJournal`** — per-member FIFO rolling window (default 12 entries,
   ~120 tokens). Each entry: `(tick, event_type, terse_desc)`. Events: MOVE,
-  ENTERED, PROPOSE, VOTE, RESOLVED. Injected into each member's overworld prompt
+  ENTERED, PROPOSE, VOTE, RESOLVED, SCREEN. SCREEN fires on every crossing
+  (`"crossed N → screen (0,-1)"`). Injected into each member's overworld prompt
   as `RECENT EVENTS (your memory)`. Oldest entries drop automatically when the
   window is full. Battle events will be wired when the battle loop integrates.
 
@@ -299,8 +309,9 @@ stream. Get the whole game working in text, then bolt on the web layer.
 10. [x] Viewscan — `engine/viewscan.py`: line-of-sight tile scan (N/S/E/W rays, terminates at enterable/blocker/edge); `procgen/preview_test.py`: party sprite preview harness
 11. [x] Voting state machine — `engine/voting.py`: proposal/vote SM, early-lock resolution, threshold logic; overworld LLM prompts + `parse_overworld_action`; `ask_with_retry` + `LLMDecision`; `engine/party_state.py`: `execute_move`; `procgen/voting_test.py`: CLI harness with real LLM + movement
 12. [x] Per-member short-term journal — `engine/journal.py`: `MemberJournal` FIFO window (12 entries), `journals_append` broadcast helper; `llm/prompts.py`: `RECENT EVENTS` section injected into overworld context; engine wiring in `execute_move`; validated with journal rollover in `voting_test.py`
-13. [ ] Hub scene + free-roam / pet-sim mode
-14. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-15. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
-16. [ ] SSE web viewer (text panel + canvas tile map)
-17. [ ] (later) player inputs
+13. [x] Multi-screen crossing — `execute_move` seamlessly crosses screen edges when a generator is supplied: updates `pos.sx/sy`, calls `enter_screen()` for the adjacent screen, places party at mirrored entry tile, continues remaining steps on new screen; `MoveResult.final_grid` carries the new grid back to callers; SCREEN journal event per crossing; `llm/prompts.py` surfaces open exits as `"crossing available"` in the direction summary; `voting_test.py`: direct crossing assertion test (no LLM) + LLM rounds that naturally span screen boundaries
+14. [ ] Hub scene + free-roam / pet-sim mode
+15. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+16. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+17. [ ] SSE web viewer (text panel + canvas tile map)
+18. [ ] (later) player inputs
