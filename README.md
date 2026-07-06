@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld loop (propose → vote → move → journal, with seamless multi-screen crossing) is wired into the production runners — `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Hub scene and battle-entry trigger not yet built.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Hub scene and battle-entry trigger not yet built.
 
 ---
 
@@ -103,6 +103,39 @@ callers use it to refresh their local grid reference after any movement.
 
 MOVE and ENTERED events fire at each stop. SCREEN events fire on each crossing.
 All are journal-broadcast-safe (journals=None is fine in tests).
+
+### Goal-driven navigation — three-tier loop (`overworld_loop.py`, `engine/pathfinding.py`, `engine/goal.py`)
+
+The overworld loop is organised into three tiers so LLM calls happen only at decision points, not on every movement step.
+
+**Tier 1 — Goal-setting.** When the party has no active goal, the leader calls the LLM once to pick a target screen (`goal_type: explore | travel`, `target_sx/sy`). The result is a `Goal` object that persists until it completes, is abandoned, or is replaced. Single-member proposal in the current build; multi-member deliberation stubbed for a later job.
+
+**Tier 2 — Silent execution.** `screen_direction_toward(sx, sy, target_sx, target_sy, exits)` picks the next screen exit using a greedy axis-preference rule (larger delta wins; tie broken by N/W). `bfs_to_exit(grid, row, col, direction)` finds the shortest intra-screen path to the target exit edge — no LLM call. `path_to_segments` compresses the BFS path into a minimal list of `(direction, steps)` pairs for `execute_move`. The party crosses screens automatically; the loop refreshes the grid from `MoveResult.final_grid` after each move.
+
+`_find_connected_start(grid, rows, cols)` seeds a BFS from every walkable exit-edge tile inward to find the exit-connected component, then returns the tile in that component closest to screen center. Used for initial party placement and to recover from post-crossing disconnected-pocket landings (a single reconnect attempt before triggering `path_blocked`).
+
+**Tier 3 — Checkpoint discussion.** Four trigger points pause execution and call the LLM:
+
+| Trigger | When | Terminal? |
+|---|---|---|
+| `goal_reached` | Party is already on the target screen | Yes — goal marked complete before discussion |
+| `path_blocked` | BFS finds no path to exit after reconnect attempt | Yes — goal abandoned |
+| `all_exits_blocked` | `screen_direction_toward` returns None (all exits closed) | Yes — goal abandoned |
+| `branch_point` | Both axes equal distance to goal (`|dx|==|dy|`) AND both exits open | No — goal stays active unless outcome is abandon/modify |
+
+The LLM returns `continue | abandon | modify`. `modify` produces a new `Goal` immediately (skipping Tier 1). `branch_point` fires at most once per `(screen, target)` pair; `branch_points_seen` prevents re-triggering the same position.
+
+### Navigation log (`engine/navlog.py`)
+
+Append-only, unbounded in-memory log of overworld events. The curated context builder reads from it; nothing ever trims it.
+
+Notable event types: `SCREEN` (screen crossing), `GOAL` (new goal set), `CHECKPOINT` (discussion fired), `ENTERED` (arrived at enterable feature). `MOVE` events are excluded from "notable" — too numerous to surface to the LLM. `NavLog.last_notable(n)` returns the last *n* notable entries, oldest first.
+
+### Curated context (`engine/context.py`)
+
+`build_curated_context(active_goal, navlog, db, world_seed, party, pos_sx, pos_sy)` assembles a `CuratedContext` dataclass from live world state. This is the **only** feed into goal-setting and checkpoint prompts — no raw journal dumps, no wholesale DB queries in prompt builders.
+
+Contains: current screen position, active goal, last 8 notable NavLog entries (formatted strings), known enterable POIs with visited flag, party HP snapshot, visited-screen count and a 12-item sample. `llm/prompts.py` renders `build_goal_context(member, ctx)` and `build_checkpoint_context(member, ctx, reason)` directly from this object.
 
 ### Per-member journal (`engine/journal.py`)
 
@@ -245,6 +278,10 @@ simtank_rpg/
 │   ├── combat.py           #
 │   ├── voting.py           # proposal/vote state machine; available_actions()
 │   ├── journal.py          # Journal (global narrative) + MemberJournal (per-member LLM window)
+│   ├── navlog.py           # append-only navigation event log (SCREEN/GOAL/CHECKPOINT/ENTERED)
+│   ├── context.py          # curated context builder → CuratedContext fed to goal/checkpoint prompts
+│   ├── goal.py             # Goal dataclass (goal_type, target_sx/sy, status lifecycle)
+│   ├── pathfinding.py      # bfs_to_exit, path_to_segments, screen_direction_toward
 │   ├── memory.py           # builds the context blob for each LLM call
 │   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
 │   ├── viewscan.py         # line-of-sight tile scan (N/S/E/W rays → ViewScan dataclass)
@@ -268,7 +305,8 @@ simtank_rpg/
 │   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
 │   ├── preview_test.py     # visual harness: party sprite composited onto generated screen → PNG
 │   ├── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
-│   └── voting_test.py      # voting + journal harness: real LLM, real movement, journal rollover
+│   ├── voting_test.py      # voting + journal harness: real LLM, real movement, journal rollover
+│   └── movement_test.py    # BFS pathfinding + screen-crossing harness (no LLM)
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
@@ -324,8 +362,9 @@ stream. Get the whole game working in text, then bolt on the web layer.
 13. [x] Multi-screen crossing — `execute_move` seamlessly crosses screen edges when a generator is supplied: updates `pos.sx/sy`, calls `enter_screen()` for the adjacent screen, places party at mirrored entry tile, continues remaining steps on new screen; `MoveResult.final_grid` carries the new grid back to callers; SCREEN journal event per crossing; `llm/prompts.py` surfaces open exits as `"crossing available"` in the direction summary; `voting_test.py`: direct crossing assertion test (no LLM) + LLM rounds that naturally span screen boundaries
 14. [x] Wire overworld loop into production runners — `overworld_loop.py` extracts the propose→vote→move→journal cycle from the test harness (all test scaffolding removed; starts at walkable center; runs until interrupted); `run_cli.py` defaults to overworld, `battle` arg runs the battle loop; `run_web.py` wired headlessly (SSE layer deferred); confirmed end-to-end: real LLM decisions, 2+ screen crossings through the runner, journal populating, graceful-exit summary
 15. [x] SSE web viewer (Part 1) — `web/server.py`: Flask SSE endpoint with per-client queue fan-out, late-joiner snapshot, heartbeat; screen PNGs rendered server-side via existing Pillow pipeline (per-screen palette applied, cached to `web/static/screens/`); `web/static/app.js` + canvas: two-layer canvas (map + sprite overlay), `billyS1` placeholder sprite, `updateSpriteFrame()` no-op stub; `run_web.py` runs loop in daemon thread alongside Flask; proposer rotation fix (round-robin by index so each member leads in turn); confirmed: `init`→`vote`/`resolve`→tile-by-tile `move`→`screen` on crossing, both screen PNGs visually correct
-16. [ ] **Known issue — overworld oscillation:** after crossing a screen boundary the party tends to immediately reverse direction, oscillating between two screens. Root cause: the journal has no spatial entries (crossing events not written, screen position not in prompt), so the LLM has no memory of where it just came from. Proposed fixes (pick one or combine): **(D)** write a SCREEN journal event on each crossing (`"crossed N → screen (0,-1)"`) so the LLM sees it just arrived; **(E)** inject current `sx/sy` + arrival direction into every prompt context block; **(G)** engine-level cooldown — after crossing in direction X, mark the reverse direction as unavailable for N steps; **(H)** give the party an explicit goal/objective (hardcoded, seed-derived, or LLM-generated at session start) to pull them forward rather than drifting
-17. [ ] Hub scene + free-roam / pet-sim mode
-18. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-19. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
-20. [ ] (later) player inputs
+16. [x] Goal-driven navigation (JOB 11a) — replaces the propose→vote loop with a three-tier system that eliminates oscillation: `engine/goal.py` (`Goal` dataclass, status lifecycle); `engine/pathfinding.py` (`bfs_to_exit`, `path_to_segments`, `screen_direction_toward`); `overworld_loop.py` rewritten — Tier 1 LLM goal-setting, Tier 2 silent BFS execution, Tier 3 checkpoint stubs; `_find_connected_start` seeds BFS from exit-edge tiles inward so the party always starts exit-connected (fixes disconnected-pocket livelock on procgen maps); post-crossing reconnect step recovers from disconnected landing tiles; `procgen/movement_test.py`: BFS + crossing integration tests (no LLM)
+17. [x] Curated context + checkpoint discussion (JOB 11b) — `engine/navlog.py`: append-only unbounded event log (SCREEN/GOAL/CHECKPOINT/ENTERED; MOVE excluded); `engine/context.py`: `build_curated_context()` assembles `CuratedContext` from NavLog + DB + party state — the sole feed for all goal/checkpoint prompts; `llm/prompts.py`: `build_goal_context(member, ctx)` and `build_checkpoint_context(member, ctx, reason)` updated to consume `CuratedContext`; `llm/schema.py`: `parse_checkpoint_decision` (continue/abandon/modify with goal fields for modify); four checkpoint triggers in the main loop with `continue|abandon|modify` outcomes; branch-point trigger fires only on axis tie (`|dx|==|dy|`) — genuine ambiguity, not every diagonal step; `branch_points_seen` dedup prevents re-triggering per `(screen, target)` pair
+18. [ ] Hub scene + free-roam / pet-sim mode
+19. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
+20. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+21. [ ] (later) player inputs

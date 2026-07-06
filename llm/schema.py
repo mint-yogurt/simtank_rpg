@@ -115,3 +115,96 @@ def parse_overworld_action(raw: str | None, available_actions: set) -> dict | No
         return {"action": "WAIT"}
 
     return None
+
+
+_GOAL_TYPES = {"explore", "travel"}
+_CHECKPOINT_DECISIONS = {"continue", "abandon", "modify"}
+
+
+def parse_checkpoint_decision(raw: str | None) -> dict | None:
+    """Parse and validate a checkpoint discussion LLM response.
+
+    Expected JSON:
+      {"decision": "continue"|"abandon"|"modify",
+       "goal_type": "explore"|"travel",   <- required when decision=="modify"
+       "target_sx": int,                   <- required when decision=="modify"
+       "target_sy": int,                   <- required when decision=="modify"
+       "reasoning": "..."}                 <- always optional
+
+    Returns a dict with 'decision' and 'reasoning' keys, plus goal fields when
+    decision is 'modify'. Returns None on any validation failure.
+    """
+    if raw is None:
+        return None
+
+    text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", raw.strip(), flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("checkpoint: JSON parse failed. Raw: %.200s", raw)
+        return None
+
+    decision = str(parsed.get("decision", "")).lower()
+    if decision not in _CHECKPOINT_DECISIONS:
+        logger.warning("checkpoint: invalid decision %r", decision)
+        return None
+
+    reasoning = str(parsed.get("reasoning", ""))[:200]
+    result: dict = {"decision": decision, "reasoning": reasoning}
+
+    if decision == "modify":
+        goal_type = str(parsed.get("goal_type", "")).lower()
+        if goal_type not in _GOAL_TYPES:
+            logger.warning("checkpoint: modify missing valid goal_type")
+            return None
+        try:
+            target_sx = int(parsed["target_sx"])
+            target_sy = int(parsed["target_sy"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("checkpoint: modify missing target coords")
+            return None
+        result.update({"goal_type": goal_type,
+                        "target_sx": target_sx,
+                        "target_sy": target_sy})
+
+    return result
+
+
+def parse_goal_decision(raw: str | None) -> dict | None:
+    """Parse and validate a goal-setting LLM response.
+
+    Expected JSON:
+      {"goal_type": "explore"|"travel", "target_sx": int, "target_sy": int,
+       "reasoning": "..."}
+
+    Returns a dict with those keys, or None on any validation failure.
+    """
+    if raw is None:
+        return None
+
+    text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", raw.strip(), flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("goal: JSON parse failed. Raw: %.200s", raw)
+        return None
+
+    goal_type = str(parsed.get("goal_type", "")).lower()
+    if goal_type not in _GOAL_TYPES:
+        logger.warning("goal: invalid goal_type %r", goal_type)
+        return None
+
+    try:
+        target_sx = int(parsed["target_sx"])
+        target_sy = int(parsed["target_sy"])
+    except (KeyError, TypeError, ValueError):
+        logger.warning("goal: bad target coords in %r", parsed)
+        return None
+
+    reasoning = str(parsed.get("reasoning", ""))[:200]
+    return {
+        "goal_type": goal_type,
+        "target_sx": target_sx,
+        "target_sy": target_sy,
+        "reasoning": reasoning,
+    }

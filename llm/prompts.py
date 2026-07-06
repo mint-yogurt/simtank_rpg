@@ -212,3 +212,154 @@ def build_overworld_context(member, party: list, vs, voting_state,
     parts.append("")
     parts.append("Respond with exactly one JSON object and nothing else.")
     return "\n".join(parts)
+
+
+# ── goal-setting ──────────────────────────────────────────────────────────────
+
+def build_goal_system_prompt(member) -> str:
+    lines = [f"You are {member.name} (LVL {member.lvl}) in an exploration party."]
+    if getattr(member, 'personality', None):
+        lines.append(f"Personality: {member.personality}")
+    lines.append(
+        "Your party needs a navigation goal. Choose a target screen to travel toward.\n"
+        "Output JSON only — no other text, no explanation."
+    )
+    return "\n".join(lines)
+
+
+def build_goal_context(member, ctx, previous_goal=None) -> str:
+    """Build the goal-setting prompt for a single member.
+
+    Args:
+        member:        the proposing member (needs .name for '← YOU' marker)
+        ctx:           CuratedContext from build_curated_context()
+        previous_goal: Goal that just ended, or None
+    """
+    parts = []
+
+    parts.append(f"CURRENT POSITION: screen ({ctx.pos_sx},{ctx.pos_sy})")
+
+    parts.append("")
+    parts.append("PARTY STATUS")
+    for m in ctx.party_status:
+        status = "[DEAD]" if not m['alive'] else f"HP {m['hp']}/{m['max_hp']}"
+        you = " ← YOU" if m['name'] == member.name else ""
+        parts.append(f"  {m['name']}: LVL {m['lvl']}  {status}{you}")
+
+    if ctx.pois:
+        parts.append("")
+        parts.append("KNOWN POINTS OF INTEREST (enterable features)")
+        for p in ctx.pois[:16]:
+            visited = " (visited)" if p['visited'] else ""
+            parts.append(f"  screen ({p['sx']},{p['sy']}): {p['feature_type']}{visited}")
+
+    if ctx.visited_count:
+        parts.append("")
+        parts.append(f"VISITED SCREENS ({ctx.visited_count} total)")
+        parts.append("  " + "  ".join(f"({x},{y})" for x, y in ctx.visited_sample))
+        if ctx.visited_count > 12:
+            parts.append(f"  ... and {ctx.visited_count - 12} more")
+
+    if ctx.recent_events:
+        parts.append("")
+        parts.append("RECENT EVENTS")
+        for e in ctx.recent_events:
+            parts.append(f"  {e}")
+
+    if previous_goal is not None:
+        parts.append("")
+        parts.append("PREVIOUS GOAL")
+        parts.append(f"  {previous_goal.summary()}")
+
+    parts.append("")
+    parts.append("CHOOSE A NAVIGATION GOAL")
+    parts.append("  goal_type 'explore': head into unexplored territory")
+    parts.append("  goal_type 'travel':  return to a known screen or POI")
+    parts.append("  target_sx, target_sy: screen coordinates (may be unvisited)")
+    parts.append("")
+    parts.append(
+        '  {"goal_type": "explore"|"travel", '
+        '"target_sx": int, "target_sy": int, "reasoning": "brief"}'
+    )
+    parts.append("")
+    parts.append("Respond with exactly one JSON object and nothing else.")
+    return "\n".join(parts)
+
+
+# ── checkpoint discussion ─────────────────────────────────────────────────────
+
+_CHECKPOINT_REASON_DESC: dict[str, str] = {
+    'goal_reached':       'Your party has arrived at the goal destination.',
+    'branch_point':       'Multiple paths forward — a decision is needed.',
+    'path_blocked':       'No path found through this screen toward the goal.',
+    'screen_blocked':     'No path found through this screen toward the goal.',
+    'all_exits_blocked':  'All exits from this screen are closed.',
+}
+
+
+def build_checkpoint_system_prompt(member) -> str:
+    lines = [f"You are {member.name} (LVL {member.lvl}) making a navigation decision for your party."]
+    if getattr(member, 'personality', None):
+        lines.append(f"Personality: {member.personality}")
+    lines.append(
+        "Assess the situation and decide whether to continue, abandon, or modify the current goal.\n"
+        "Output JSON only — no other text, no explanation."
+    )
+    return "\n".join(lines)
+
+
+def build_checkpoint_context(member, ctx, reason: str) -> str:
+    """Build the checkpoint discussion prompt.
+
+    Args:
+        member:  the deciding member (needs .name for '← YOU' marker)
+        ctx:     CuratedContext from build_curated_context()
+        reason:  checkpoint trigger name (e.g. 'goal_reached', 'branch_point')
+    """
+    parts = []
+
+    situation = _CHECKPOINT_REASON_DESC.get(reason, reason)
+    parts.append(f"SITUATION: {situation}")
+    parts.append(f"CURRENT POSITION: screen ({ctx.pos_sx},{ctx.pos_sy})")
+
+    parts.append("")
+    if ctx.active_goal:
+        parts.append(f"CURRENT GOAL: {ctx.active_goal.summary()}")
+    else:
+        parts.append("CURRENT GOAL: none")
+
+    parts.append("")
+    parts.append("PARTY STATUS")
+    for m in ctx.party_status:
+        status = "[DEAD]" if not m['alive'] else f"HP {m['hp']}/{m['max_hp']}"
+        you = " ← YOU" if m['name'] == member.name else ""
+        parts.append(f"  {m['name']}: LVL {m['lvl']}  {status}{you}")
+
+    if ctx.recent_events:
+        parts.append("")
+        parts.append("RECENT EVENTS")
+        for e in ctx.recent_events:
+            parts.append(f"  {e}")
+
+    if ctx.pois:
+        parts.append("")
+        parts.append("KNOWN POINTS OF INTEREST")
+        for p in ctx.pois[:16]:
+            visited = " (visited)" if p['visited'] else ""
+            parts.append(f"  screen ({p['sx']},{p['sy']}): {p['feature_type']}{visited}")
+
+    parts.append("")
+    parts.append("DECIDE")
+    parts.append("  continue — keep current goal, proceed as planned")
+    parts.append("  abandon  — drop goal; party will set a new one next")
+    parts.append("  modify   — set a new goal now (provide target below)")
+    parts.append("")
+    parts.append(
+        '  {"decision": "continue"|"abandon"|"modify", '
+        '"goal_type": "explore"|"travel", '
+        '"target_sx": int, "target_sy": int, "reasoning": "brief"}'
+    )
+    parts.append("  (goal_type/target only required when decision is modify)")
+    parts.append("")
+    parts.append("Respond with exactly one JSON object and nothing else.")
+    return "\n".join(parts)
