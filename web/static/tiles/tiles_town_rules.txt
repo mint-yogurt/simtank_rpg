@@ -1,0 +1,251 @@
+area blobs: 
+<lawn> - grass tiles in front of every <house> tile, as well as randomly filling the town maps
+<gravel> - gravel tiles - used for driveways and streets and occasional random blobs. 
+<cobble> - cobble stone floor - random cobble floor blobs in towns, 
+<dirt> spawns within large grass blobs. either self contained with corners, or connects to another dirt blob via dirt paths.
+not all towns need all of these blobs, bigger towns will have most of them. both houseA and B equally likely
+
+all the area ground blobs are spawned before any buildings are spawned. buildings are placed on top of ground tiles
+
+stone buildings: sometimes rectangular, square, even pyramidal. ocassionally has short 2-3 tile towers made of stoneWindow tiles. sometimes has roof1, other times no roof and just the stone building topper tiles
+
+house A: can be as small as 2x2 (using exclusive roof tiles for this size) and other varying sizes
+house B: identical to houseA, but using variant tiles.
+
+healer huts: one in each town generation. MUST have walkable tiles in front of it so players can walk directly up to it. not random size, always 3 wide by 2 tall using each of the tiles labeled for healer hut
+
+placeholder colours:
+these 2 never change: black 000000, white fcfcfc
+placeholders to swap with colours from the palette randomly:
+86bb2d,
+6f5c00,
+342800,
+787878,
+356d00,
+df7026,
+5ecde4,
+
+unless a tile has the tag "impassable", it is able to be walked upon freely.
+
+0,0 = grass1 # the basic grass tile, variant 1. randomly replaced by the other 2-3-4 tiles for variation
+1,0 = grass2 
+2,0 = grass3
+3,0 = grass4
+4,0 = cobble1 # cobblestone floor, main building block of cobble blobs
+5,0 = cobbleNW #nw corner of cobble blobs when they touch grass tiles or any house/building
+6,0 = cobbleNE
+7,0 = cobbleSW
+8,0 = cobbleSE
+9,0 = gravel1 # main tile of gravel blobs and road/street blobs; variant 1
+10,0 = gravel2 # variant tile of gravel1
+11,0 = gravelNW # nw corner of gravel blobs, used for when gravel meets grass
+12,0 = gravelNE
+13,0 = gravelSW
+14,0 = gravelSE
+15,0 = gravelW # tile used for when gravel borders grass tiles (e.g.: there is a grass tile directly to the west of a gravel tile). .rotated for other directions.
+
+0,1 = tire1, scatter # scatter tile for randomly placing in grass blobs
+1,1 = stump, scatter # scatter decoration tile for grass blobs
+2,1 = chair1, scatter # scatter decoration for grass blobs
+3,1 = fenceTile1, impassable # fence tile, used for horizontal borders ocassionally of lawns/grass blobs. never runs vertical lines (n to s) always W to E. terminates in fenceEnd1
+4,1 = fenceEnd1, impassable # terminus for horizontal picket fences
+5,1 =
+6,1 =
+7,1 =
+8,1 =
+9,1 =
+10,1 =
+11,1 =
+12,1 =
+13,1 =
+14,1 =
+15,1 =
+
+0,2 = trashcanFull, container # container randomly spawning in grass blobs
+1,2 = trashcanOpen, container, scatter # replaces trashcanFull once looted, and also randomly used as scatter terrain in grass blobs
+2,2 = toiletFull, container # same function as trashcanFull, different art
+3,2 = toiletOpen, container # same function as trashcanOpen
+4,2 = box1, container, placeholder # unused in towngen at this time
+5,2 = sign1, interactable, impassable # readable sign. rarely spawns in glass blobs near houses
+6,2 =
+7,2 =
+8,2 =
+9,2 =
+10,2 =
+11,2 =
+12,2 =
+13,2 =
+14,2 =
+15,2 =
+
+0,3 = bushDead1, scatter, vegetation # random scatter terrain for grass blobs. clusters near other tiles with <vegetation> tag
+1,3 = bush1, scatter, vegetation # same as bushDead1
+2,3 = bush2, scatter, vegetation
+3,3 = bushTall1, scatter, vegetation, impassable, # southmost tile of <bushTall1> blobs. always has bushTall1Top on top of it
+4,3 = bushTall1Top, scatter, vegetation, impassable # topper for bushTall1
+5,3 = deadplant1, scatter, vegetation
+6,3 = cactus1, scatter, vegetation, impassable # used as base and mid of cactus1 blobs. max 3 high, min 2, with cactus1top as the top of tile
+7,3 = cactus1top, vegetation # topper for cactus1 blobs
+8,3 = bushTall2, scatter, vegetation, impassable # base of bushTall2 blobs. max 4 high, min 2. only spawns inside grass blobs.
+9,3 = bushTall2Mid, scatter, vegetation, impassable # mid tile for when a bushTall2 is higher than 2
+10,3 = bushTall2Top, scatter, vegetation, #topper tile for all bushTall2 blobs
+11,3 = 
+12,3 = 
+13,3 = 
+14,3 =
+15,3 =
+
+0,4 = dirtpathHorizontal, # horizontal running dirt paths. connects to itself, dirtCorner and dirtConnect tiles. spawns within grass blobs of sufficient size
+1,4 = dirthpathVertical, # occasionally terminates in <door> tiles of buildings
+2,4 = dirtCornerW+N # connects paths and dirtConnect tiles.. this orientation connects to a dirt tile to its west and north. rotated for other orientations
+3,4 = dirtConnectW # connects dirt blobs to paths/other dirt blobs on its west face. Rotated 180 for use on E side
+4,4 = dirtConnectN # same as above but for connecting to north paths or other dirt blobs. rotated 180 degrees for south connections
+5,4 = dirtNW # northmost corner of dirt blobs when inside grass blobs
+6,4 = dirtN
+7,4 = dirtNE
+8,4 = dirtW
+9,4 = dirtmid #main tiling dirt tile.
+10,4 = dirtE
+11,4 = dirtSW
+12,4 = dirtS
+13,4 = dirtSE
+14,4 =
+15,4 =
+
+0,5 = roof1, impassable # one of the roof options for buildings. can be on stone buildings, houseA and HouseB
+1,5 = roof1topper, transparentbg, # always above roof1 tiles. can be walked on, not impassable like other roof tiles. transparent, so can see the walkable tiles behind it (
+2,5 = roof1transitionW, impassable # transition between side-facing-cameras roof. always has a mirrored version of itself directly on the tile to it's east.
+3,5 = roof1side, houseA, impassable # unused, placeholder. ignore this tile, do not place
+4,5 = roof2, impassable # one of the roof options for houses
+5,5 = roof2topper, transparentbg, # can be walked on. always spawns on top of roof2 tiles. transparent, so can see the ground tile behind it
+6,5 = roof2transitionW, houseA, impassable # side-facing roof. always has roof2transitionE to it's right. used in houses of any size.
+7,5 = roof2transitionE, houseA, impassable # right-hand tile for roof2transitionW
+8,5 = roof2sideW, houseA, transparentbg, impassable # left-hand side tile for 2x wide houses
+9,5 = roof2sideE, houseA, transparentbg, impassable #right-hand side tile for 2 tile wide houses
+10,5 = roof2transition2W, houseB, impassable # same as roof2transitionW for houseB constructs. always has roof2transtition2E next to it
+11,5 = roof2transition2E, houseB, impassable #
+12,5 = roof2side2W, houseB, transparentbg, impassable # houseb variant, always has roof2side2E next to it
+13,5 = roof2side2E, houseB, transparentbg, impassable #
+14,5 = # unused for now
+15,5 = # unused for now
+
+0,6 = door1, houseA, impassable # door for houseA constructions
+1,6 = wallA1, houseA, impassable # basic construction tile for houseA constructions
+2,6 = windowA1, houseA, impassable # randomly placed window for House A constructions
+3,6 = windowA2, houseA, impassable # variant for windowA1
+4,6 = wallA2, houseA, impassable # cracked wall variant for wallA1
+5,6 = wallA3, houseA, impassable # ground-floor version of wallA1
+6,6 = windowA3, houseA, impassable # ground-floor version of windowA1
+7,6 = windowA4, houseA, impassable # ground floor variant of windowA2
+8,6 = wallA4, houseA, impassable # ground floor var of wallA2
+9,6 = garagedoorA_W, houseA, impassable # unused for now
+10,6 = # unused for now
+11,6 = # unused for now
+12,6 = # unused for now
+13,6 = # unused for now
+14,6 = # unused for now
+15,6 = # unused for now
+
+0,7 = doorStone, impassable # door for stone buildings. can only spawn on lowest level, somtimes directly next to another door tile. 1-3 doors per stone building, small buildings only have 1 door
+1,7 = stoneBricks1, impassable # main tile for stone buildings
+2,7 = stonebricks2, impassable # main tile for stone buildings var 2. randomly mixed with stoneBricks1
+3,7 = stoneWindow1, impassable # window decor for stone buildings
+4,7 = stoneWindow2, impassable # window decor var 2 for stone buildings
+5,7 = stoneBricks3, impassable # ground floor version of stoneBricks1
+6,7 = stoneBricks4, impassable # ground floor verison of stoneBricks2
+7,7 = stoneWindow3, impassable # ground floor variant of stonewindow1
+8,7 = stoneWindow4, impassable # ground floor var of stonewindow2
+9,7 = stoneTopper1, impassable # topper tile for stone buildings if they dont use roof1
+10,7 = stoneTopper2, impassable # topper tile 2 for stone buildings
+11,7 =
+12,7 = stoneCross1, impassable, scatter, transparentbg # used as topper for stone buildings, as well as scatter decor (ground tile blob agnostic as it has a transparent bg)
+13,7 =
+14,7 =
+15,7 =
+
+0,8 = door2, houseB, impassable # door for houseB constructions
+1,8 = wallB1, houseB, impassable # basic construction tile for houseB constructions
+2,8 = windowB1, houseB, impassable # randomly placed window for House B constructions
+3,8 = windowB2, houseB, impassable # variant for windowA1
+4,8 = wallB2, houseB, impassable # cracked wall variant for wallA1
+5,8 = wallB3, houseB, impassable # ground-floor version of wallA1
+6,8 = windowB3, houseB, impassable # ground-floor version of windowA1
+7,8 = windowB4, houseB, impassable # ground floor variant of windowA2
+8,8 = wallB4, houseB, impassable # ground floor var of wallA2
+9,8 = garagedoorB_W, houseB, impassable # unused for now
+10,8 = # unused for now
+11,8 = # unused for now
+12,8 = # unused for now
+13,8 = # unused for now
+14,8 = # unused for now
+15,8 = # unused for now
+
+
+
+0,9 = # unused for now
+1,9 = # unused for now
+2,9 =
+3,9 =
+4,9 =
+5,9 =
+6,9 =
+7,9 =
+8,9 =
+9,9 =
+10,9 =
+11,9 =
+12,9 =
+13,9 =
+14,9 =
+15,9 =
+
+0,10 = # unused for now
+1,10 = # unused for now
+2,10 = # unused for now
+3,10 = healerHutroof_W, impassable, transparentbg, # roof tile for W side of healer hut roof
+4,10 = healerHutroof_mid, impassable, transparentbg, # mid tile for healer huts
+5,10 = healerHutroof_E, impassable, transparentbg, # east tile for healer hut roofs. transparent bg so ground tile agnostic
+6,10 = # unused
+7,10 = pizzaSignW, impassable, transparentbg, # left side of pizza sign. spawns near healer huts, ground tile agnostic
+8,10 = pizzaSignmid, impassable, # mid of pizza sign
+9,10 = pizzaSignE, impassable, transparentbg, # right hand side of pizza sign
+10,10 =
+11,10 =
+12,10 =
+13,10 =
+14,10 =
+15,10 =
+
+0,11 =
+1,11 =
+2,11 =
+3,11 = healerHutwall_W, impassable, transparentbg, # outer west side of healer hut. ground area blob agnostic, may spawn on any ground blob
+4,11 = healerHutwallMid, HealerNPCspawn, impassable, transparentbg, # middle of healer hut, where the healer npc will stand on top of. always reachable, meaning clear walkable tile directly south of it 
+5,11 = healerHutwall_E, impassable, transparentbg,
+6,11 =
+7,11 =
+8,11 = pizzaSignPole, impassable, transparentbg, # stacks 1-2 tiles high. always south of pizzaSignmid (pole that holds the sign up.)
+9,11 =
+10,11 = 
+11,11 =
+12,11 =
+13,11 =
+14,11 =
+15,11 =
+
+0,12 =
+1,12 =
+2,12 =
+3,12 =
+4,12 =
+5,12 =
+6,12 =
+7,12 =
+8,12 =
+9,12 =
+10,12 =
+11,12 =
+12,12 =
+13,12 =
+14,12 =
+15,12 =
