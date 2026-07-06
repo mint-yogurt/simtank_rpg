@@ -26,6 +26,7 @@ def _make_generator(grid, feature_cells=None):
     """Wrap a synthetic grid in a callable compatible with WorldDB.get_or_create_screen."""
     fc = feature_cells or {}
     def _gen(world_seed, sx, sy):
+        from procgen.overworld_test import FEATURE_TYPES
         return ScreenData(
             world_seed=world_seed, sx=sx, sy=sy,
             screen_seed=0,
@@ -34,6 +35,8 @@ def _make_generator(grid, feature_cells=None):
             feature_cells=fc,
             blob_cells=set(),
             palette=((0, 128, 0), (0, 0, 128), (128, 64, 0)),
+            feature_types={pos: FEATURE_TYPES[name]
+                           for pos, name in fc.items() if name in FEATURE_TYPES},
             log=[],
         )
     return _gen

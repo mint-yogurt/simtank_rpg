@@ -24,6 +24,7 @@ ACTIVE_CONFIG = "16x14"
 
 FEATURE_CHANCE_1    = 0.15
 FEATURE_CHANCE_2    = 0.08
+TOWN_CHANCE         = 0.22
 TREE_DENSITY        = 0.32
 MOUNTAIN1_DENSITY   = 0.06
 POND_DENSITY        = 0.04
@@ -53,9 +54,20 @@ DIRTS_MAX           = 2
 DIRT_CHANCE         = 0.0
 
 BASE_TILES   = ["grass1", "grass2", "grass3"]
-FEATURE_POOL = ["house1", "tower1", "tower2", "town1", "castle1",
-                "skullhouse1", "cave1", "building1"]
+FEATURE_POOL = ["tower1", "tower2", "castle1", "skullhouse1", "cave1", "building1"]
 TREE_TILES   = ["tree1", "treedead1", "tree2"]
+
+# Metadata tags consumed by the world layer (dungeon connection, town connection, etc.)
+FEATURE_TYPES = {
+    "tower1":     "dungeon",
+    "tower2":     "dungeon",
+    "castle1":    "dungeon",
+    "skullhouse1":"dungeon",
+    "cave1":      "dungeon",
+    "mnt_cave":   "dungeon",
+    "mowdenpass": "dungeon",
+    "town1":      "town",
+}
 
 _HERE          = os.path.dirname(os.path.abspath(__file__))
 TILESET_PATH   = os.path.join(_HERE, "..", "web", "static", "tiles", "overworld_1.png")
@@ -291,6 +303,7 @@ def step_blobs(grid, rng, log):
     rows, cols = len(grid), len(grid[0])
     occupied = set()
     placed = []
+    mowdenpass_cells = []
 
     # Mountain rows
     for _ in range(rng.randint(0, MROWS_MAX)):
@@ -318,6 +331,7 @@ def step_blobs(grid, rng, log):
                 if adj:
                     pr, pc = rng.choice(adj)
                     grid[pr][pc] = "mowdenpass"
+                    mowdenpass_cells.append((pr, pc))
             placed.append(f"mountain_row(r={r},c={c0},len={length})")
             break
 
@@ -377,7 +391,7 @@ def step_blobs(grid, rng, log):
             break
 
     log.append("blobs: " + ("; ".join(placed) or "none"))
-    return occupied
+    return occupied, mowdenpass_cells
 
 # ── STEP 3: DIRT BLOBS ────────────────────────────────────────────────────────
 def step_dirt(grid, rng, blob_cells, log):
@@ -407,10 +421,16 @@ def step_dirt(grid, rng, blob_cells, log):
         log.append("dirt: " + "; ".join(placed))
 
 # ── STEP 4: FEATURE PLACEMENT ─────────────────────────────────────────────────
-def step_features(grid, rng, blob_cells, is_hub_screen, log):
+def step_features(grid, rng, blob_cells, is_hub_screen, log, mowdenpass_cells=None):
     rows, cols = len(grid), len(grid[0])
     feature_cells = {}
     placed_log = []
+
+    # Register mowdenpass tiles as enterable features so paths connect to them.
+    if mowdenpass_cells:
+        for pr, pc in mowdenpass_cells:
+            feature_cells[(pr, pc)] = "mowdenpass"
+            placed_log.append(f"mowdenpass@({pr},{pc})")
 
     if is_hub_screen:
         cr, cc = rows // 2, cols // 2
@@ -448,14 +468,31 @@ def step_features(grid, rng, blob_cells, is_hub_screen, log):
         if rng.random() < FEATURE_CHANCE_2:
             place_one()
 
-    # mnt_cave: randomly replace one mnt_S tile — only where a row below exists to exit
+    # mnt_cave: replace one mnt_S tile — prefer cells whose exit tile is already passable.
     mnt_s_cells = [(r, c) for r in range(rows) for c in range(cols)
                    if grid[r][c] == "mnt_S" and r + 1 < rows]
     if mnt_s_cells and rng.random() < MNT_CAVE_CHANCE:
-        cr, cc = rng.choice(mnt_s_cells)
+        preferred = [(r, c) for r, c in mnt_s_cells
+                     if grid[r + 1][c] not in BLOB_TILES]
+        candidates = preferred if preferred else mnt_s_cells
+        cr, cc = rng.choice(candidates)
         grid[cr][cc] = "mnt_cave"
         feature_cells[(cr, cc)] = "mnt_cave"
+        # Guarantee the exit tile below is passable — clear any blob that snuck in.
+        if grid[cr + 1][cc] in BLOB_TILES:
+            grid[cr + 1][cc] = rng.choice(BASE_TILES)
+            blob_cells.discard((cr + 1, cc))
         placed_log.append(f"mnt_cave@({cr},{cc})")
+
+    # town1: dedicated placement roll so towns appear at a useful rate.
+    if rng.random() < TOWN_CHANCE:
+        town_free = [(r, c) for r in range(rows) for c in range(cols)
+                     if is_base(grid[r][c]) and (r, c) not in feature_cells]
+        if town_free:
+            tr, tc = rng.choice(town_free)
+            grid[tr][tc] = "town1"
+            feature_cells[(tr, tc)] = "town1"
+            placed_log.append(f"town1@({tr},{tc})")
 
     log.append("features: " + ("; ".join(placed_log) or "none"))
     return feature_cells
@@ -755,9 +792,10 @@ class ScreenData:
     rows:          int
     cols:          int
     grid:          list         # 2D list of tile-name strings
-    feature_cells: dict         # (row, col) → feature_type string
+    feature_cells: dict         # (row, col) → tile_name string
     blob_cells:    set          # set of (row, col)
     palette:       tuple        # (green, blue, brown) as RGB tuples
+    feature_types: dict         # (row, col) → type tag ("dungeon", "town", ...)
     log:           list = field(default_factory=list)
 
 
@@ -778,11 +816,16 @@ def generate_screen_data(world_seed, sx, sy, config_key=ACTIVE_CONFIG):
 
     grid = [[None] * cols for _ in range(rows)]
     step_base_fill(grid, rng)
-    blob_cells    = step_blobs(grid, rng, log)
+    blob_cells, mowdenpass_cells = step_blobs(grid, rng, log)
     step_dirt(grid, rng, blob_cells, log)
-    feature_cells = step_features(grid, rng, blob_cells, sx == 0 and sy == 0, log)
+    feature_cells = step_features(grid, rng, blob_cells, sx == 0 and sy == 0, log,
+                                  mowdenpass_cells=mowdenpass_cells)
     _             = step_paths(grid, rng, blob_cells, feature_cells, log)
     step_scatter(grid, rng, log)
+
+    feature_types = {pos: FEATURE_TYPES[name]
+                     for pos, name in feature_cells.items()
+                     if name in FEATURE_TYPES}
 
     return ScreenData(
         world_seed=world_seed,
@@ -793,6 +836,7 @@ def generate_screen_data(world_seed, sx, sy, config_key=ACTIVE_CONFIG):
         feature_cells=feature_cells,
         blob_cells=blob_cells,
         palette=(green, blue, brown),
+        feature_types=feature_types,
         log=log,
     )
 
