@@ -24,11 +24,47 @@ import json
 from dataclasses import dataclass, field
 
 from engine.journal import journals_append
-from engine.tiles import is_enterable
+from engine.tiles import is_enterable, is_passable
 from engine.viewscan import scan
 
 
 _DIR_DELTAS = {'N': (0, -1), 'S': (0, 1), 'E': (1, 0), 'W': (-1, 0)}
+
+
+def _nudge_to_passable(grid, row, col, axis: str) -> tuple[int, int]:
+    """Return the nearest passable (row, col) on the given edge by sliding along it.
+
+    axis='col' — keep row fixed, search left/right from col.
+    axis='row' — keep col fixed, search up/down from row.
+
+    Assumes at least one passable tile exists on the edge (generation guarantee).
+    """
+    rows = len(grid)
+    cols = len(grid[0]) if grid else 0
+
+    def _tile_passable(r, c):
+        tile = (grid[r][c] or 'grass1').split(':')[0]
+        return is_passable(tile) and not is_enterable(tile)
+
+    if _tile_passable(row, col):
+        return row, col
+
+    if axis == 'col':
+        limit = max(cols, rows)
+        for d in range(1, limit):
+            for sign in (-1, 1):
+                nc = col + sign * d
+                if 0 <= nc < cols and _tile_passable(row, nc):
+                    return row, nc
+    else:  # axis == 'row'
+        limit = max(cols, rows)
+        for d in range(1, limit):
+            for sign in (-1, 1):
+                nr = row + sign * d
+                if 0 <= nr < rows and _tile_passable(nr, col):
+                    return nr, col
+
+    return row, col  # fallback — should not happen given generation guarantee
 
 # Screen-coordinate delta when crossing in each direction.
 # sx = screen column, sy = screen row (N decreases sy, S increases sy).
@@ -137,13 +173,17 @@ def execute_move(pos: PartyPos, direction: str, steps: int, grid: list, db,
                 # Use before_row/before_col (edge tile, not yet mutated).
                 # Assumes all screens share the same dimensions (fixed config).
                 if direction == 'N':
-                    pos.row, pos.col = new_rows - 1, before_col
+                    pos.row, pos.col = _nudge_to_passable(
+                        current_grid, new_rows - 1, before_col, 'col')
                 elif direction == 'S':
-                    pos.row, pos.col = 0, before_col
+                    pos.row, pos.col = _nudge_to_passable(
+                        current_grid, 0, before_col, 'col')
                 elif direction == 'E':
-                    pos.row, pos.col = before_row, 0
+                    pos.row, pos.col = _nudge_to_passable(
+                        current_grid, before_row, 0, 'row')
                 elif direction == 'W':
-                    pos.row, pos.col = before_row, new_cols - 1
+                    pos.row, pos.col = _nudge_to_passable(
+                        current_grid, before_row, new_cols - 1, 'row')
 
                 steps_taken += 1
                 journals_append(journals, tick, 'SCREEN',
