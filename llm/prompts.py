@@ -118,20 +118,24 @@ def build_overworld_system_prompt(member) -> str:
     return "\n".join(lines)
 
 
-def _dir_summary_line(label: str, ds) -> str:
+def _dir_summary_line(label: str, ds, exit_open: bool = False) -> str:
     """One-line direction summary for LLM decision input."""
     if ds.kind == 'edge':
-        terrain = 'screen edge'
+        terrain = ('screen edge (crossing available)' if exit_open
+                   else 'screen edge')
+        can_step = exit_open or ds.adjacent_passable
     elif ds.kind == 'blocker':
-        terrain = f"blocked by {ds.tile} at dist {ds.distance}"
+        terrain  = f"blocked by {ds.tile} at dist {ds.distance}"
+        can_step = ds.adjacent_passable
     else:  # enterable
-        terrain = f"{ds.tile} (enterable) at dist {ds.distance}"
-    can_step = "YES" if ds.adjacent_passable else "NO"
-    return f"  {label}: can step? {can_step} — {terrain}"
+        terrain  = f"{ds.tile} (enterable) at dist {ds.distance}"
+        can_step = ds.adjacent_passable
+    return f"  {label}: can step? {'YES' if can_step else 'NO'} — {terrain}"
 
 
 def build_overworld_context(member, party: list, vs, voting_state,
-                            available_actions: set, member_journal=None) -> str:
+                            available_actions: set, member_journal=None,
+                            screen_exits: dict | None = None) -> str:
     """Build the overworld/voting prompt for a single member's turn.
 
     Args:
@@ -141,12 +145,17 @@ def build_overworld_context(member, party: list, vs, voting_state,
         voting_state:     VotingState
         available_actions: set[str] from engine.voting.available_actions()
         member_journal:   MemberJournal for this member, or None if empty/unavailable
+        screen_exits:     {'N': bool, 'S': bool, 'E': bool, 'W': bool} from exits_json;
+                          when an edge direction is open the LLM learns crossing is available
     """
     parts = []
+    exits = screen_exits or {}
 
     parts.append("DIRECTIONS FROM @")
     for label in ("N", "S", "E", "W"):
-        parts.append(_dir_summary_line(label, getattr(vs, label)))
+        ds = getattr(vs, label)
+        exit_open = exits.get(label, False) if ds.kind == 'edge' else False
+        parts.append(_dir_summary_line(label, ds, exit_open=exit_open))
 
     # Party roster
     parts.append("")

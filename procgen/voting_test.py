@@ -1,19 +1,23 @@
-"""CLI harness for the voting state machine + per-member journal (Jobs 7 & 8).
+"""CLI harness for the voting state machine + multi-screen movement (Jobs 7, 8, 9).
 
 Runs a real overworld screen with real LLM calls. Party members vote on
-proposed moves; a passed proposal triggers single-screen movement via the
-existing execute_move() from party_state.py. Journal entries accumulate per
-member and are injected into each member's prompt context.
+proposed moves; a passed proposal triggers movement via execute_move(), which
+handles screen crossings seamlessly when a generator is supplied.
+
+Job 9 additions:
+  - Direct crossing assertion test (no LLM) runs first and validates the
+    execute_move crossing path in isolation.
+  - Party starts near the north edge of screen (0,0) so the LLM rounds
+    naturally produce proposals that span the screen boundary.
+  - Generator (generate_screen_data) is threaded through to execute_move so
+    crossings happen transparently; the caller updates its grid reference from
+    MoveResult.final_grid.
+  - screen_exits are fetched from WorldDB and passed to build_overworld_context
+    so the LLM sees 'crossing available' in the direction summary.
+  - Journal SCREEN events record each crossing per member.
 
 Run from the repo root:
     python procgen/voting_test.py
-
-Output:
-  - ASCII maps (overlay for debug, clean in prompts)
-  - Each member's raw LLM response alongside the parsed action
-  - Vote math assertions before any LLM call (fast; catches logic bugs)
-  - Journal state at the end of each round and a full dump at exit
-  - Tally of real LLM decisions vs fallbacks at the end
 """
 
 import json
@@ -38,7 +42,7 @@ from llm.schema import parse_overworld_action
 from procgen.overworld_test import generate_screen_data
 
 WORLD_SEED = 77777
-MAX_ROUNDS = 6   # enough to fill and roll the 12-entry journal window
+MAX_ROUNDS = 8   # enough to fill and roll the 12-entry journal window
 
 
 # ── party member ─────────────────────────────────────────────────────────────
@@ -159,50 +163,154 @@ def _find_walkable_center(grid, rows, cols):
     return None
 
 
+def _find_north_crossing_start(grid, rows, cols, max_start_row=5):
+    """Find a passable non-enterable tile with a clear northward path to the edge.
+
+    Uses viewscan: qualifies when scan.N.kind == 'edge' and
+    scan.N.adjacent_passable == True, meaning no blocker between this tile and
+    the top of the screen. Prefers tiles close to the north edge (small row index).
+    """
+    for r in range(1, min(max_start_row + 1, rows)):
+        for c in range(cols):
+            base = (grid[r][c] or 'grass1').split(':')[0]
+            if not is_passable(base) or is_enterable(base):
+                continue
+            vs = scan(grid, r, c)
+            if vs.N.kind == 'edge' and vs.N.adjacent_passable:
+                return r, c
+    return None
+
+
+# ── direct crossing assertion test (no LLM) ──────────────────────────────────
+
+def _test_screen_crossing_direct(grid, rows, cols, db):
+    """Assert execute_move seamlessly crosses a screen edge when given a generator.
+
+    Uses a fresh PartyPos and fresh journals; does not mutate the caller's state.
+    """
+    print("\n─── DIRECT CROSSING TEST (no LLM) ─────────────────────────────────")
+
+    start = _find_north_crossing_start(grid, rows, cols, max_start_row=5)
+    if start is None:
+        print("SKIP: no suitable north-crossing start on screen (0,0)")
+        return
+
+    start_r, start_c = start
+    vs_start = scan(grid, start_r, start_c)
+    # distance = steps until the N ray exits the grid (includes the crossing step)
+    edge_dist = vs_start.N.distance
+    steps = edge_dist + 3  # cross the edge + 3 more on new screen
+
+    print(f"Start: row={start_r} col={start_c}  edge_dist={edge_dist}  proposing N {steps}")
+
+    test_pos = PartyPos(world_seed=WORLD_SEED, sx=0, sy=0,
+                        col=start_c, row=start_r)
+    # Register screen (0,0) with the test db instance (it may already be cached)
+    enter_screen(test_pos, db, generate_screen_data, tick=0)
+
+    test_journals = {'_cross_test': MemberJournal('_cross_test')}
+
+    result = execute_move(test_pos, 'N', steps, grid, db,
+                          journals=test_journals, tick=0,
+                          generator=generate_screen_data)
+
+    # ── assertions ────────────────────────────────────────────────────────────
+    assert test_pos.sy == -1, \
+        f"expected sy=-1 after N crossing from (0,0), got {test_pos.sy}"
+    assert test_pos.sx == 0, \
+        f"expected sx=0 after N crossing, got {test_pos.sx}"
+    assert result.final_grid is not None, \
+        "execute_move must set final_grid on crossing"
+    assert result.final_grid is not grid, \
+        "final_grid must differ from input grid after screen crossing"
+    assert result.steps_taken >= edge_dist, \
+        f"steps_taken={result.steps_taken} must be >= edge_dist={edge_dist}"
+
+    mj = test_journals['_cross_test']
+    screen_entries = [e for e in mj._entries if e.event_type == 'SCREEN']
+    assert screen_entries, "journal must have a SCREEN entry after crossing"
+    assert 'crossed N' in screen_entries[0].desc, \
+        f"unexpected SCREEN entry: {screen_entries[0].desc!r}"
+
+    print(f"  steps_taken={result.steps_taken}  stop={result.stop_reason!r}")
+    print(f"  final pos: screen ({test_pos.sx},{test_pos.sy}) "
+          f"row={test_pos.row} col={test_pos.col}")
+    print(f"  SCREEN journal: {screen_entries[0].desc!r}")
+    print("PASS: direct screen crossing test")
+
+    # Validate viewscan on the new screen is coherent (context refresh)
+    new_rows = len(result.final_grid)
+    new_cols = len(result.final_grid[0])
+    vs_new = scan(result.final_grid, test_pos.row, test_pos.col)
+    # Party entered from the south edge of the new screen, so S should be 'edge'
+    assert vs_new.S.kind == 'edge', \
+        f"after N crossing, party should be near south edge; S.kind={vs_new.S.kind!r}"
+    print(f"  Viewscan on new screen: S.kind={vs_new.S.kind!r}  (correct — at south edge)")
+    print(f"  new screen: {new_rows}×{new_cols}  "
+          f"N={vs_new.N.kind} S={vs_new.S.kind} E={vs_new.E.kind} W={vs_new.W.kind}")
+
+
 # ── movement execution ────────────────────────────────────────────────────────
 
-def _execute_proposal(pos, direction, steps, grid, db, journals, tick) -> str:
-    """Execute movement for a passed proposal; print maps and step log.
+def _execute_proposal(pos, direction, steps, grid, db, journals, tick,
+                      generator) -> tuple[str, list]:
+    """Execute movement for a passed proposal; return (stop_reason, final_grid).
 
-    journals and tick are passed through to execute_move so events are logged
-    the same way they will be in the full game loop.
+    Prints before/after ASCII maps and the step log. Uses result.final_grid so
+    the caller always gets the correct grid even after a screen crossing.
     """
     rows, cols = len(grid), len(grid[0])
 
     vs_before = scan(grid, pos.row, pos.col)
-    print(f"\n  MAP before move (row={pos.row},col={pos.col}):")
+    print(f"\n  MAP before move  screen=({pos.sx},{pos.sy}) "
+          f"(row={pos.row},col={pos.col}):")
     print(render_map_overlay(grid, rows, cols, vs_before))
 
-    result = execute_move(pos, direction, steps, grid, db, journals=journals, tick=tick)
+    result = execute_move(pos, direction, steps, grid, db,
+                          journals=journals, tick=tick, generator=generator)
 
-    vs_after = scan(grid, pos.row, pos.col)
-    print(f"\n  MAP after move (row={pos.row},col={pos.col}):")
-    print(render_map_overlay(grid, rows, cols, vs_after))
-    print(f"\n  Move: {result.steps_taken} steps taken, "
-          f"stop_reason={result.stop_reason!r}")
+    final_grid = result.final_grid if result.final_grid is not None else grid
+    final_rows = len(final_grid)
+    final_cols = len(final_grid[0])
+
+    vs_after = scan(final_grid, pos.row, pos.col)
+    print(f"\n  MAP after move  screen=({pos.sx},{pos.sy}) "
+          f"(row={pos.row},col={pos.col}):")
+    print(render_map_overlay(final_grid, final_rows, final_cols, vs_after))
+
+    crossed = result.final_grid is not None and result.final_grid is not grid
+    cross_note = f"  *** CROSSED SCREEN → now at ({pos.sx},{pos.sy})" if crossed else ""
+    print(f"\n  Move: {result.steps_taken} steps, stop={result.stop_reason!r}"
+          + (f"  {cross_note}" if cross_note else ""))
     for rec in result.log:
         print(f"    step {rec.step_num}: ({rec.before_col},{rec.before_row}) → "
               f"({rec.after_col},{rec.after_row})  [{rec.note}]")
-    return result.stop_reason
+
+    return result.stop_reason, final_grid
 
 
 # ── voting round ──────────────────────────────────────────────────────────────
 
 def _run_voting_round(party, pos, grid, db, voting_state, round_num,
-                      decision_tally, journals, tick) -> str | None:
+                      decision_tally, journals, tick,
+                      generator=None) -> tuple[str | None, list]:
     """One full round of turns (one per alive member).
 
-    Returns the movement stop_reason if a proposal passed and was executed,
-    else None. Abandoned proposals are noted and cleared. Journal entries are
-    appended for propose, vote, and resolution events.
+    Returns (stop_reason, final_grid) if a proposal passed and was executed,
+    else (None, grid). final_grid may differ from the input grid when a screen
+    crossing occurred during movement. Callers must update their grid reference.
     """
     alive       = [m for m in party if m.alive]
     alive_count = len(alive)
 
     print(f"\n{'─'*60}")
     print(f"ROUND {round_num}  t={tick}  alive={alive_count}  "
-          f"pos=(row={pos.row},col={pos.col})")
+          f"screen=({pos.sx},{pos.sy})  pos=(row={pos.row},col={pos.col})")
     print(f"{'─'*60}")
+
+    # Fetch exits from DB so the LLM can see which screen edges are crossable.
+    screen_row = db.get_or_create_screen(pos.world_seed, pos.sx, pos.sy, generator)
+    screen_exits = json.loads(screen_row['exits_json']) if screen_row else {}
 
     for member in alive:
         vs   = scan(grid, pos.row, pos.col)
@@ -211,7 +319,8 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
 
         sys_prompt  = build_overworld_system_prompt(member)
         user_prompt = build_overworld_context(
-            member, party, vs, voting_state, acts, member_journal=mj)
+            member, party, vs, voting_state, acts, member_journal=mj,
+            screen_exits=screen_exits)
 
         # Fallback: safe default that is valid for the current available_actions
         fallback = ({"action": "VOTE", "vote": "no"}
@@ -262,7 +371,9 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
                 print("  → AUTO-PASS (single survivor)")
                 journals_append(journals, tick, 'RESOLVED',
                                 f"move {direction} {steps} → PASSED (auto)")
-                return _execute_proposal(pos, direction, steps, grid, db, journals, tick)
+                stop, new_grid = _execute_proposal(
+                    pos, direction, steps, grid, db, journals, tick, generator)
+                return stop, new_grid
 
         elif action == 'VOTE' and voting_state.is_open:
             # Capture direction/steps and yes_count BEFORE cast_vote may clear the proposal
@@ -277,8 +388,9 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
                 journals_append(journals, tick, 'RESOLVED',
                                 f"move {saved_dir} {saved_steps} → PASSED")
                 print(f"  → Proposal PASSED! Executing: move {saved_dir} {saved_steps}")
-                return _execute_proposal(pos, saved_dir, saved_steps, grid, db,
-                                         journals, tick)
+                stop, new_grid = _execute_proposal(
+                    pos, saved_dir, saved_steps, grid, db, journals, tick, generator)
+                return stop, new_grid
             elif outcome == 'failed':
                 journals_append(journals, tick, 'RESOLVED',
                                 f"move {saved_dir} {saved_steps} → FAILED")
@@ -298,7 +410,7 @@ def _run_voting_round(party, pos, grid, db, voting_state, round_num,
     sizes = {m.name: len(journals[m.name]) for m in alive}
     print(f"\n  Journal sizes: {sizes}")
 
-    return None
+    return None, grid
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -314,51 +426,64 @@ def main():
     party = load_party(data_dir)
     print(f"Party: {[m.name for m in party]}")
 
-    # Per-member journals (one per member, all receive the same events for now)
+    # Per-member journals (all members share the same broadcast events for now)
     journals = {m.name: MemberJournal(m.name) for m in party}
 
-    # Generate and cache screen (0,0)
-    screen_data = generate_screen_data(WORLD_SEED, 0, 0)
-    grid_raw    = screen_data.grid
-    rows, cols  = screen_data.rows, screen_data.cols
+    # Generate screen (0,0) and seed WorldDB
+    db   = WorldDB(':memory:')
+    pos  = PartyPos(world_seed=WORLD_SEED, sx=0, sy=0, col=0, row=0)
 
-    db  = WorldDB(':memory:')
-    pos = PartyPos(world_seed=WORLD_SEED, sx=0, sy=0, col=0, row=0)
+    screen = enter_screen(pos, db, generate_screen_data, tick=0)
+    grid   = json.loads(screen['grid_json'])
+    rows, cols = len(grid), len(grid[0])
+    exits  = json.loads(screen['exits_json'])
 
-    start = _find_walkable_center(grid_raw, rows, cols)
-    assert start, "no walkable tile found on screen (0,0)"
-    pos.row, pos.col = start
-    print(f"Screen (0,0): {rows}×{cols}  start=(row={pos.row},col={pos.col})")
+    print(f"Screen (0,0): {rows}×{cols}  exits={exits}")
 
-    # enter_screen caches the screen in WorldDB and marks it visited
-    screen = enter_screen(pos, db, lambda ws, sx, sy: screen_data, tick=0)
-    grid   = json.loads(screen['grid_json'])  # canonical copy
+    # Prefer a start near the north edge so LLM proposals can span the boundary.
+    north_start = _find_north_crossing_start(grid, rows, cols)
+    if north_start:
+        pos.row, pos.col = north_start
+        print(f"Start: row={pos.row} col={pos.col}  (near north edge with clear path)")
+    else:
+        center_start = _find_walkable_center(grid, rows, cols)
+        assert center_start, "no walkable tile found on screen (0,0)"
+        pos.row, pos.col = center_start
+        print(f"Start: row={pos.row} col={pos.col}  (center fallback — no clear north path)")
 
     vs0 = scan(grid, pos.row, pos.col)
     print(f"\nStarting map:")
     print(render_map_overlay(grid, rows, cols, vs0))
     for label in ('N', 'S', 'E', 'W'):
         ds = getattr(vs0, label)
+        exit_open = exits.get(label, False) if ds.kind == 'edge' else False
+        step_note = 'ok' if (ds.adjacent_passable or exit_open) else 'NO'
+        cross_note = ' [crossing available]' if exit_open else ''
         print(f"  {label}: {ds.kind:10}  tile={ds.tile or '(edge)':20}  "
-              f"dist={ds.distance}  step={'ok' if ds.adjacent_passable else 'NO'}")
+              f"dist={ds.distance}  step={step_note}{cross_note}")
+
+    # Run direct crossing assertion test before any LLM calls
+    _test_screen_crossing_direct(grid, rows, cols, db)
 
     provider_ok = _probe_provider()
 
     voting_state   = VotingState()
     decision_tally = {'total': 0, 'fallback': 0, 'retried': 0}
     movement_count = 0
+    screens_crossed_total = 0
     last_round     = 0
     tick           = 0
 
     for round_num in range(1, MAX_ROUNDS + 1):
         last_round = round_num
         tick += 1
-        stop = _run_voting_round(
+        stop, grid = _run_voting_round(
             party, pos, grid, db, voting_state, round_num, decision_tally,
-            journals, tick)
+            journals, tick, generator=generate_screen_data)
         if stop:
             movement_count += 1
-            print(f"\n  Movement complete (round {round_num}, stop={stop!r})")
+            print(f"\n  Movement complete (round {round_num}, stop={stop!r}, "
+                  f"screen=({pos.sx},{pos.sy}))")
             # Don't break on enterable — party stays on feature tile and continues voting
 
     # Full journal dump for one member as validation of accumulation and rollover
@@ -369,17 +494,26 @@ def main():
     for line in mj.render():
         print(line)
 
+    # Count screen crossings from journal
+    screen_events = [e for mj_ in journals.values()
+                     for e in mj_._entries if e.event_type == 'SCREEN']
+    screens_crossed_total = len(screen_events) // max(len(party), 1)
+
     # Summary
+    known = db.list_known_screens(WORLD_SEED)
     print(f"\n{'='*60}")
     print("SUMMARY")
-    print(f"  Rounds run:         {last_round}/{MAX_ROUNDS}")
-    print(f"  Movements executed: {movement_count}")
-    print(f"  Final pos:          row={pos.row} col={pos.col}")
+    print(f"  Rounds run:          {last_round}/{MAX_ROUNDS}")
+    print(f"  Movements executed:  {movement_count}")
+    print(f"  Screens crossed:     {screens_crossed_total}")
+    print(f"  Screens discovered:  {len(known)}  {[(s['sx'],s['sy']) for s in known]}")
+    print(f"  Final pos:           screen ({pos.sx},{pos.sy})  "
+          f"row={pos.row} col={pos.col}")
     total    = decision_tally['total']
     fallback = decision_tally['fallback']
     retried  = decision_tally['retried']
     real     = total - fallback
-    print(f"  LLM decisions:      {total} total | {real} valid LLM | "
+    print(f"  LLM decisions:       {total} total | {real} valid LLM | "
           f"{fallback} fallback | {retried} needed retry")
     if not provider_ok:
         print("  NOTE: provider unreachable — all decisions are fallbacks from None response")
