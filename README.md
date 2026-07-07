@@ -414,7 +414,7 @@ These four items are the alpha → beta gate. Order matters: config first (every
 Current interior/hub/overworld screens are pre-baked PNGs (Pillow), scrolled in the browser by `drawImage` source-rect slicing of the whole baked image. This works for camera movement but the image is a fixed pixel blob — no per-tile swaps, so tile animation (water, waterfalls, torches) and sprite-frame animation both dead-end here.
 
 **Fix:** move to a live tile-ID grid.
-- Engine/SSE emits per-tick: viewport origin (top-left tile coord), a 16-wide × 16-tall (town/cave) or 16×14 (matches current interior viewport) tile-ID slice, and party sprite states (position, facing, frame, draw order).
+- Engine/SSE emits per-tick: viewport origin (top-left tile coord), tile-ID slice, and party sprite states (position, facing, frame, draw order).
 - JS canvas draws each tile from ID → tileset lookup (reusing the existing `*_tilerules.txt` coord maps) instead of `drawImage`-ing a baked PNG.
 - **Camera/scroll logic** (already partially built for interiors via `updateInteriorCamera`): generalize server-side — compute viewport origin centered on the lead party member, clamp to `[0, map_w - viewport_w]` / `[0, map_h - viewport_h]` so we never scroll past map edges, always keep the party centered everywhere else. Applies to towns and caves (bigger than viewport). Overworld and hub screens currently fit the viewport with no scroll needed — leave those static-camera for now unless/until a bigger overworld screen size is introduced.
 - Full-map PNGs from `procgen/*.py` remain — they become debug/reference renders only, not what the live viewer draws from.
