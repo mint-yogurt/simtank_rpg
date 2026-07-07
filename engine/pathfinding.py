@@ -93,6 +93,55 @@ def bfs_to_exit(grid, start_row: int, start_col: int,
     return None
 
 
+def bfs_to_tile(grid, start_row: int, start_col: int,
+                target_row: int, target_col: int) -> list[tuple[int, int]] | None:
+    """BFS from start to a specific target tile, treating enterable tiles as passable.
+
+    Unlike bfs_to_exit, this function does NOT exclude enterable tiles — the
+    party is supposed to step onto the target (which is itself enterable).  All
+    other passable tiles (including other enterables along the way) are traversable.
+
+    Returns the path as [(row, col), ...] inclusive of both endpoints, or None.
+    """
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+
+    if (start_row, start_col) == (target_row, target_col):
+        return [(start_row, start_col)]
+
+    def walkable(r, c):
+        tile = (grid[r][c] or 'grass1').split(':')[0]
+        return is_passable(tile)  # enterable tiles ARE passable — don't skip them
+
+    queue: deque[tuple[int, int]] = deque([(start_row, start_col)])
+    parent: dict[tuple[int, int], tuple[int, int] | None] = {
+        (start_row, start_col): None
+    }
+
+    while queue:
+        r, c = queue.popleft()
+        for _, dc, dr in _MOVES:
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+            if (nr, nc) in parent:
+                continue
+            if not walkable(nr, nc):
+                continue
+            parent[(nr, nc)] = (r, c)
+            if (nr, nc) == (target_row, target_col):
+                path: list[tuple[int, int]] = []
+                node: tuple[int, int] | None = (nr, nc)
+                while node is not None:
+                    path.append(node)
+                    node = parent[node]
+                path.reverse()
+                return path
+            queue.append((nr, nc))
+
+    return None
+
+
 def path_to_segments(path: list[tuple[int, int]]) -> list[tuple[str, int]]:
     """Convert a (row, col) path to [(direction, steps)] run-length segments.
 

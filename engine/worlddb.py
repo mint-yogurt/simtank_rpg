@@ -213,6 +213,16 @@ class WorldDB:
         )
         self._conn.commit()
 
+    def list_screen_features(self, world_seed, sx, sy):
+        """Return all feature rows for a single screen as dicts."""
+        rows = self._conn.execute(
+            """SELECT * FROM features
+               WHERE world_seed=? AND sx=? AND sy=?
+               ORDER BY local_row, local_col""",
+            (world_seed, sx, sy),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_known_features(self, world_seed):
         rows = self._conn.execute(
             """SELECT * FROM features WHERE world_seed=?

@@ -30,7 +30,7 @@ from engine.journal import MemberJournal, journals_append
 from engine.navlog import NavLog
 from engine.worlddb import WorldDB, compute_feature_id
 from engine.party_state import PartyPos, enter_screen, execute_move
-from engine.pathfinding import bfs_to_exit, path_to_segments, screen_direction_toward
+from engine.pathfinding import bfs_to_exit, bfs_to_tile, path_to_segments, screen_direction_toward
 from engine.scenes import Interior
 from engine.tiles import is_enterable, is_passable
 from llm.client import ask_with_retry
@@ -483,7 +483,10 @@ def _enter_interior(pos: PartyPos, db, emit=None,
         pos.world_seed, pos.sx, pos.sy, pos.row, pos.col)
 
     ftype = feature.get('feature_type', '')
-    tag   = FEATURE_TYPES.get(ftype, 'dungeon')
+    tag   = FEATURE_TYPES.get(ftype)
+    if tag is None:
+        print(f"  [interior] unknown feature type {ftype!r} — skipping.", flush=True)
+        return
     if tag == 'town':
         generator     = generate_town_data
         monster_spawn = False
@@ -650,6 +653,40 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                   f"goal=({active_goal.target_sx},{active_goal.target_sy})  "
                   f"heading={next_dir}", flush=True)
             print(f"{'─'*60}", flush=True)
+
+            # ── Feature detour: visit unvisited enterables before crossing ────
+            # bfs_to_exit avoids enterable tiles by design, so we must
+            # explicitly route to any unvisited caves/towns on this screen
+            # before executing the crossing path.
+            screen_feats = db.list_screen_features(pos.world_seed, pos.sx, pos.sy)
+            unvisited_feats = [
+                f for f in screen_feats
+                if f.get('enterable') and not f.get('entered')
+                and (f['local_row'], f['local_col']) != (pos.row, pos.col)
+                and f.get('feature_type') in FEATURE_TYPES  # skip hub and unknowns
+            ]
+            if unvisited_feats:
+                nearest = min(unvisited_feats,
+                              key=lambda f: (abs(f['local_row'] - pos.row)
+                                             + abs(f['local_col'] - pos.col)))
+                feat_path = bfs_to_tile(grid, pos.row, pos.col,
+                                        nearest['local_row'], nearest['local_col'])
+                if feat_path and len(feat_path) > 1:
+                    print(f"  Detour → {nearest['feature_type']} at "
+                          f"({nearest['local_row']},{nearest['local_col']})", flush=True)
+                    segments = path_to_segments(feat_path)
+                    feat_stop = 'completed'
+                    for direction, steps in segments:
+                        feat_stop, grid = _execute_proposal(
+                            pos, direction, steps, grid, db, journals, navlog, tick,
+                            generate_screen_data, emit=emit,
+                            render_screen_fn=render_screen_fn)
+                        if feat_stop in ('blocker', 'enterable'):
+                            break
+                    if feat_stop == 'enterable':
+                        _enter_interior(pos, db, emit=emit,
+                                        render_interior_fn=render_interior_fn)
+                        continue  # resume goal after exiting interior
 
             # ── Within-screen BFS to exit edge ────────────────────────────────
             path = bfs_to_exit(grid, pos.row, pos.col, next_dir)
