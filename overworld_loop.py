@@ -414,12 +414,26 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
     if not spawn:
         return
 
-    # Determine interior canvas bounds
-    if grid_dict:
-        max_r = max(r for r, c in grid_dict) + 1
-        max_c = max(c for r, c in grid_dict) + 1
+    # Compute PNG-relative origin so emitted row/col match the rendered image.
+    # Cave PNGs are cropped to content bounding box plus CANVAS_PAD=2 border rows/cols.
+    # Town grids start at (0,0) so origin is (0,0) and no translation needed.
+    if interior.monster_spawn and grid_dict:
+        _CAVE_PNG_PAD = 2  # matches CANVAS_PAD in cavegen.py
+        _min_r = min(r for r, c in grid_dict)
+        _min_c = min(c for r, c in grid_dict)
+        _max_r = max(r for r, c in grid_dict)
+        _max_c = max(c for r, c in grid_dict)
+        origin_r = _min_r - _CAVE_PNG_PAD
+        origin_c = _min_c - _CAVE_PNG_PAD
+        img_rows = _max_r + _CAVE_PNG_PAD - origin_r + 1
+        img_cols = _max_c + _CAVE_PNG_PAD - origin_c + 1
     else:
-        max_r, max_c = 1, 1
+        origin_r = origin_c = 0
+        if grid_dict:
+            img_rows = max(r for r, c in grid_dict) + 1
+            img_cols = max(c for r, c in grid_dict) + 1
+        else:
+            img_rows, img_cols = 1, 1
 
     interior_url = ""
     if emit:
@@ -429,8 +443,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                 'town' if not interior.monster_spawn else 'dungeon',
                 interior.data)
         emit({'type': 'interior_init',
-              'rows': max_r, 'cols': max_c,
-              'row': spawn[0], 'col': spawn[1],
+              'rows': img_rows, 'cols': img_cols,
+              'row': spawn[0] - origin_r, 'col': spawn[1] - origin_c,
               'screen_url': interior_url,
               'monster_spawn': interior.monster_spawn})
         time.sleep(0.6)
@@ -454,7 +468,7 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
     for step_r, step_c in (path_in + path_out):
         cur = (step_r, step_c)
         if emit:
-            emit({'type': 'interior_move', 'row': cur[0], 'col': cur[1]})
+            emit({'type': 'interior_move', 'row': cur[0] - origin_r, 'col': cur[1] - origin_c})
             time.sleep(0.22)
 
     print(f"  Interior done — returning to overworld at {(pos.row, pos.col)}.", flush=True)
