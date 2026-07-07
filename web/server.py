@@ -21,8 +21,18 @@ _TILERULES_PATH = str(_REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_til
 _TOWN_TILESET_PATH = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town.png"
 _HUB_TILE_PX = 16
 
+_CAVE_TILESET_PATH  = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave1.png"
+_CAVE_RULES_PATH    = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave_rules.txt"
+_TOWN_RULES_PATH    = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town_rules.txt"
+
 _raw_tiles = None
 _raw_tiles_lock = threading.Lock()
+
+_cave_raw_tiles = None
+_cave_raw_lock  = threading.Lock()
+
+_town_raw_tiles = None
+_town_raw_lock  = threading.Lock()
 
 
 def _get_raw_tiles():
@@ -33,6 +43,28 @@ def _get_raw_tiles():
                 from procgen.worldgen import load_raw_tiles
                 _raw_tiles = load_raw_tiles(_TILESET_PATH, _TILERULES_PATH)
     return _raw_tiles
+
+
+def _get_cave_raw_tiles():
+    global _cave_raw_tiles
+    if _cave_raw_tiles is None:
+        with _cave_raw_lock:
+            if _cave_raw_tiles is None:
+                from procgen.cavegen import load_raw_tiles as _cave_load
+                _cave_raw_tiles = _cave_load(
+                    str(_CAVE_TILESET_PATH), str(_CAVE_RULES_PATH))
+    return _cave_raw_tiles
+
+
+def _get_town_raw_tiles():
+    global _town_raw_tiles
+    if _town_raw_tiles is None:
+        with _town_raw_lock:
+            if _town_raw_tiles is None:
+                from procgen.towngen import load_raw_tiles as _town_load
+                _town_raw_tiles = _town_load(
+                    str(_TOWN_TILESET_PATH), str(_TOWN_RULES_PATH))
+    return _town_raw_tiles
 
 
 def render_hub_map() -> str:
@@ -75,6 +107,46 @@ def render_screen(world_seed: int, sx: int, sy: int) -> str:
     return f"/screens/{fname}"
 
 
+def render_interior_map(world_seed: int, feature_id: int,
+                        tag: str, data: dict) -> str:
+    """Render interior PNG (cave or town) if not cached; return URL path.
+
+    tag:  'town' or 'dungeon' (from FEATURE_TYPES)
+    data: raw dict from worlddb (serialized CaveData or TownData)
+    """
+    _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"interior_{world_seed}_{feature_id}.png"
+    out_path = _SCREENS_DIR / fname
+    if not out_path.exists():
+        _render_interior_to(out_path, tag, data)
+    return f"/screens/{fname}"
+
+
+def _render_interior_to(out_path: Path, tag: str, data: dict) -> None:
+    if tag == 'town':
+        from procgen.towngen import render_town, remap_tileset
+        raw = _get_town_raw_tiles()
+        palette = [tuple(p) for p in data['palette']]
+        tiles = remap_tileset(raw, palette)
+        ground = {tuple(map(int, k.split(','))): v
+                  for k, v in data['ground_grid'].items()}
+        overlay = {tuple(map(int, k.split(','))): v
+                   for k, v in data['overlay'].items()}
+        crop_box = tuple(data['crop_box'])
+        img = render_town(ground, overlay, tiles, crop_box)
+    else:
+        from procgen.cavegen import render_cave, remap_tileset
+        raw = _get_cave_raw_tiles()
+        grey, teal, gold = (tuple(p) for p in data['palette'])
+        tiles = remap_tileset(raw, grey, teal, gold)
+        floor_grid = {tuple(map(int, k.split(','))): v
+                      for k, v in data['floor_grid'].items()}
+        wall_grid = {tuple(map(int, k.split(','))): v
+                     for k, v in data['wall_grid'].items()}
+        img = render_cave(floor_grid, wall_grid, tiles)
+    img.save(str(out_path))
+
+
 # ── SSE fan-out ───────────────────────────────────────────────────────────────
 
 _subscribers: set = set()
@@ -113,6 +185,10 @@ def _update_snapshot(event: dict):
                 "row": event["row"], "col": event["col"],
                 "sx": event["sx"], "sy": event["sy"],
             })
+        elif t == "interior_init":
+            _snapshot = dict(event)
+        elif t == "interior_move" and _snapshot is not None:
+            _snapshot.update({"row": event["row"], "col": event["col"]})
 
 
 def broadcast(event: dict):

@@ -190,12 +190,13 @@ def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
 
 def _run_goal_setting(party: list, pos: PartyPos, db, navlog: NavLog,
                       journals: dict, tick: int,
-                      previous_goal: Goal | None = None, emit=None) -> Goal:
-    """Single-member goal-setting LLM call.
+                      previous_goal: Goal | None = None, emit=None,
+                      leader_idx: int = 0) -> tuple:
+    """Goal-setting LLM call with rotating leader.
 
-    Uses the first alive member as proposer.  Falls back to 'explore north'
-    if LLM fails or party is wiped.  Multi-member deliberation stubbed for
-    a future job.
+    Returns (goal, next_leader_idx).  The leader rotates through alive members
+    so every party member gets a turn proposing goals.  Falls back to 'explore
+    north' if LLM fails or party is wiped.
     """
     alive = [m for m in party if m.alive]
     fallback_goal = Goal(
@@ -205,9 +206,10 @@ def _run_goal_setting(party: list, pos: PartyPos, db, navlog: NavLog,
         reasoning='default: heading north',
     )
     if not alive:
-        return fallback_goal
+        return fallback_goal, leader_idx
 
-    leader = alive[0]
+    leader = alive[leader_idx % len(alive)]
+    next_leader_idx = (leader_idx + 1) % len(alive)
     ctx = build_curated_context(None, navlog, db, pos.world_seed,
                                 party, pos.sx, pos.sy)
 
@@ -233,13 +235,13 @@ def _run_goal_setting(party: list, pos: PartyPos, db, navlog: NavLog,
                 target_sy=d["target_sy"], reasoning=d["reasoning"])
 
     tag = " [FALLBACK]" if decision.used_fallback else ""
-    print(f"\nGOAL SET{tag}: {goal.summary()}", flush=True)
+    print(f"\nGOAL SET{tag} [{leader.name}]: {goal.summary()}", flush=True)
     event_desc = f"{goal.goal_type} → ({goal.target_sx},{goal.target_sy}): {goal.reasoning[:60]}"
     navlog.append(tick, 'GOAL', event_desc)
     journals_append(journals, tick, 'GOAL', event_desc)
     if emit:
-        emit({"type": "goal", "text": f"Goal: {goal.summary()}"})
-    return goal
+        emit({"type": "goal", "text": f"[{leader.name}] {goal.summary()}"})
+    return goal, next_leader_idx
 
 
 # ── TIER 3: checkpoint discussion ─────────────────────────────────────────────
@@ -253,8 +255,8 @@ class CheckpointOutcome:
 
 def _run_checkpoint(reason: str, active_goal: Goal | None, ctx: CuratedContext,
                     party: list, pos: PartyPos, navlog: NavLog, journals: dict,
-                    tick: int, emit=None) -> CheckpointOutcome:
-    """Run single-leader checkpoint discussion (multi-member vote stubbed for later).
+                    tick: int, emit=None, leader_idx: int = 0) -> CheckpointOutcome:
+    """Run single-leader checkpoint discussion with rotating leader.
 
     Returns a CheckpointOutcome whose decision drives what happens to active_goal:
       continue — caller keeps active_goal active
@@ -284,7 +286,7 @@ def _run_checkpoint(reason: str, active_goal: Goal | None, ctx: CuratedContext,
         return CheckpointOutcome(decision=fallback_decision, new_goal=None,
                                  reasoning="party wiped")
 
-    leader = alive[0]
+    leader = alive[leader_idx % len(alive)]
     sys_prompt = build_checkpoint_system_prompt(leader)
     user_prompt = build_checkpoint_context(leader, ctx, reason)
     reprompt = (
@@ -302,7 +304,7 @@ def _run_checkpoint(reason: str, active_goal: Goal | None, ctx: CuratedContext,
     reasoning = d.get('reasoning', '')
 
     tag = " [FALLBACK]" if result.used_fallback else ""
-    print(f"  Decision{tag}: {decision} — {reasoning}", flush=True)
+    print(f"  Decision{tag} [{leader.name}]: {decision} — {reasoning}", flush=True)
     print(f"{'─'*60}", flush=True)
 
     new_goal: Goal | None = None
@@ -328,13 +330,150 @@ def _log_checkpoint(navlog: NavLog, journals: dict, tick: int,
     journals_append(journals, tick, 'CHECKPOINT', desc)
 
 
-def _enter_interior(pos: PartyPos, db, emit=None) -> None:
-    """Generate (or load from cache) and stub-run the interior at pos.
+def _interior_passable(grid_dict: dict):
+    """Return a passability checker for the interior grid dict."""
+    def check(r, c):
+        tile = grid_dict.get((r, c))
+        if tile is None:
+            return False
+        base = tile.split(':', 1)[0] if ':' in tile else tile
+        return is_passable(base)
+    return check
 
-    Looks up the feature at the party's current tile, derives the feature_id,
-    picks the right generator (cave vs town), calls get_or_create_interior,
-    then immediately returns (interior navigation is a future job).
-    The party remains on the entrance tile; the overworld loop resumes normally.
+
+def _interior_bfs(grid_dict: dict, start: tuple, goal: tuple) -> list:
+    """BFS from start to goal within an interior grid dict.
+
+    Returns an ordered list of (row, col) waypoints including goal, or [] if
+    no path exists.  Only cells present in grid_dict and passable are traversable.
+    """
+    from collections import deque
+    if not grid_dict or goal is None:
+        return []
+
+    passable = _interior_passable(grid_dict)
+    if not passable(*goal):
+        return []
+
+    visited = {start}
+    q = deque([(start, [])])
+    while q:
+        (r, c), path = q.popleft()
+        if (r, c) == goal:
+            return path + [(r, c)]
+        for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)]:
+            nb = (r + dr, c + dc)
+            if nb not in visited and passable(*nb):
+                visited.add(nb)
+                q.append((nb, path + [(r, c)]))
+    return []
+
+
+def _interior_find_far_tile(grid_dict: dict, start: tuple,
+                             exclude: tuple | None = None,
+                             max_dist: int = 50) -> tuple:
+    """BFS-flood from start; return the farthest reachable tile within max_dist.
+
+    Caps exploration distance so interior traversal stays under ~20 seconds.
+    """
+    from collections import deque
+    passable = _interior_passable(grid_dict)
+    visited = {start}
+    q = deque([(start, 0)])
+    farthest = (start, 0)
+    while q:
+        pos, dist = q.popleft()
+        if dist >= max_dist:
+            continue
+        if pos != exclude and dist >= farthest[1]:
+            farthest = (pos, dist)
+        for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)]:
+            nb = (pos[0] + dr, pos[1] + dc)
+            if nb not in visited and passable(*nb):
+                visited.add(nb)
+                q.append((nb, dist + 1))
+    return farthest[0]
+
+
+def _run_interior_loop(interior: Interior, pos: PartyPos,
+                       emit=None, render_interior_fn=None) -> None:
+    """Navigate the party through an interior: spawn → wander → exit.
+
+    Renders the interior PNG on first visit (cached), shows it on the web
+    canvas via interior_init, walks the party along a BFS path to the exit
+    tile emitting interior_move events, then emits interior_exit so the
+    client switches back to the overworld view.
+
+    No LLM calls — purely deterministic.  Combat and NPC interaction are
+    roadmap items.
+    """
+    grid_dict = interior.combined_grid()
+    spawn = interior.spawn
+    exit_tile = interior.entry_tile
+
+    if not spawn:
+        return
+
+    # Determine interior canvas bounds
+    if grid_dict:
+        max_r = max(r for r, c in grid_dict) + 1
+        max_c = max(c for r, c in grid_dict) + 1
+    else:
+        max_r, max_c = 1, 1
+
+    interior_url = ""
+    if emit:
+        if render_interior_fn:
+            interior_url = render_interior_fn(
+                pos.world_seed, interior.feature_id,
+                'town' if not interior.monster_spawn else 'dungeon',
+                interior.data)
+        emit({'type': 'interior_init',
+              'rows': max_r, 'cols': max_c,
+              'row': spawn[0], 'col': spawn[1],
+              'screen_url': interior_url,
+              'monster_spawn': interior.monster_spawn})
+        time.sleep(0.6)
+
+    kind = "town" if not interior.monster_spawn else "cave"
+    print(f"\n  INTERIOR [{kind}]  spawn={spawn}  exit={exit_tile}", flush=True)
+
+    # Navigate: explore farthest reachable tile first, then return to exit.
+    # This ensures the party actually sees the interior rather than immediately leaving.
+    exit_tuple = tuple(exit_tile) if exit_tile else None
+    spawn_tuple = tuple(spawn)
+    far = _interior_find_far_tile(grid_dict, spawn_tuple, exclude=exit_tuple)
+    print(f"  Exploring to {far} before exit.", flush=True)
+
+    # Phase 1: spawn → farthest exploration point
+    path_in = _interior_bfs(grid_dict, spawn_tuple, far)
+    # Phase 2: far point → exit
+    path_out = _interior_bfs(grid_dict, far, exit_tuple) if exit_tuple else []
+
+    cur = spawn_tuple
+    for step_r, step_c in (path_in + path_out):
+        cur = (step_r, step_c)
+        if emit:
+            emit({'type': 'interior_move', 'row': cur[0], 'col': cur[1]})
+            time.sleep(0.22)
+
+    print(f"  Interior done — returning to overworld at {(pos.row, pos.col)}.", flush=True)
+    if emit:
+        time.sleep(0.4)
+        emit({'type': 'interior_exit', 'feature_id': interior.feature_id})
+        time.sleep(0.2)
+        # Re-anchor the overworld sprite at the entrance tile
+        emit({"type": "move", "row": pos.row, "col": pos.col,
+              "sx": pos.sx, "sy": pos.sy})
+
+
+def _enter_interior(pos: PartyPos, db, emit=None,
+                    render_interior_fn=None) -> None:
+    """Generate (or load from cache) the interior at pos and navigate through it.
+
+    Looks up the feature, derives feature_id, dispatches to the right generator,
+    runs _run_interior_loop (which shows the interior on-screen and walks to the
+    exit tile), then returns.  The party's overworld position is unchanged.
     """
     feature = db.get_feature(pos.world_seed, pos.sx, pos.sy, pos.row, pos.col)
     if feature is None:
@@ -356,23 +495,15 @@ def _enter_interior(pos: PartyPos, db, emit=None) -> None:
     interior = Interior(feature_id=feature_id, data=data,
                         monster_spawn=monster_spawn)
 
-    if emit:
-        emit({'type': 'interior_enter',
-              'feature_id': feature_id,
-              'feature_type': ftype,
-              'monster_spawn': monster_spawn,
-              'spawn': interior.spawn,
-              'entry_tile': interior.entry_tile})
-
-    # Interior navigation is a future job — stub exits immediately.
-    if emit:
-        emit({'type': 'interior_exit', 'feature_id': feature_id})
+    _run_interior_loop(interior, pos, emit=emit,
+                       render_interior_fn=render_interior_fn)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
 
 def run_overworld(world_seed: int, db_path: str = "world.db",
-                  emit=None, render_screen_fn=None) -> None:
+                  emit=None, render_screen_fn=None,
+                  render_interior_fn=None) -> None:
     """Main overworld loop. Runs until KeyboardInterrupt.
 
     world_seed:        logged at launch; determines all procedural generation.
@@ -413,6 +544,7 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     previous_goal: Goal | None = None
     tick = 0
     movements = 0
+    leader_idx = 0  # rotates through alive members for goal-setting & checkpoints
     # Track screens where a branch-point checkpoint has already fired for the
     # current goal, to avoid re-triggering on the same screen.
     branch_points_seen: set[tuple] = set()
@@ -423,9 +555,10 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
             # ── TIER 1: ensure active goal ────────────────────────────────────
             if active_goal is None or not active_goal.is_active():
-                active_goal = _run_goal_setting(
+                active_goal, leader_idx = _run_goal_setting(
                     party, pos, db, navlog, journals, tick,
-                    previous_goal=previous_goal, emit=emit)
+                    previous_goal=previous_goal, emit=emit,
+                    leader_idx=leader_idx)
                 previous_goal = None
                 branch_points_seen.clear()
 
@@ -435,7 +568,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 ctx = build_curated_context(active_goal, navlog, db, world_seed,
                                             party, pos.sx, pos.sy)
                 outcome = _run_checkpoint('goal_reached', active_goal, ctx, party,
-                                          pos, navlog, journals, tick, emit=emit)
+                                          pos, navlog, journals, tick, emit=emit,
+                                          leader_idx=leader_idx)
+                leader_idx = (leader_idx + 1) % max(len([m for m in party if m.alive]), 1)
                 # goal_reached is always terminal; 'continue'→Tier-1, 'modify'→new goal
                 if outcome.decision == 'modify' and outcome.new_goal:
                     previous_goal = active_goal
@@ -460,7 +595,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 ctx = build_curated_context(active_goal, navlog, db, world_seed,
                                             party, pos.sx, pos.sy)
                 outcome = _run_checkpoint('all_exits_blocked', active_goal, ctx, party,
-                                          pos, navlog, journals, tick, emit=emit)
+                                          pos, navlog, journals, tick, emit=emit,
+                                          leader_idx=leader_idx)
+                leader_idx = (leader_idx + 1) % max(len([m for m in party if m.alive]), 1)
                 active_goal.abandon('all_exits_blocked')
                 if outcome.decision == 'modify' and outcome.new_goal:
                     previous_goal = active_goal
@@ -487,7 +624,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 ctx = build_curated_context(active_goal, navlog, db, world_seed,
                                             party, pos.sx, pos.sy)
                 outcome = _run_checkpoint('branch_point', active_goal, ctx, party,
-                                          pos, navlog, journals, tick, emit=emit)
+                                          pos, navlog, journals, tick, emit=emit,
+                                          leader_idx=leader_idx)
+                leader_idx = (leader_idx + 1) % max(len([m for m in party if m.alive]), 1)
                 if outcome.decision == 'abandon':
                     active_goal.abandon('branch_point')
                     previous_goal = active_goal
@@ -529,7 +668,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 ctx = build_curated_context(active_goal, navlog, db, world_seed,
                                             party, pos.sx, pos.sy)
                 outcome = _run_checkpoint('path_blocked', active_goal, ctx, party,
-                                          pos, navlog, journals, tick, emit=emit)
+                                          pos, navlog, journals, tick, emit=emit,
+                                          leader_idx=leader_idx)
+                leader_idx = (leader_idx + 1) % max(len([m for m in party if m.alive]), 1)
                 active_goal.abandon('screen_blocked')
                 if outcome.decision == 'modify' and outcome.new_goal:
                     previous_goal = active_goal
@@ -552,7 +693,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
             if stop == 'enterable':
                 movements += 1
-                _enter_interior(pos, db, emit=emit)
+                _enter_interior(pos, db, emit=emit,
+                                render_interior_fn=render_interior_fn)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
@@ -571,7 +713,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
             if stop == 'enterable':
                 movements += 1
-                _enter_interior(pos, db, emit=emit)
+                _enter_interior(pos, db, emit=emit,
+                                render_interior_fn=render_interior_fn)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
