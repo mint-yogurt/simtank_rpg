@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from PIL import Image
 
-from procgen.overworld_test import (
+from procgen.worldgen import (
     TILE_PX,
     TILERULES_PATH,
     TILESET_PATH,

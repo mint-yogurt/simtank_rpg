@@ -20,12 +20,17 @@ LLM-powered spectator RPG (`simtank_rpg`). Four AI party members run autonomousl
 
 LLM providers in priority order: Ollama (local, no rate limit, primary), Mistral API, AI Horde. All go through the provider-agnostic client in `llm/client.py`.
 
-## Entry points
+## Python environment
+
+Always activate the venv before running Python:
 
 ```
+source .venv/bin/activate
 python run_cli.py    # dev loop, text to terminal
 python run_web.py    # loop + SSE web server
 ```
+
+All dependencies (including Pillow) are installed in `.venv/`.
 
 ## Web viewer
 

@@ -519,6 +519,22 @@ class CaveData:
     spawn:      object      # (row, col) where party spawns, 1 tile south of enter
     entry_tile: object      # (row, col) of the enter tile itself (None if empty cave)
 
+    def to_dict(self):
+        return {
+            'seed': self.seed,
+            'floor_grid': {f"{r},{c}": v for (r, c), v in self.floor_grid.items()},
+            'wall_grid':  {f"{r},{c}": v for (r, c), v in self.wall_grid.items()},
+            'palette': [list(p) for p in self.palette],
+            'spawn':      list(self.spawn) if self.spawn else None,
+            'entry_tile': list(self.entry_tile) if self.entry_tile else None,
+            'rooms': [
+                {'r0': rm.r0, 'c0': rm.c0, 'h': rm.h, 'w': rm.w,
+                 'kind': rm.kind, 'floor_style': rm.floor_style,
+                 'wall_style': rm.wall_style}
+                for rm in self.rooms
+            ],
+        }
+
 
 def generate_cave_data(seed):
     """Generate structured cave data without rendering. No PIL, no raw_tiles needed."""

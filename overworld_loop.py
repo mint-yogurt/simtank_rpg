@@ -28,15 +28,18 @@ from engine.context import CuratedContext, build_curated_context
 from engine.goal import Goal
 from engine.journal import MemberJournal, journals_append
 from engine.navlog import NavLog
-from engine.worlddb import WorldDB
+from engine.worlddb import WorldDB, compute_feature_id
 from engine.party_state import PartyPos, enter_screen, execute_move
 from engine.pathfinding import bfs_to_exit, path_to_segments, screen_direction_toward
+from engine.scenes import Interior
 from engine.tiles import is_enterable, is_passable
 from llm.client import ask_with_retry
 from llm.prompts import (build_checkpoint_context, build_checkpoint_system_prompt,
                           build_goal_context, build_goal_system_prompt)
 from llm.schema import parse_checkpoint_decision, parse_goal_decision
-from procgen.overworld_test import generate_screen_data
+from procgen.cavegen import generate_cave_data
+from procgen.towngen import generate_town_data
+from procgen.worldgen import FEATURE_TYPES, generate_screen_data
 
 
 @dataclass
@@ -325,6 +328,47 @@ def _log_checkpoint(navlog: NavLog, journals: dict, tick: int,
     journals_append(journals, tick, 'CHECKPOINT', desc)
 
 
+def _enter_interior(pos: PartyPos, db, emit=None) -> None:
+    """Generate (or load from cache) and stub-run the interior at pos.
+
+    Looks up the feature at the party's current tile, derives the feature_id,
+    picks the right generator (cave vs town), calls get_or_create_interior,
+    then immediately returns (interior navigation is a future job).
+    The party remains on the entrance tile; the overworld loop resumes normally.
+    """
+    feature = db.get_feature(pos.world_seed, pos.sx, pos.sy, pos.row, pos.col)
+    if feature is None:
+        return
+
+    feature_id = compute_feature_id(
+        pos.world_seed, pos.sx, pos.sy, pos.row, pos.col)
+
+    ftype = feature.get('feature_type', '')
+    tag   = FEATURE_TYPES.get(ftype, 'dungeon')
+    if tag == 'town':
+        generator     = generate_town_data
+        monster_spawn = False
+    else:
+        generator     = generate_cave_data
+        monster_spawn = True
+
+    data = db.get_or_create_interior(pos.world_seed, feature_id, generator)
+    interior = Interior(feature_id=feature_id, data=data,
+                        monster_spawn=monster_spawn)
+
+    if emit:
+        emit({'type': 'interior_enter',
+              'feature_id': feature_id,
+              'feature_type': ftype,
+              'monster_spawn': monster_spawn,
+              'spawn': interior.spawn,
+              'entry_tile': interior.entry_tile})
+
+    # Interior navigation is a future job — stub exits immediately.
+    if emit:
+        emit({'type': 'interior_exit', 'feature_id': feature_id})
+
+
 # ── main loop ─────────────────────────────────────────────────────────────────
 
 def run_overworld(world_seed: int, db_path: str = "world.db",
@@ -508,6 +552,7 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
             if stop == 'enterable':
                 movements += 1
+                _enter_interior(pos, db, emit=emit)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
@@ -526,6 +571,7 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
             if stop == 'enterable':
                 movements += 1
+                _enter_interior(pos, db, emit=emit)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None

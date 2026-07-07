@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Hub scene and battle-entry trigger not yet built.
+**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Interior scenes (caves and towns) generate on first entry and cache forever — navigation within them is a future job.
 
 ---
 
@@ -62,12 +62,17 @@ Handles `:rot` rotation suffixes (e.g. `path_corner_N+E:90`). No PIL, no game-st
 
 ### World database (`engine/worlddb.py`)
 
-SQLite persistence for the discovered world. Two tables:
+SQLite persistence for the discovered world. Three tables:
 
 - **screens** — one row per coordinate pair; grid cached on first visit, exits pre-computed
-- **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state
+- **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state (`entered`, `cleared`, `npc_flags`)
+- **interiors** — one row per entered feature; interior grid cached on first entry keyed by `feature_id`
 
-`WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed. Replay guarantee: a fresh DB with the same world seed must produce identical grids, exits, and features.
+`WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed.
+
+`WorldDB.get_or_create_interior(world_seed, feature_id, generator)` follows the same generate-once pattern for interior locations. `compute_feature_id(world_seed, sx, sy, local_row, local_col)` returns a stable signed 64-bit hash so the interior key doesn't change if the world reorders screens. Interior seed is derived from `(world_seed, feature_id)` — stable and independent of screen coordinates.
+
+Replay guarantee: a fresh DB with the same world seed must produce identical grids, exits, features, and interiors.
 
 ### Voting state machine (`engine/voting.py`)
 
@@ -104,6 +109,20 @@ callers use it to refresh their local grid reference after any movement.
 MOVE and ENTERED events fire at each stop. SCREEN events fire on each crossing.
 All are journal-broadcast-safe (journals=None is fine in tests).
 
+### Interior scenes (`engine/scenes/interior.py`)
+
+`Interior` is a generic scene class used for both cave/dungeon and town interiors.
+Constructed from a deserialized interior data dict (loaded from `worlddb`) and a
+`monster_spawn: bool` flag (True for caves/dungeons, False for towns).
+
+Key properties:
+- `spawn` — (row, col) where the party appears on entry
+- `entry_tile` — (row, col) of the exit-trigger tile; stepping on it returns the party to the overworld standing directly on the entrance tile
+- `combined_grid()` — merges floor + wall (cave) or ground + overlay (town) into a single `{(r,c): tile_name}` dict
+- `is_exit(row, col)` — True when the party is on the exit-trigger tile
+
+Interior navigation is a future job; the current implementation stubs exit immediately after entry, generating and caching the interior.
+
 ### Goal-driven navigation — three-tier loop (`overworld_loop.py`, `engine/pathfinding.py`, `engine/goal.py`)
 
 The overworld loop is organised into three tiers so LLM calls happen only at decision points, not on every movement step.
@@ -124,6 +143,8 @@ The overworld loop is organised into three tiers so LLM calls happen only at dec
 | `branch_point` | Both axes equal distance to goal (`|dx|==|dy|`) AND both exits open | No — goal stays active unless outcome is abandon/modify |
 
 The LLM returns `continue | abandon | modify`. `modify` produces a new `Goal` immediately (skipping Tier 1). `branch_point` fires at most once per `(screen, target)` pair; `branch_points_seen` prevents re-triggering the same position.
+
+**Interior entry.** When the party steps onto an enterable tile (`stop_reason='enterable'`), `_enter_interior(pos, db)` fires before the goal is abandoned. It looks up the feature, computes the feature_id, dispatches to `generate_cave_data` (dungeons) or `generate_town_data` (towns) based on `FEATURE_TYPES`, calls `get_or_create_interior` (generating and caching on first visit), constructs an `Interior` scene, and emits `interior_enter`/`interior_exit` SSE events. The party lands on the entrance tile on return.
 
 ### Navigation log (`engine/navlog.py`)
 
@@ -174,16 +195,20 @@ assertions and real overworld screens with ASCII ray overlays.
 
 ### Procedural world generation
 
-Three standalone test harnesses in `procgen/`, all output PNGs to `procgen/out/`.
+Three generators in `procgen/`, all output PNGs to `procgen/out/` when run as harnesses.
 
-Both generators expose a data/render split: `generate_*_data(seed)` → dataclass (no PIL), `render_*_data(data, raw_tiles)` → PIL image. The data layer is what `engine/worlddb.py` consumes.
+Both overworld and cave generators expose a data/render split: `generate_*_data(seed)` → dataclass (no PIL), `render_*_data(data, raw_tiles)` → PIL image. Town follows the same pattern. The data layer is what `engine/worlddb.py` consumes via `get_or_create_interior`.
 
-**Overworld** (`procgen/overworld_test.py`) — infinite tiled world, one screen per coordinate pair:
+**CRITICAL:** `llm/ascii_map.py`'s `render_map_overlay` is for human debug output only (used in `procgen/viewscan_test.py` and `procgen/voting_test.py`). It must **never** be fed into any LLM prompt context.
+
+**Overworld** (`procgen/worldgen.py`) — infinite tiled world, one screen per coordinate pair:
 - Base grass fill → blob placement (lakes with corner cuts, forest blobs, mountain rows, mnt blobs) → dirt patches → feature placement (towns, caves, castles, etc.) → jittered A\* path network → scatter (trees, ponds, individual mountains)
 - Per-screen NES palette: 3 non-adjacent palette cells swapped into placeholder green/blue/brown
 - Stable deterministic seed per (world\_seed, sx, sy) so any screen reproduces exactly
+- `FEATURE_TYPES` dict maps tile names to `"dungeon"` or `"town"` tags — used by the overworld loop to dispatch the right interior generator
 
 **Town** (`procgen/towngen.py`) — interior town maps:
+- `generate_town_data(seed) → TownData` (no PIL) — canonical API
 - Canvas sized to building count (min 16×14); cropped to actual building bounding box + 5-tile ground margin
 - Healer hut (always present, fixed 3×2) seeds a cluster box; 1–9 additional buildings (houseA, houseB, stone) placed 92% within that cluster, 8% outlier
 - Ground blobs: grass fill, gravel blobs (set-based neighbor derivation to fix overlap artifacts), dirt courtyards/paths
@@ -191,8 +216,10 @@ Both generators expose a data/render split: `generate_*_data(seed)` → dataclas
 - Vegetation clusters: density-falloff rings (radius 2–4) of bush/cactus/tall-bush tiles, never blocking building doors
 - Scatter decorations: stumps, chairs, tyres, containers
 - Per-run NES palette: 8 placeholder colours swapped to 8 non-adjacent palette cells; black and white preserved
+- Entry tile at bottom center of crop_box; spawn 1 tile north
 
-**Cave / dungeon** (`procgen/cave_test.py`) — interior maps for cave entrances placed on the overworld:
+**Cave / dungeon** (`procgen/cavegen.py`) — interior maps for cave entrances placed on the overworld:
+- `generate_cave_data(seed) → CaveData` (no PIL) — canonical API
 - Variable-size screen fitted to generated content
 - Up to 8 rooms (tunable), two flavours mixed per map:
   - **Cave rooms** — cobble floor, 2-tile-tall cave walls (topper + wall) on north, `cavewallS` on south, void sides
@@ -285,24 +312,22 @@ simtank_rpg/
 │   ├── memory.py           # builds the context blob for each LLM call
 │   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
 │   ├── viewscan.py         # line-of-sight tile scan (N/S/E/W rays → ViewScan dataclass)
-│   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features)
+│   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features + interiors)
 │   └── scenes/
-│       ├── base.py         # Scene interface
-│       ├── hub.py          # free-roam pet-sim mode
-│       ├── overworld.py    # travel / exploration
-│       └── battle.py       # combat mode
+│       ├── __init__.py
+│       └── interior.py     # Interior scene (cave or town); monster_spawn flag; exit-tile return
 ├── llm/
 │   ├── client.py           # provider-agnostic call + routing; LLMDecision; ask_with_retry
 │   ├── schema.py           # action schemas; parse_overworld_action (strict available_actions)
 │   ├── prompts.py          # battle + overworld/voting prompt builders
-│   └── ascii_map.py        # ASCII tile renderer (harness/debug only — not in LLM prompts)
+│   └── ascii_map.py        # ASCII tile renderer (harness/debug ONLY — never in LLM prompts)
 ├── procgen/
 │   ├── names.py            # procedural name generation
 │   ├── spritegen.py        # 16x16 enemy sprite generator
-│   ├── overworld_test.py   # overworld screen generator — outputs PNGs to procgen/out/
-│   ├── cave_test.py        # cave/dungeon interior generator — outputs PNGs to procgen/out/
+│   ├── worldgen.py         # overworld screen generator — outputs PNGs to procgen/out/
+│   ├── cavegen.py          # cave/dungeon interior generator — outputs PNGs to procgen/out/
 │   ├── towngen.py          # town interior generator — outputs PNGs to procgen/out/
-│   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee
+│   ├── worlddb_test.py     # WorldDB integration tests incl. replay guarantee + interior replay
 │   ├── preview_test.py     # visual harness: party sprite composited onto generated screen → PNG
 │   ├── viewscan_test.py    # viewscan tests: synthetic grids + real screens with ASCII ray overlay
 │   ├── voting_test.py      # voting + journal harness: real LLM, real movement, journal rollover
@@ -341,6 +366,7 @@ stream. Get the whole game working in text, then bolt on the web layer.
 - Web service (FastAPI/Flask) behind Caddy reverse proxy, run as a systemd unit
   — same pattern as existing infra.
 - `secrets.py` holds API keys and is gitignored. Repo backed up on GitHub.
+- Activate `.venv/` before running: `source .venv/bin/activate` — all deps (Pillow etc.) live there.
 
 ---
 
@@ -364,7 +390,8 @@ stream. Get the whole game working in text, then bolt on the web layer.
 15. [x] SSE web viewer (Part 1) — `web/server.py`: Flask SSE endpoint with per-client queue fan-out, late-joiner snapshot, heartbeat; screen PNGs rendered server-side via existing Pillow pipeline (per-screen palette applied, cached to `web/static/screens/`); `web/static/app.js` + canvas: two-layer canvas (map + sprite overlay), `billyS1` placeholder sprite, `updateSpriteFrame()` no-op stub; `run_web.py` runs loop in daemon thread alongside Flask; proposer rotation fix (round-robin by index so each member leads in turn); confirmed: `init`→`vote`/`resolve`→tile-by-tile `move`→`screen` on crossing, both screen PNGs visually correct
 16. [x] Goal-driven navigation (JOB 11a) — replaces the propose→vote loop with a three-tier system that eliminates oscillation: `engine/goal.py` (`Goal` dataclass, status lifecycle); `engine/pathfinding.py` (`bfs_to_exit`, `path_to_segments`, `screen_direction_toward`); `overworld_loop.py` rewritten — Tier 1 LLM goal-setting, Tier 2 silent BFS execution, Tier 3 checkpoint stubs; `_find_connected_start` seeds BFS from exit-edge tiles inward so the party always starts exit-connected (fixes disconnected-pocket livelock on procgen maps); post-crossing reconnect step recovers from disconnected landing tiles; `procgen/movement_test.py`: BFS + crossing integration tests (no LLM)
 17. [x] Curated context + checkpoint discussion (JOB 11b) — `engine/navlog.py`: append-only unbounded event log (SCREEN/GOAL/CHECKPOINT/ENTERED; MOVE excluded); `engine/context.py`: `build_curated_context()` assembles `CuratedContext` from NavLog + DB + party state — the sole feed for all goal/checkpoint prompts; `llm/prompts.py`: `build_goal_context(member, ctx)` and `build_checkpoint_context(member, ctx, reason)` updated to consume `CuratedContext`; `llm/schema.py`: `parse_checkpoint_decision` (continue/abandon/modify with goal fields for modify); four checkpoint triggers in the main loop with `continue|abandon|modify` outcomes; branch-point trigger fires only on axis tie (`|dx|==|dy|`) — genuine ambiguity, not every diagonal step; `branch_points_seen` dedup prevents re-triggering per `(screen, target)` pair
-18. [ ] Hub scene + free-roam / pet-sim mode
-19. [ ] Wire procgen into engine scenes (overworld + cave entry/exit)
-20. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
-21. [ ] (later) player inputs
+18. [x] Wire overworld to interior generation — `procgen/worldgen.py` + `procgen/cavegen.py` (renamed from `overworld_test.py`/`cave_test.py`); `procgen/towngen.py`: added `TownData` dataclass + `generate_town_data(seed)` (no PIL); `engine/worlddb.py`: `interiors` table, `compute_feature_id()`, `get_or_create_interior()` — generate-once/cache-forever matching screens pattern; `engine/scenes/interior.py`: `Interior` scene class (cave or town, `monster_spawn` flag, `entry_tile` exit, `combined_grid()`); `overworld_loop.py`: `_enter_interior()` fires on every `stop='enterable'`, dispatches by `FEATURE_TYPES`, emits `interior_enter`/`interior_exit` SSE events; interior navigation is a future job (stubs immediately); `procgen/worlddb_test.py`: interior replay guarantee test added
+19. [ ] Interior navigation — party movement within caves/towns, monster encounters (caves), NPC interaction (towns)
+20. [ ] Hub scene + free-roam / pet-sim mode
+21. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+22. [ ] (later) player inputs

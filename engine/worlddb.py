@@ -1,16 +1,21 @@
 """Persistent world-state database for simtank_rpg.
 
-Single SQLite file. Two tables:
-  screens  — one row per discovered screen; grid cached on first visit.
-  features — one row per interactable feature on a discovered screen.
+Single SQLite file. Three tables:
+  screens   — one row per discovered screen; grid cached on first visit.
+  features  — one row per interactable feature on a discovered screen.
+  interiors — one row per entered feature; interior grid cached on first entry.
 
-Generate-once rule: a screen is generated exactly once (on first visit),
-then always read from the DB. A fresh DB + the same world_seed must rebuild
-identically as screens are visited (determinism / replay guarantee).
+Generate-once rule: a screen or interior is generated exactly once (on first
+visit), then always read from the DB. A fresh DB + the same world_seed must
+rebuild identically as locations are visited (determinism / replay guarantee).
 
 Coordinate convention: all (row, col) tuples match the grid indexing used in
 ScreenData. local_row and local_col columns in the features table follow the
 same convention.
+
+Interior feature_id is a stable signed 64-bit hash of
+(world_seed, sx, sy, local_row, local_col) so it doesn't change if the world
+reorders screens, and the interiors table is keyed by feature_id alone.
 
 Known interface warts:
   No read-only get_screen() — get_or_create_screen requires a generator even
@@ -23,6 +28,7 @@ Known interface warts:
   raising on zero rowcount if this becomes a bug magnet.
 """
 
+import hashlib
 import json
 import sqlite3
 import struct
@@ -62,7 +68,27 @@ CREATE TABLE IF NOT EXISTS features (
     npc_flags_json  TEXT,
     PRIMARY KEY (world_seed, sx, sy, local_row, local_col)
 );
+
+CREATE TABLE IF NOT EXISTS interiors (
+    feature_id      INTEGER NOT NULL PRIMARY KEY,
+    interior_seed   INTEGER NOT NULL,
+    data_json       TEXT    NOT NULL
+);
 """
+
+
+def compute_feature_id(world_seed: int, sx: int, sy: int,
+                       local_row: int, local_col: int) -> int:
+    """Return a stable signed 64-bit feature ID hashed from location components."""
+    raw = struct.pack('>qqqqq', world_seed, sx, sy, local_row, local_col)
+    digest = hashlib.sha256(raw).digest()[:8]
+    return _to_s64(struct.unpack('>Q', digest)[0])
+
+
+def _derive_interior_seed(world_seed: int, feature_id: int) -> int:
+    raw = struct.pack('>qq', world_seed, feature_id)
+    digest = hashlib.sha256(raw).digest()[:8]
+    return _to_s64(struct.unpack('>Q', digest)[0])
 
 
 def _compute_exits(grid):
@@ -194,6 +220,34 @@ class WorldDB:
             (world_seed,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── READ / WRITE INTERIORS ────────────────────────────────────────────────
+
+    def get_or_create_interior(self, world_seed: int, feature_id: int, generator):
+        """Return interior data dict, generating and caching if not yet stored.
+
+        generator: callable(seed: int) → object with .to_dict() method
+        Returns the deserialized data dict (keys converted back to tuples where
+        applicable — see the generator's from_dict convention).
+        """
+        row = self._conn.execute(
+            "SELECT data_json FROM interiors WHERE feature_id=?",
+            (_to_s64(feature_id),),
+        ).fetchone()
+        if row is not None:
+            return json.loads(row[0])
+
+        interior_seed = _derive_interior_seed(world_seed, feature_id)
+        data = generator(interior_seed)
+        data_dict = data.to_dict()
+        data_json = json.dumps(data_dict, sort_keys=True)
+
+        self._conn.execute(
+            "INSERT INTO interiors (feature_id, interior_seed, data_json) VALUES (?, ?, ?)",
+            (_to_s64(feature_id), _to_s64(interior_seed), data_json),
+        )
+        self._conn.commit()
+        return data_dict
 
     def close(self):
         self._conn.close()

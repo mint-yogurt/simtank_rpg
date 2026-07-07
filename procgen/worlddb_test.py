@@ -7,6 +7,8 @@ Tests:
   4. _compute_exits with synthetic grids (discriminating correctness check).
   5. Replay guarantee: a second fresh DB discovers the same screens and produces
      identical exits and features as the first DB.
+  6. Interior replay guarantee: same feature_id on a fresh DB regenerates an
+     identical interior (deterministic JSON, stable hash chain).
 
 Run from the repo root:
     python procgen/worlddb_test.py
@@ -18,8 +20,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.worlddb import WorldDB, _compute_exits
-from procgen.overworld_test import generate_screen_data
+from engine.worlddb import WorldDB, _compute_exits, compute_feature_id
+from procgen.cavegen import generate_cave_data
+from procgen.worldgen import generate_screen_data
 
 WORLD_SEED = 7654321098765432
 TEST_COORDS = [(0, 0), (1, 0), (-1, 0), (0, 1), (2, -1)]
@@ -161,6 +164,48 @@ def test_replay():
     print(f"PASS: replay guarantee ({len(s1)} screens, {len(f1)} features)")
 
 
+def test_interior_replay():
+    """Same feature_id on two fresh DBs must produce identical interior data_json."""
+    # Pick a stable feature_id from the first enterable feature we discover.
+    db = WorldDB(':memory:')
+    _discover_all(db)
+    all_features = db.list_known_features(WORLD_SEED)
+    enterable = [f for f in all_features if f['enterable']]
+    db.close()
+
+    if not enterable:
+        print("SKIP: no enterable features on test screens (rare)")
+        return
+
+    f = enterable[0]
+    sx, sy = f['sx'], f['sy']
+    local_row, local_col = f['local_row'], f['local_col']
+    feature_id = compute_feature_id(WORLD_SEED, sx, sy, local_row, local_col)
+
+    def gen_interior(db_):
+        return db_.get_or_create_interior(WORLD_SEED, feature_id, generate_cave_data)
+
+    db1 = WorldDB(':memory:')
+    db2 = WorldDB(':memory:')
+    d1 = gen_interior(db1)
+    d2 = gen_interior(db2)
+
+    # Cached load must match fresh generation.
+    d1_cached = gen_interior(db1)
+
+    import json as _json
+    j1       = _json.dumps(d1,        sort_keys=True)
+    j2       = _json.dumps(d2,        sort_keys=True)
+    j1_cache = _json.dumps(d1_cached, sort_keys=True)
+
+    assert j1 == j2,       "interior data_json differs between two fresh DBs"
+    assert j1 == j1_cache, "cached interior differs from freshly generated one"
+
+    db1.close(); db2.close()
+    print(f"PASS: interior replay guarantee (feature_id={feature_id}, "
+          f"type={f['feature_type']})")
+
+
 if __name__ == '__main__':
     print(f"World seed: {WORLD_SEED}\n")
     print("─ discovery and exits ─────────────────")
@@ -173,4 +218,6 @@ if __name__ == '__main__':
     test_compute_exits_synthetic()
     print("\n─ replay guarantee ─────────────────────")
     test_replay()
+    print("\n─ interior replay guarantee ────────────")
+    test_interior_replay()
     print("\nAll tests passed.")

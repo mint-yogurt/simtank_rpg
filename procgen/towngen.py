@@ -1,15 +1,19 @@
-"""Procedural town generator — test harness for simtank_rpg.
+"""Procedural town interior generator for simtank_rpg.
 
-Pipeline per run:
+Pipeline:
   1. gen_ground       — grass fill → cobble / gravel / dirt blobs
   2. place_healer     — fixed 3×2 healer hut + pizza sign nearby
   3. place_buildings  — houseA, houseB, stone buildings
   4. place_scatter    — vegetation / scatter / containers in grass
-  5. render_town      — crop to content + padding, save PNG
+  5. render_town      — crop to content + padding, save PNG (harness only)
+
+Public API:
+  generate_town_data(seed) → TownData
 """
 
 import os
 import random
+from dataclasses import dataclass
 from PIL import Image
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -719,6 +723,97 @@ def render_town(ground_grid, overlay, tiles, crop_box):
             out.paste(img, ((c - min_c) * TILE_PX, (r - min_r) * TILE_PX), img)
 
     return out
+
+# ── PUBLIC API ────────────────────────────────────────────────────────────────
+
+@dataclass
+class TownData:
+    seed:        int
+    ground_grid: dict   # {(r,c): tile_name}
+    overlay:     dict   # {(r,c): tile_name}
+    crop_box:    tuple  # (r0, c0, r1, c1) — valid tile range after cropping
+    palette:     list   # [(r,g,b), ...]
+    spawn:       tuple  # (row, col) — party starts here
+    entry_tile:  tuple  # (row, col) — exit triggers return to overworld
+
+    def to_dict(self):
+        return {
+            'seed': self.seed,
+            'ground_grid': {f"{r},{c}": v for (r, c), v in self.ground_grid.items()},
+            'overlay':     {f"{r},{c}": v for (r, c), v in self.overlay.items()},
+            'crop_box': list(self.crop_box),
+            'palette':  [list(p) for p in self.palette],
+            'spawn':    list(self.spawn),
+            'entry_tile': list(self.entry_tile),
+        }
+
+
+def generate_town_data(seed: int) -> TownData:
+    """Generate a town interior deterministically from seed. Cacheable."""
+    global CANVAS_H, CANVAS_W
+
+    rng     = random.Random(seed)
+    palette = pick_palette(rng)
+
+    n_buildings = rng.randint(MIN_BUILDINGS, MAX_BUILDINGS)
+    total       = n_buildings + 1
+
+    per_w  = rng.randint(2, 4)
+    per_h  = rng.randint(1, 3)
+    CANVAS_W = max(16, 12 + total * per_w)
+    CANVAS_H = max(14, 10 + total * per_h)
+
+    ground   = gen_ground(rng)
+    overlay  = {}
+    occupied = set()
+    buildings   = []
+    cluster_box = place_healer_hut(overlay, occupied, buildings, rng)
+
+    for _ in range(n_buildings):
+        kind = rng.choice(['houseA', 'houseB', 'stone', 'houseA', 'houseB'])
+        if kind == 'houseA':
+            new_box = place_house(overlay, occupied, buildings, rng, cluster_box, variant='A')
+        elif kind == 'houseB':
+            new_box = place_house(overlay, occupied, buildings, rng, cluster_box, variant='B')
+        else:
+            new_box = place_stone_building(overlay, occupied, buildings, rng, cluster_box)
+        if new_box is not cluster_box:
+            cluster_box = new_box
+
+    GROUND_MARGIN = 5
+    if overlay:
+        ov_rs = [r for r, c in overlay]
+        ov_cs = [c for r, c in overlay]
+        crop_box = (
+            max(0,          min(ov_rs) - GROUND_MARGIN),
+            max(0,          min(ov_cs) - GROUND_MARGIN),
+            min(CANVAS_H-1, max(ov_rs) + GROUND_MARGIN),
+            min(CANVAS_W-1, max(ov_cs) + GROUND_MARGIN),
+        )
+    else:
+        crop_box = (0, 0, CANVAS_H - 1, CANVAS_W - 1)
+
+    place_cobble_paths(ground, overlay, buildings, rng, crop_box)
+    place_courtyards(ground, overlay, occupied, rng, cluster_box)
+    place_scatter(ground, overlay, occupied, rng, crop_box)
+    place_vegetation_clusters(ground, overlay, occupied, rng, crop_box)
+
+    # Entry tile: bottom center of crop_box. Spawn: one row north.
+    r0, c0, r1, c1 = crop_box
+    entry_col  = (c0 + c1) // 2
+    entry_tile = (r1, entry_col)
+    spawn      = (r1 - 1, entry_col)
+
+    return TownData(
+        seed=seed,
+        ground_grid=ground,
+        overlay=overlay,
+        crop_box=crop_box,
+        palette=palette,
+        spawn=spawn,
+        entry_tile=entry_tile,
+    )
+
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():

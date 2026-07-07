@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from engine.tiles import is_enterable, is_passable
 from engine.viewscan import _DIRS, scan
 from llm.ascii_map import render_map_overlay
-from procgen.overworld_test import generate_screen_data
+from procgen.worldgen import generate_screen_data
 
 WORLD_SEED = 77777
 

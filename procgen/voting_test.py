@@ -39,7 +39,7 @@ from llm.ascii_map import render_map_overlay
 from llm.client import ask, ask_with_retry
 from llm.prompts import build_overworld_system_prompt, build_overworld_context
 from llm.schema import parse_overworld_action
-from procgen.overworld_test import generate_screen_data
+from procgen.worldgen import generate_screen_data
 
 WORLD_SEED = 77777
 MAX_ROUNDS = 8   # enough to fill and roll the 12-entry journal window

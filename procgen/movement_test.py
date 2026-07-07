@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.worlddb import WorldDB
 from engine.party_state import PartyPos, enter_screen, execute_move
-from procgen.overworld_test import ScreenData
+from procgen.worldgen import ScreenData
 
 WORLD_SEED = 77777
 
@@ -26,7 +26,7 @@ def _make_generator(grid, feature_cells=None):
     """Wrap a synthetic grid in a callable compatible with WorldDB.get_or_create_screen."""
     fc = feature_cells or {}
     def _gen(world_seed, sx, sy):
-        from procgen.overworld_test import FEATURE_TYPES
+        from procgen.worldgen import FEATURE_TYPES
         return ScreenData(
             world_seed=world_seed, sx=sx, sy=sy,
             screen_seed=0,

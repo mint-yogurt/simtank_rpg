@@ -28,7 +28,7 @@ def _get_raw_tiles():
     if _raw_tiles is None:
         with _raw_tiles_lock:
             if _raw_tiles is None:
-                from procgen.overworld_test import load_raw_tiles
+                from procgen.worldgen import load_raw_tiles
                 _raw_tiles = load_raw_tiles(_TILESET_PATH, _TILERULES_PATH)
     return _raw_tiles
 
@@ -39,7 +39,7 @@ def render_screen(world_seed: int, sx: int, sy: int) -> str:
     fname = f"{world_seed}_{sx}_{sy}.png"
     out_path = _SCREENS_DIR / fname
     if not out_path.exists():
-        from procgen.overworld_test import generate_screen_data, render_screen_data
+        from procgen.worldgen import generate_screen_data, render_screen_data
         data = generate_screen_data(world_seed, sx, sy)
         img = render_screen_data(data, _get_raw_tiles())
         img.save(str(out_path))
