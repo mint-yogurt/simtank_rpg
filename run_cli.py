@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from engine.combat import Fighter, hit_chance, resolve_attack, try_run
+from engine.config import cfg
 from engine.journal import Journal
 from llm.client import ask
 from llm.prompts import build_battle_context, build_system_prompt
@@ -189,7 +190,7 @@ def _pick_ally(party: list, target_name: str | None, fallback: "BattleMember") -
 # Battle loop
 # ---------------------------------------------------------------------------
 
-MAX_ROUNDS = 100
+MAX_ROUNDS = cfg.battle_max_rounds
 
 
 def run_battle(party: list[BattleMember], enemy: BattleEnemy, rng: random.Random) -> None:

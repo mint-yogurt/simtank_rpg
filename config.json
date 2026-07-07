@@ -1,0 +1,31 @@
+{
+  "_comment": "Master game config. LLM provider lives in secrets.py, not here.",
+
+  "pacing": {
+    "overworld_move_ms": 350,
+    "screen_cross_ms": 350,
+    "interior_step_ms": 220,
+    "interior_entry_ms": 600,
+    "interior_exit_prepare_ms": 400,
+    "interior_exit_complete_ms": 200
+  },
+
+  "hub": {
+    "min_ticks": 12
+  },
+
+  "battle": {
+    "max_rounds": 100
+  },
+
+  "display": {
+    "tile_px": 16,
+    "scale": 3,
+    "view_cols": 16,
+    "view_rows": 14
+  },
+
+  "interior": {
+    "max_explore_dist": 50
+  }
+}

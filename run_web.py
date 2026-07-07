@@ -12,14 +12,16 @@ import threading
 
 from engine.scenes.hub import run_hub
 from overworld_loop import run_overworld
-from web.server import app, broadcast, render_hub_map, render_screen, render_interior_map
+from web.server import (app, broadcast,
+                        get_hub_tile_payload, get_screen_tile_payload,
+                        get_interior_tile_payload)
 
 
 def _loop_thread(seed: int):
-    result = run_hub(emit=broadcast, render_hub_fn=render_hub_map)
+    result = run_hub(emit=broadcast, render_hub_fn=get_hub_tile_payload)
     if result == "overworld":
-        run_overworld(seed, emit=broadcast, render_screen_fn=render_screen,
-                      render_interior_fn=render_interior_map)
+        run_overworld(seed, emit=broadcast, render_screen_fn=get_screen_tile_payload,
+                      render_interior_fn=get_interior_tile_payload)
 
 
 def main():

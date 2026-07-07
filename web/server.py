@@ -1,9 +1,10 @@
 """Flask SSE server for simtank_rpg.
 
 Broadcasts engine events to connected browsers via Server-Sent Events.
-Screen PNGs are rendered on demand (deterministic, cached to disk).
+Tile payloads (tileset_url + tile_grid) are sent instead of baked screen PNGs.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -12,139 +13,130 @@ from pathlib import Path
 
 from flask import Flask, Response, send_from_directory
 
-# ── screen PNG rendering ──────────────────────────────────────────────────────
+from engine.config import cfg
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
 
 _REPO_ROOT = Path(__file__).parent.parent
 _SCREENS_DIR = _REPO_ROOT / "web" / "static" / "screens"
-_TILESET_PATH = str(_REPO_ROOT / "web" / "static" / "tiles" / "overworld_1.png")
-_TILERULES_PATH = str(_REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_tilerules.txt")
-_TOWN_TILESET_PATH = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town.png"
-_HUB_TILE_PX = 16
 
-_CAVE_TILESET_PATH  = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave1.png"
-_CAVE_RULES_PATH    = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave_rules.txt"
-_TOWN_RULES_PATH    = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town_rules.txt"
+_OVERWORLD_TILESET  = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1.png"
+_OVERWORLD_RULES    = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_tilerules.txt"
+_CAVE_TILESET       = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave1.png"
+_CAVE_RULES         = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave_rules.txt"
+_TOWN_TILESET       = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town.png"
+_TOWN_RULES         = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town_rules.txt"
 
-_raw_tiles = None
-_raw_tiles_lock = threading.Lock()
+# ── Tileset PNG cache (palette-remapped copies, keyed by content hash) ────────
 
-_cave_raw_tiles = None
-_cave_raw_lock  = threading.Lock()
-
-_town_raw_tiles = None
-_town_raw_lock  = threading.Lock()
+_tileset_lock = threading.Lock()
 
 
-def _get_raw_tiles():
-    global _raw_tiles
-    if _raw_tiles is None:
-        with _raw_tiles_lock:
-            if _raw_tiles is None:
-                from procgen.worldgen import load_raw_tiles
-                _raw_tiles = load_raw_tiles(_TILESET_PATH, _TILERULES_PATH)
-    return _raw_tiles
+def _palette_hash(*colors) -> str:
+    flat = b"".join(bytes(c) for c in colors)
+    return hashlib.md5(flat).hexdigest()[:12]
 
 
-def _get_cave_raw_tiles():
-    global _cave_raw_tiles
-    if _cave_raw_tiles is None:
-        with _cave_raw_lock:
-            if _cave_raw_tiles is None:
-                from procgen.cavegen import load_raw_tiles as _cave_load
-                _cave_raw_tiles = _cave_load(
-                    str(_CAVE_TILESET_PATH), str(_CAVE_RULES_PATH))
-    return _cave_raw_tiles
+def _remap_png(img, color_map: dict):
+    """Swap colors in a PIL RGBA image. color_map: {(r,g,b): (r,g,b)}."""
+    data = list(img.getdata())
+    data = [(color_map.get((r, g, b), (r, g, b)) + (a,)) for r, g, b, a in data]
+    out = img.copy()
+    out.putdata(data)
+    return out
 
 
-def _get_town_raw_tiles():
-    global _town_raw_tiles
-    if _town_raw_tiles is None:
-        with _town_raw_lock:
-            if _town_raw_tiles is None:
-                from procgen.towngen import load_raw_tiles as _town_load
-                _town_raw_tiles = _town_load(
-                    str(_TOWN_TILESET_PATH), str(_TOWN_RULES_PATH))
-    return _town_raw_tiles
-
-
-def render_hub_map() -> str:
-    """Render hub map PNG from tiles_town.png; return URL path. Cached on disk."""
+def _render_tileset_png(src_path: Path, tag: str, color_map: dict | None) -> str:
+    """Load tileset PNG, optionally remap colors, cache to screens dir, return URL."""
     _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = _SCREENS_DIR / "hub.png"
-    if not out_path.exists():
-        _render_hub_map_to(out_path)
-    return "/screens/hub.png"
-
-
-def _render_hub_map_to(out_path: Path) -> None:
-    from PIL import Image
-    from engine.scenes.hub import load_hub_coords
-
-    px = _HUB_TILE_PX
-    tileset = Image.open(str(_TOWN_TILESET_PATH)).convert("RGBA")
-    coords = load_hub_coords()
-    rows_count = len(coords)
-    cols_count = max(len(r) for r in coords) if coords else 0
-
-    out = Image.new("RGBA", (cols_count * px, rows_count * px), (0, 0, 0, 255))
-    for r, row in enumerate(coords):
-        for c, (tc, tr) in enumerate(row):
-            tile = tileset.crop((tc * px, tr * px, (tc + 1) * px, (tr + 1) * px))
-            out.paste(tile, (c * px, r * px))
-    out.save(str(out_path))
-
-
-def render_screen(world_seed: int, sx: int, sy: int) -> str:
-    """Render screen PNG if not cached; return its URL path."""
-    _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
-    fname = f"{world_seed}_{sx}_{sy}.png"
-    out_path = _SCREENS_DIR / fname
-    if not out_path.exists():
-        from procgen.worldgen import generate_screen_data, render_screen_data
-        data = generate_screen_data(world_seed, sx, sy)
-        img = render_screen_data(data, _get_raw_tiles())
-        img.save(str(out_path))
-    return f"/screens/{fname}"
-
-
-def render_interior_map(world_seed: int, feature_id: int,
-                        tag: str, data: dict) -> str:
-    """Render interior PNG (cave or town) if not cached; return URL path.
-
-    tag:  'town' or 'dungeon' (from FEATURE_TYPES)
-    data: raw dict from worlddb (serialized CaveData or TownData)
-    """
-    _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
-    fname = f"interior_{world_seed}_{feature_id}.png"
-    out_path = _SCREENS_DIR / fname
-    if not out_path.exists():
-        _render_interior_to(out_path, tag, data)
-    return f"/screens/{fname}"
-
-
-def _render_interior_to(out_path: Path, tag: str, data: dict) -> None:
-    if tag == 'town':
-        from procgen.towngen import render_town, remap_tileset
-        raw = _get_town_raw_tiles()
-        palette = [tuple(p) for p in data['palette']]
-        tiles = remap_tileset(raw, palette)
-        ground = {tuple(map(int, k.split(','))): v
-                  for k, v in data['ground_grid'].items()}
-        overlay = {tuple(map(int, k.split(','))): v
-                   for k, v in data['overlay'].items()}
-        crop_box = tuple(data['crop_box'])
-        img = render_town(ground, overlay, tiles, crop_box)
+    if color_map:
+        h = _palette_hash(*color_map.values())
+        fname = f"tileset_{tag}_{h}.png"
     else:
-        from procgen.cavegen import render_cave, remap_tileset
-        raw = _get_cave_raw_tiles()
-        grey, teal, gold = (tuple(p) for p in data['palette'])
-        tiles = remap_tileset(raw, grey, teal, gold)
-        floor_grid = {tuple(map(int, k.split(','))): v
-                      for k, v in data['floor_grid'].items()}
-        wall_grid = {tuple(map(int, k.split(','))): v
-                     for k, v in data['wall_grid'].items()}
-        img = render_cave(floor_grid, wall_grid, tiles)
-    img.save(str(out_path))
+        fname = f"tileset_{tag}.png"
+    out_path = _SCREENS_DIR / fname
+    with _tileset_lock:
+        if not out_path.exists():
+            from PIL import Image
+            img = Image.open(str(src_path)).convert("RGBA")
+            if color_map:
+                img = _remap_png(img, color_map)
+            img.save(str(out_path))
+    return f"/screens/{fname}"
+
+
+# ── Per-tileset payload builders ──────────────────────────────────────────────
+
+def get_screen_tile_payload(world_seed: int, sx: int, sy: int) -> dict:
+    """Return {tileset_url, tile_grid} for an overworld screen."""
+    from procgen.worldgen import generate_screen_data, SRC_GREEN, SRC_BLUE, SRC_BROWN
+    data = generate_screen_data(world_seed, sx, sy)
+    green, blue, brown = data.palette
+    color_map = {SRC_GREEN: green, SRC_BLUE: blue, SRC_BROWN: brown}
+    tileset_url = _render_tileset_png(_OVERWORLD_TILESET, "overworld", color_map)
+    return {"tileset_url": tileset_url, "tile_grid": data.grid}
+
+
+def get_hub_tile_payload() -> dict:
+    """Return {tileset_url, tile_grid} for the static hub map. No palette swap."""
+    from engine.scenes.hub import load_hub_grid
+    tile_grid = load_hub_grid()
+    tileset_url = _render_tileset_png(_TOWN_TILESET, "hub", None)
+    return {"tileset_url": tileset_url, "tile_grid": tile_grid}
+
+
+def get_interior_tile_payload(world_seed: int, feature_id: int,
+                              tag: str, data: dict) -> dict:
+    """Return {tileset_url, tile_grid} for a cave or town interior."""
+    if tag == "town":
+        from procgen.towngen import SRC_COLORS
+        palette = [tuple(p) for p in data["palette"]]
+        color_map = dict(zip(SRC_COLORS, palette))
+        tileset_url = _render_tileset_png(_TOWN_TILESET, "town", color_map)
+        # town grid is ground_grid overlaid with overlay
+        ground = {tuple(map(int, k.split(","))): v
+                  for k, v in data["ground_grid"].items()}
+        overlay = {tuple(map(int, k.split(","))): v
+                   for k, v in data["overlay"].items()}
+        # Determine dimensions from crop_box
+        r0, c0, r1, c1 = data["crop_box"]
+        rows, cols = r1 - r0, c1 - c0
+        tile_grid = []
+        for r in range(rows):
+            row = []
+            for c in range(cols):
+                abs_r, abs_c = r + r0, c + c0
+                ov  = overlay.get((abs_r, abs_c))
+                gnd = ground.get((abs_r, abs_c)) or "grass1"
+                # Overlay tiles have transparent backgrounds — send both so
+                # JS can draw ground first then the overlay on top.
+                row.append([gnd, ov] if ov else gnd)
+            tile_grid.append(row)
+    else:
+        from procgen.cavegen import SRC_GREY, SRC_TEAL, SRC_GOLD
+        grey, teal, gold = (tuple(p) for p in data["palette"])
+        color_map = {SRC_GREY: grey, SRC_TEAL: teal, SRC_GOLD: gold}
+        tileset_url = _render_tileset_png(_CAVE_TILESET, "cave", color_map)
+        floor_grid = {tuple(map(int, k.split(","))): v
+                      for k, v in data["floor_grid"].items()}
+        wall_grid = {tuple(map(int, k.split(","))): v
+                     for k, v in data["wall_grid"].items()}
+        # Determine dimensions
+        all_cells = set(floor_grid) | set(wall_grid)
+        if all_cells:
+            max_r = max(r for r, c in all_cells)
+            max_c = max(c for r, c in all_cells)
+            rows, cols = max_r + 1, max_c + 1
+        else:
+            rows, cols = 0, 0
+        tile_grid = []
+        for r in range(rows):
+            row = []
+            for c in range(cols):
+                tile = wall_grid.get((r, c)) or floor_grid.get((r, c)) or "cave_floor"
+                row.append(tile)
+            tile_grid.append(row)
+    return {"tileset_url": tileset_url, "tile_grid": tile_grid}
 
 
 # ── SSE fan-out ───────────────────────────────────────────────────────────────
@@ -165,7 +157,6 @@ def _update_snapshot(event: dict):
             _snapshot = dict(event)
         elif t == "hub_init":
             _snapshot = dict(event)
-            # deep-copy party list so hub_move updates don't mutate the source event
             _snapshot["party"] = [dict(m) for m in event.get("party", [])]
         elif t == "hub_move" and _snapshot and _snapshot.get("type") == "hub_init":
             for m in _snapshot["party"]:
@@ -178,7 +169,8 @@ def _update_snapshot(event: dict):
                 "sx": event["sx"], "sy": event["sy"],
                 "row": event["row"], "col": event["col"],
                 "rows": event["rows"], "cols": event["cols"],
-                "screen_url": event["screen_url"],
+                "tileset_url": event["tileset_url"],
+                "tile_grid": event["tile_grid"],
             })
         elif t == "move" and _snapshot is not None:
             _snapshot.update({
@@ -231,7 +223,6 @@ def screen_files(filename):
 def events():
     q: queue.Queue = queue.Queue(maxsize=256)
 
-    # Send snapshot immediately so late-joiners see current state.
     with _snapshot_lock:
         snap = dict(_snapshot) if _snapshot else None
 
@@ -247,7 +238,7 @@ def events():
                     data = q.get(timeout=20)
                     yield f"data: {data}\n\n"
                 except queue.Empty:
-                    yield ": heartbeat\n\n"  # keep connection alive
+                    yield ": heartbeat\n\n"
         finally:
             with _subs_lock:
                 _subscribers.discard(q)

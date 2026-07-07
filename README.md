@@ -4,9 +4,9 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** alpha → beta transition. Game starts on the **Front House** hub scene: four members roam the hand-authored home map independently for at least 12 ticks before a leave vote can trigger. Goal-setting and checkpoint decisions rotate through all four members so no single character dominates. On vote pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). When the party steps onto a cave or town entrance they now actually enter — navigating the interior via deterministic BFS (explore to farthest reachable point, then exit), rendered as a separate PNG with viewport/camera scrolling on the web canvas. `run_cli.py` defaults to hub → overworld; `run_cli.py battle` runs a single fight.
+**Status:** alpha → beta transition. Game starts on the **Front House** hub scene: four members roam the hand-authored home map independently for at least 12 ticks before a leave vote can trigger. Goal-setting and checkpoint decisions rotate through all four members so no single character dominates. On vote pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). When the party steps onto a cave or town entrance they now actually enter — navigating the interior via deterministic BFS (explore to farthest reachable point, then exit). The web canvas draws scenes from a live tile-ID grid (SSE `tileset_url` + `tile_grid` per event) rather than baked PNGs, with a unified camera-clamp that works for all three scene modes. All pacing, display geometry, and tunable game parameters live in `config.json`. `run_cli.py` defaults to hub → overworld; `run_cli.py battle` runs a single fight.
 
-Before beta: a graphics/renderer refactor (static PNG → live tile grid + real sprite animation), a global config file, and a navigation/pacing pass are required — see **Issues** below. NPCs are deferred until those land.
+Before beta: sprite animation and a navigation/pacing pass are required — see **Issues** below. NPCs are deferred until those land.
 
 ---
 
@@ -407,17 +407,11 @@ stream. Get the whole game working in text, then bolt on the web layer.
 
 ## Issues (beta blockers — fix before NPCs)
 
-These four items are the alpha → beta gate. Order matters: config first (everything else reads from it), then renderer, then animation (which depends on the renderer), then navigation pacing (which can proceed in parallel once tick length exists).
+Two of the original four blockers are done. Remaining gate: sprite animation, then navigation pacing.
 
-### 1. Graphics renderer overhaul: static PNG → live tile grid
+### ~~1. Graphics renderer overhaul: static PNG → live tile grid~~ ✓ Done
 
-Current interior/hub/overworld screens are pre-baked PNGs (Pillow), scrolled in the browser by `drawImage` source-rect slicing of the whole baked image. This works for camera movement but the image is a fixed pixel blob — no per-tile swaps, so tile animation (water, waterfalls, torches) and sprite-frame animation both dead-end here.
-
-**Fix:** move to a live tile-ID grid.
-- Engine/SSE emits per-tick: viewport origin (top-left tile coord), tile-ID slice, and party sprite states (position, facing, frame, draw order).
-- JS canvas draws each tile from ID → tileset lookup (reusing the existing `*_tilerules.txt` coord maps) instead of `drawImage`-ing a baked PNG.
-- **Camera/scroll logic** (already partially built for interiors via `updateInteriorCamera`): generalize server-side — compute viewport origin centered on the lead party member, clamp to `[0, map_w - viewport_w]` / `[0, map_h - viewport_h]` so we never scroll past map edges, always keep the party centered everywhere else. Applies to towns and caves (bigger than viewport). Overworld and hub screens currently fit the viewport with no scroll needed — leave those static-camera for now unless/until a bigger overworld screen size is introduced.
-- Full-map PNGs from `procgen/*.py` remain — they become debug/reference renders only, not what the live viewer draws from.
+Replaced baked-PNG + `drawImage`-slice rendering with a live tile-ID grid. SSE events now carry `tileset_url` (palette-remapped tileset PNG, cached by palette hash) and `tile_grid` (2D array of tile-name strings) instead of a `screen_url`. JS draws tile-by-tile via `drawTile()` — handles `:90`/`:180`/`:270` rotation suffixes and derived tiles (towngen's rotated gravel variants encoded in `tilemap_town.json`). Camera clamping is now unified across all three modes (hub, overworld, interior) via a single `clampCamera()` call. Three static tilemap JSONs (`tilemap_overworld.json`, `tilemap_cave.json`, `tilemap_town.json`) are pre-generated from tilerules files by `web/gen_tilemaps.py`.
 
 ### 2. Sprite animation stubs
 
@@ -428,15 +422,9 @@ Right now the web viewer shows a single hardcoded BILLY sprite placeholder (`bil
 - **Hub:** each of the four members already moves independently (`hub.py`) — just needs each to carry its own facing/anim-frame state instead of a static frame.
 - Depends on Issue #1 (tile-ID rendering) since frame-swapping a party sprite is the same mechanism as swapping an animated tile.
 
-### 3. Global config
+### ~~3. Global config~~ ✓ Done
 
-No single source of truth today — tick pacing, LLM provider selection, viewport size, follow distance, and vote thresholds are hardcoded/scattered across `overworld_loop.py`, `hub.py`, `voting.py`, `llm/client.py`. Needed before the Pi-hosted LLM swap and before tuning game speed.
-
-**Add `engine/config.py`** (or `config.json` read once at startup), covering at minimum:
-- `tick_length_ms` — master pacing knob. Also the fix for the "4–5 LLM calls fire before the first one finishes displaying" problem — force the loop to actually wait between dispatches instead of racing ahead.
-- `llm_provider` block — base_url, model, timeout; ready to add the self-hosted Raspberry Pi endpoint as a provider alongside Ollama/Mistral.
-- Viewport dimensions (16×14 / 16×16), follow distance (1 tile), vote thresholds (currently hardcoded 3-of-4 etc. in `voting.py` and `hub.py`).
-- A speed/slowdown multiplier so hub and battle pacing can be tuned independently of raw tick length once it's live and things feel "too fast to read."
+`config.json` at repo root + `engine/config.py` singleton (`cfg`). Covers pacing delays (overworld move, screen crossing, interior step/entry/exit), hub min ticks, battle max rounds, display geometry (tile_px, scale, view_cols, view_rows), and interior max exploration distance. LLM provider stays in `secrets.py` by design. Vote thresholds are game-rule math tied to party size, not config values. All five consumer files patched to read from `cfg`.
 
 ### 4. Voting and navigation overhaul — party rushes through areas
 
@@ -485,8 +473,8 @@ This is a design decision, not just a config value — needs to be scoped proper
 19. [x] Interior navigation (basic) — deterministic BFS interior loop: party enters, walks to farthest reachable tile (max 50 steps), returns to exit; `interior_init`/`interior_move`/`interior_exit` SSE events; interior PNG rendered via `render_interior_map()` (cave + town tilesets, NES palette applied, cached); web canvas uses a 16×14 viewport with camera tracking (`updateInteriorCamera`, `drawInteriorMap`) so large interiors scroll correctly; feature detour block routes party to unvisited caves/towns via `bfs_to_tile` before each screen-crossing BFS (since `bfs_to_exit` avoids enterables by design); `hub` tile and unknown feature types excluded from detour via `FEATURE_TYPES` guard; eliminates the hallucination problem where party narrated entering places that were immediately stubbed out. Monster encounters and NPC interaction are future jobs.
 20. [x] Hub scene — `engine/scenes/hub.py`: 4-member independent roam on hand-authored town map (called the **Front House**); `MIN_HUB_TICKS = 12` dwell guard prevents immediate leave-vote on startup; spawn 4 rows up from the bottom edge; edge detection triggers `_run_leave_vote()` (VotingState, 3-of-4 threshold, VOTE-only action set, nudge-on-fail with corrective `hub_move` emit); `run_hub()` returns `"overworld"` on pass; `render_hub_map()` blits `tiles_town.png` tiles into `screens/hub.png`; JS handles `hub_init`/`hub_move` with 4-sprite per-character drawing; game now starts on hub in both `run_web.py` and `run_cli.py` (default: hub→overworld; `overworld` arg skips hub)
 20a. [x] Leader rotation — `leader_idx` tracked across the session in `run_overworld`; rotates through alive members for goal-setting and all checkpoint types so every character gets a turn making decisions (BILLY no longer always leads)
-21. [ ] **Global config** (`engine/config.py`) — tick length, LLM provider (incl. self-hosted Pi endpoint), viewport/follow/vote-threshold params — see Issue #3
-22. [ ] **Live tile-grid renderer** — replace baked-PNG + drawImage-slice scrolling with per-tick tile-ID SSE payload + canvas tile-ID lookup draw; generalized camera-clamp logic for town/cave — see Issue #1
+21. [x] **Global config** — `config.json` (repo root) + `engine/config.py` `cfg` singleton; covers all pacing delays, hub/battle constants, display geometry; patched `overworld_loop.py`, `engine/scenes/hub.py`, `run_cli.py`, `web/server.py`
+22. [x] **Live tile-grid renderer** — `web/server.py`: `get_screen_tile_payload`, `get_hub_tile_payload`, `get_interior_tile_payload` return `{tileset_url, tile_grid}` (palette-remapped tileset PNG cached by hash + 2D tile-name grid); `web/gen_tilemaps.py` generates `tilemap_{overworld,cave,town}.json` (tile_name→[col,row,rot?]) from tilerules files; `app.js`: `drawTile()` + `drawTileGrid()` replace all `drawImage`-of-baked-PNG calls; unified `clampCamera()` for all modes; SSE events updated across `overworld_loop.py` and `hub.py`
 23. [ ] **Sprite animation** — 2-frame walk cycles, turn-based overworld sprite, leader+follower town/cave movement, independent hub movement — see Issue #2
 24. [ ] **Navigation pacing pass** — Tier 2 execution pacing, goal-distance biasing, possible ambient narration ticks — see Issue #4
 25. [ ] NPC implementation — see Backlog

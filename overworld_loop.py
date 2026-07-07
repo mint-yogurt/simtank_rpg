@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from engine.config import cfg
 from engine.context import CuratedContext, build_curated_context
 from engine.goal import Goal
 from engine.journal import MemberJournal, journals_append
@@ -164,11 +165,11 @@ def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
                 if emit:
                     rows2 = len(final_grid)
                     cols2 = len(final_grid[0]) if rows2 else 0
-                    url = render_screen_fn(pos.world_seed, sx2, sy2) if render_screen_fn else ""
+                    tile_payload = render_screen_fn(pos.world_seed, sx2, sy2) if render_screen_fn else {}
                     emit({"type": "screen", "sx": sx2, "sy": sy2,
                           "row": step.after_row, "col": step.after_col,
-                          "rows": rows2, "cols": cols2, "screen_url": url})
-                    time.sleep(0.35)
+                          "rows": rows2, "cols": cols2, **tile_payload})
+                    time.sleep(cfg.screen_cross_ms / 1000)
         elif step.note.startswith("arrived_enterable"):
             m = re.match(r'arrived_enterable\((\w+)\)', step.note)
             if m:
@@ -176,12 +177,12 @@ def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
                       "sx": pos.sx, "sy": pos.sy})
-                time.sleep(0.35)
+                time.sleep(cfg.overworld_move_ms / 1000)
         else:
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
                       "sx": pos.sx, "sy": pos.sy})
-                time.sleep(0.35)
+                time.sleep(cfg.overworld_move_ms / 1000)
 
     return result.stop_reason, final_grid
 
@@ -435,19 +436,19 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         else:
             img_rows, img_cols = 1, 1
 
-    interior_url = ""
     if emit:
+        tile_payload = {}
         if render_interior_fn:
-            interior_url = render_interior_fn(
+            tile_payload = render_interior_fn(
                 pos.world_seed, interior.feature_id,
                 'town' if not interior.monster_spawn else 'dungeon',
                 interior.data)
         emit({'type': 'interior_init',
               'rows': img_rows, 'cols': img_cols,
               'row': spawn[0] - origin_r, 'col': spawn[1] - origin_c,
-              'screen_url': interior_url,
-              'monster_spawn': interior.monster_spawn})
-        time.sleep(0.6)
+              'monster_spawn': interior.monster_spawn,
+              **tile_payload})
+        time.sleep(cfg.interior_entry_ms / 1000)
 
     kind = "town" if not interior.monster_spawn else "cave"
     print(f"\n  INTERIOR [{kind}]  spawn={spawn}  exit={exit_tile}", flush=True)
@@ -456,7 +457,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
     # This ensures the party actually sees the interior rather than immediately leaving.
     exit_tuple = tuple(exit_tile) if exit_tile else None
     spawn_tuple = tuple(spawn)
-    far = _interior_find_far_tile(grid_dict, spawn_tuple, exclude=exit_tuple)
+    far = _interior_find_far_tile(grid_dict, spawn_tuple, exclude=exit_tuple,
+                                   max_dist=cfg.interior_max_explore_dist)
     print(f"  Exploring to {far} before exit.", flush=True)
 
     # Phase 1: spawn → farthest exploration point
@@ -469,13 +471,13 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         cur = (step_r, step_c)
         if emit:
             emit({'type': 'interior_move', 'row': cur[0] - origin_r, 'col': cur[1] - origin_c})
-            time.sleep(0.22)
+            time.sleep(cfg.interior_step_ms / 1000)
 
     print(f"  Interior done — returning to overworld at {(pos.row, pos.col)}.", flush=True)
     if emit:
-        time.sleep(0.4)
+        time.sleep(cfg.interior_exit_prepare_ms / 1000)
         emit({'type': 'interior_exit', 'feature_id': interior.feature_id})
-        time.sleep(0.2)
+        time.sleep(cfg.interior_exit_complete_ms / 1000)
         # Re-anchor the overworld sprite at the entrance tile
         emit({"type": "move", "row": pos.row, "col": pos.col,
               "sx": pos.sx, "sy": pos.sy})
@@ -527,8 +529,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     db_path:           SQLite path for the world DB. Use ':memory:' for ephemeral runs.
     emit:              optional callback(dict) — called with typed event dicts for the
                        web SSE layer. None in CLI mode.
-    render_screen_fn:  optional callback(world_seed, sx, sy) → URL string — renders
-                       screen PNG and returns its URL. None in CLI mode.
+    render_screen_fn:  optional callback(world_seed, sx, sy) → {tileset_url, tile_grid}
+                       dict — builds the tile payload for the web layer. None in CLI mode.
     """
     print(f"WORLD SEED: {world_seed}", flush=True)
 
@@ -553,9 +555,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     print(f"Start: row={pos.row} col={pos.col}", flush=True)
 
     if emit:
-        screen_url = render_screen_fn(world_seed, 0, 0) if render_screen_fn else ""
+        tile_payload = render_screen_fn(world_seed, 0, 0) if render_screen_fn else {}
         emit({"type": "init", "sx": 0, "sy": 0, "row": pos.row, "col": pos.col,
-              "rows": rows, "cols": cols, "screen_url": screen_url})
+              "rows": rows, "cols": cols, **tile_payload})
 
     active_goal: Goal | None = None
     previous_goal: Goal | None = None
