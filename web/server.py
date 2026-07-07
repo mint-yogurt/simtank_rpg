@@ -121,19 +121,27 @@ def get_interior_tile_payload(world_seed: int, feature_id: int,
                       for k, v in data["floor_grid"].items()}
         wall_grid = {tuple(map(int, k.split(","))): v
                      for k, v in data["wall_grid"].items()}
-        # Determine dimensions
+        # Crop to content bounding box + padding, matching overworld_loop origin calc.
+        _PAD = 2  # must equal _CAVE_PNG_PAD in overworld_loop.py
         all_cells = set(floor_grid) | set(wall_grid)
         if all_cells:
+            min_r = min(r for r, c in all_cells)
+            min_c = min(c for r, c in all_cells)
             max_r = max(r for r, c in all_cells)
             max_c = max(c for r, c in all_cells)
-            rows, cols = max_r + 1, max_c + 1
+            origin_r = min_r - _PAD
+            origin_c = min_c - _PAD
+            rows = max_r + _PAD - origin_r + 1
+            cols = max_c + _PAD - origin_c + 1
         else:
+            origin_r = origin_c = 0
             rows, cols = 0, 0
         tile_grid = []
-        for r in range(rows):
+        for vr in range(rows):
             row = []
-            for c in range(cols):
-                tile = wall_grid.get((r, c)) or floor_grid.get((r, c)) or "cave_floor"
+            for vc in range(cols):
+                r, c = vr + origin_r, vc + origin_c
+                tile = wall_grid.get((r, c)) or floor_grid.get((r, c)) or "void"
                 row.append(tile)
             tile_grid.append(row)
     return {"tileset_url": tileset_url, "tile_grid": tile_grid}

@@ -65,9 +65,13 @@ class OverworldMember:
         )
 
 
+_PARTY_ORDER = ["melvin", "billy", "smeltrud", "poots"]
+
 def load_overworld_party(data_dir: Path) -> list:
     members = []
-    for p in sorted(data_dir.glob("*.json")):
+    for p in sorted(data_dir.glob("*.json"),
+                    key=lambda p: _PARTY_ORDER.index(p.stem)
+                                  if p.stem in _PARTY_ORDER else 999):
         if p.stem == "null":
             continue
         members.append(OverworldMember.from_json(p))
@@ -146,7 +150,8 @@ def _goal_directed_open_exits(sx: int, sy: int,
 
 
 def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
-                      generator, emit=None, render_screen_fn=None):
+                      generator, emit=None, render_screen_fn=None,
+                      member_name: str | None = None):
     """Execute scripted movement. Returns (stop_reason, final_grid)."""
     result = execute_move(pos, direction, steps, grid, db,
                           journals=journals, tick=tick, generator=generator)
@@ -176,13 +181,13 @@ def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
                 navlog.append(tick, 'ENTERED', f"arrived at {m.group(1)}")
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
-                      "sx": pos.sx, "sy": pos.sy})
-                time.sleep(cfg.overworld_move_ms / 1000)
+                      "sx": pos.sx, "sy": pos.sy, "member": member_name})
+                time.sleep(cfg.move_ms / 1000)
         else:
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
-                      "sx": pos.sx, "sy": pos.sy})
-                time.sleep(cfg.overworld_move_ms / 1000)
+                      "sx": pos.sx, "sy": pos.sy, "member": member_name})
+                time.sleep(cfg.move_ms / 1000)
 
     return result.stop_reason, final_grid
 
@@ -397,7 +402,8 @@ def _interior_find_far_tile(grid_dict: dict, start: tuple,
 
 
 def _run_interior_loop(interior: Interior, pos: PartyPos,
-                       emit=None, render_interior_fn=None) -> None:
+                       emit=None, render_interior_fn=None,
+                       party: list | None = None) -> None:
     """Navigate the party through an interior: spawn → wander → exit.
 
     Renders the interior PNG on first visit (cached), shows it on the web
@@ -443,10 +449,12 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                 pos.world_seed, interior.feature_id,
                 'town' if not interior.monster_spawn else 'dungeon',
                 interior.data)
+        party_names = [m.name for m in party if m.alive] if party else []
         emit({'type': 'interior_init',
               'rows': img_rows, 'cols': img_cols,
               'row': spawn[0] - origin_r, 'col': spawn[1] - origin_c,
               'monster_spawn': interior.monster_spawn,
+              'party': party_names,
               **tile_payload})
         time.sleep(cfg.interior_entry_ms / 1000)
 
@@ -471,7 +479,7 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         cur = (step_r, step_c)
         if emit:
             emit({'type': 'interior_move', 'row': cur[0] - origin_r, 'col': cur[1] - origin_c})
-            time.sleep(cfg.interior_step_ms / 1000)
+            time.sleep(cfg.move_ms / 1000)
 
     print(f"  Interior done — returning to overworld at {(pos.row, pos.col)}.", flush=True)
     if emit:
@@ -480,11 +488,11 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         time.sleep(cfg.interior_exit_complete_ms / 1000)
         # Re-anchor the overworld sprite at the entrance tile
         emit({"type": "move", "row": pos.row, "col": pos.col,
-              "sx": pos.sx, "sy": pos.sy})
+              "sx": pos.sx, "sy": pos.sy, "member": None})
 
 
 def _enter_interior(pos: PartyPos, db, emit=None,
-                    render_interior_fn=None) -> None:
+                    render_interior_fn=None, party: list | None = None) -> None:
     """Generate (or load from cache) the interior at pos and navigate through it.
 
     Looks up the feature, derives feature_id, dispatches to the right generator,
@@ -515,7 +523,7 @@ def _enter_interior(pos: PartyPos, db, emit=None,
                         monster_spawn=monster_spawn)
 
     _run_interior_loop(interior, pos, emit=emit,
-                       render_interior_fn=render_interior_fn)
+                       render_interior_fn=render_interior_fn, party=party)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
@@ -556,8 +564,10 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
     if emit:
         tile_payload = render_screen_fn(world_seed, 0, 0) if render_screen_fn else {}
+        alive0 = [m for m in party if m.alive]
+        init_leader = alive0[0].name if alive0 else None
         emit({"type": "init", "sx": 0, "sy": 0, "row": pos.row, "col": pos.col,
-              "rows": rows, "cols": cols, **tile_payload})
+              "rows": rows, "cols": cols, "member": init_leader, **tile_payload})
 
     active_goal: Goal | None = None
     previous_goal: Goal | None = None
@@ -571,6 +581,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     try:
         while True:
             tick += 1
+            _alive = [m for m in party if m.alive]
+            cur_leader_name = _alive[leader_idx % len(_alive)].name if _alive else None
 
             # ── TIER 1: ensure active goal ────────────────────────────────────
             if active_goal is None or not active_goal.is_active():
@@ -696,12 +708,14 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                         feat_stop, grid = _execute_proposal(
                             pos, direction, steps, grid, db, journals, navlog, tick,
                             generate_screen_data, emit=emit,
-                            render_screen_fn=render_screen_fn)
+                            render_screen_fn=render_screen_fn,
+                            member_name=cur_leader_name)
                         if feat_stop in ('blocker', 'enterable'):
                             break
                     if feat_stop == 'enterable':
                         _enter_interior(pos, db, emit=emit,
-                                        render_interior_fn=render_interior_fn)
+                                        render_interior_fn=render_interior_fn,
+                                        party=party)
                         continue  # resume goal after exiting interior
 
             # ── Within-screen BFS to exit edge ────────────────────────────────
@@ -740,14 +754,15 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
             for direction, steps in segments:
                 stop, grid = _execute_proposal(
                     pos, direction, steps, grid, db, journals, navlog, tick,
-                    generate_screen_data, emit=emit, render_screen_fn=render_screen_fn)
+                    generate_screen_data, emit=emit, render_screen_fn=render_screen_fn,
+                    member_name=cur_leader_name)
                 if stop in ('blocker', 'enterable'):
                     break
 
             if stop == 'enterable':
                 movements += 1
                 _enter_interior(pos, db, emit=emit,
-                                render_interior_fn=render_interior_fn)
+                                render_interior_fn=render_interior_fn, party=party)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
@@ -762,12 +777,13 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
             # ── Trigger the screen crossing (one step off the exit edge) ──────
             stop, grid = _execute_proposal(
                 pos, next_dir, 1, grid, db, journals, navlog, tick,
-                generate_screen_data, emit=emit, render_screen_fn=render_screen_fn)
+                generate_screen_data, emit=emit, render_screen_fn=render_screen_fn,
+                member_name=cur_leader_name)
 
             if stop == 'enterable':
                 movements += 1
                 _enter_interior(pos, db, emit=emit,
-                                render_interior_fn=render_interior_fn)
+                                render_interior_fn=render_interior_fn, party=party)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None

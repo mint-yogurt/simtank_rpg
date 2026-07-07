@@ -2,7 +2,7 @@
 
 Access via the `cfg` singleton:
     from engine.config import cfg
-    time.sleep(cfg.overworld_move_ms / 1000)
+    time.sleep(cfg.move_ms / 1000)
 """
 
 import json
@@ -16,22 +16,17 @@ def _load() -> SimpleNamespace:
     raw = json.loads(_CONFIG_PATH.read_text())
 
     pacing   = raw["pacing"]
-    hub      = raw["hub"]
     battle   = raw["battle"]
     display  = raw["display"]
     interior = raw["interior"]
 
     ns = SimpleNamespace(
         # Pacing (seconds, converted from ms for direct use in time.sleep)
-        overworld_move_ms        = pacing["overworld_move_ms"],
+        move_ms                  = pacing["move_ms"],
         screen_cross_ms          = pacing["screen_cross_ms"],
-        interior_step_ms         = pacing["interior_step_ms"],
         interior_entry_ms        = pacing["interior_entry_ms"],
         interior_exit_prepare_ms = pacing["interior_exit_prepare_ms"],
         interior_exit_complete_ms= pacing["interior_exit_complete_ms"],
-
-        # Hub
-        hub_min_ticks            = hub["min_ticks"],
 
         # Battle
         battle_max_rounds        = battle["max_rounds"],

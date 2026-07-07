@@ -28,7 +28,7 @@ _TOWN_RULES = _HERE.parent.parent / 'web' / 'static' / 'tiles' / 'tiles_town_rul
 PARTY_ORDER = ['MELVIN', 'BILLY', 'POOTS', 'SMELTRUD']
 _OPPOSITE = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
 
-MIN_HUB_TICKS = cfg.hub_min_ticks
+
 
 
 @dataclass
@@ -357,18 +357,18 @@ def run_hub(emit=None, render_hub_fn=None) -> str | None:
 
                 if emit:
                     emit({"type": "hub_move", "name": member.name,
-                          "row": member.row, "col": member.col, "tick": tick})
+                          "row": member.row, "col": member.col, "tick": tick,
+                          "direction": direction})
 
                 if result.stop_reason == 'edge':
-                    if tick < MIN_HUB_TICKS:
-                        print(f"  {member.name} hit edge too early (tick {tick} < {MIN_HUB_TICKS}) — nudging back.", flush=True)
-                    elif _run_leave_vote(member, direction, party, emit=emit):
+                    if _run_leave_vote(member, direction, party, emit=emit):
                         print(f"\nLeaving hub → overworld.", flush=True)
                         return "overworld"
 
                 if result.stop_reason == 'edge':
                     # Nudge away from boundary (vote failed or too early)
                     opp = _OPPOSITE[direction]
+                    nudge_dir = opp
                     nudge_pos = PartyPos(world_seed=0, sx=0, sy=0,
                                         row=member.row, col=member.col)
                     nudge = execute_move(
@@ -386,12 +386,14 @@ def run_hub(emit=None, render_hub_fn=None) -> str | None:
                                 alt_pos, alt, 1, grid, db=None, tick=tick, generator=None)
                             if alt_r.steps_taken > 0:
                                 member.row, member.col = alt_pos.row, alt_pos.col
+                                nudge_dir = alt
                                 print(f"  Nudging — {member.name} steps {alt}.",
                                       flush=True)
                                 break
                     if emit:
                         emit({"type": "hub_move", "name": member.name,
-                              "row": member.row, "col": member.col, "tick": tick})
+                              "row": member.row, "col": member.col, "tick": tick,
+                              "direction": nudge_dir})
 
     except KeyboardInterrupt:
         pass
