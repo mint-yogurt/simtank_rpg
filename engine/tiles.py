@@ -24,6 +24,8 @@ _OVERWORLD_RULES = os.path.normpath(
     os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'overworld_1_tilerules.txt'))
 _CAVE_RULES = os.path.normpath(
     os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_cave_rules.txt'))
+_TOWN_RULES = os.path.normpath(
+    os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_town_rules.txt'))
 
 # tile_name → frozenset of quality strings; populated on first call to _load()
 _QUALITIES: dict = {}
@@ -53,6 +55,7 @@ def _load():
         return
     _QUALITIES.update(_parse_one(_OVERWORLD_RULES))
     _QUALITIES.update(_parse_one(_CAVE_RULES))
+    _QUALITIES.update(_parse_one(_TOWN_RULES))
 
 
 def _strip_rot(tile):

@@ -1,7 +1,9 @@
 """Dev entry point: run the loop, print to terminal.
 
 Usage:
-  python run_cli.py            # overworld mode (default)
+  python run_cli.py            # full game: hub → overworld (default)
+  python run_cli.py hub        # standalone hub test (exits after vote passes)
+  python run_cli.py overworld  # skip hub, start directly in overworld
   python run_cli.py battle     # battle mode (single fight, then exit)
 """
 
@@ -452,14 +454,27 @@ def _run_battle_main() -> None:
 
 
 def main() -> None:
-    mode = sys.argv[1] if len(sys.argv) > 1 else "overworld"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "full"
 
     if mode == "battle":
         _run_battle_main()
-    else:
+    elif mode == "hub":
+        # Standalone hub test — exits when party votes to leave (or Ctrl+C)
+        from engine.scenes.hub import run_hub
+        run_hub()
+    elif mode == "overworld":
+        # Skip hub; start directly in overworld
         from overworld_loop import run_overworld
         seed = random.randint(0, 2**32 - 1)
         run_overworld(seed)
+    else:
+        # Full game: hub → overworld
+        from engine.scenes.hub import run_hub
+        from overworld_loop import run_overworld
+        seed = random.randint(0, 2**32 - 1)
+        result = run_hub()
+        if result == "overworld":
+            run_overworld(seed)
 
 
 if __name__ == "__main__":

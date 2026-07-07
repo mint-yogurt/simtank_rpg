@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** pre-alpha. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). `run_cli.py` defaults to overworld mode; `run_cli.py battle` runs a single fight. Interior scenes (caves and towns) generate on first entry and cache forever — navigation within them is a future job.
+**Status:** pre-alpha. Game now starts on the hub scene: four members roam the hand-authored town map independently, each taking their own LLM-driven turns. A party vote is required to leave the hub — any member that walks to a map edge triggers the vote. On pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). `run_cli.py` defaults to hub → overworld; `run_cli.py battle` runs a single fight. Interior scenes (caves and towns) generate on first entry and cache forever — navigation within them is a future job.
 
 ---
 
@@ -108,6 +108,16 @@ callers use it to refresh their local grid reference after any movement.
 
 MOVE and ENTERED events fire at each stop. SCREEN events fire on each crossing.
 All are journal-broadcast-safe (journals=None is fine in tests).
+
+### Hub scene (`engine/scenes/hub.py`)
+
+The starting scene before the overworld. Four party members spawn on the bottom row of a hand-authored 14×16 town map and roam it independently — each takes their own LLM turn: viewscan → direction pick → `execute_move`. No shared vote for movement; members wander freely.
+
+**Leave vote.** When a member's `execute_move` returns `stop_reason='edge'`, they've reached a map boundary. That triggers `_run_leave_vote()`: a fresh `VotingState` is opened, the proposer's vote counts immediately, and the remaining alive members are polled one by one with a VOTE-only action set (no WAIT — guarantees resolution). Threshold is the standard 3-of-4. On pass, `run_hub()` returns `"overworld"` and the caller chains into the overworld at screen (0,0). On fail, the proposer is nudged one step back from the edge (perpendicular fallback if opposite is blocked) so the next tick isn't an immediate re-trigger.
+
+**Hub map.** `load_hub_coords()` parses `hub_map_coords_bracketed.csv` — each cell is `[tileset_col, tileset_row]` referencing `tiles_town.png`. `load_hub_grid()` maps those coords to tile names via `tiles_town_rules.txt` for passability checks. `render_hub_map()` (in `web/server.py`) blits all tiles from `tiles_town.png` into a single 256×224 PNG cached at `web/static/screens/hub.png`; the URL is included in the `hub_init` SSE event so the browser loads it on start.
+
+**Web rendering.** `hub_init` carries `rows`, `cols`, `party` (list of `{name, row, col}`), and `screen_url`. `hub_move` carries `name`, `row`, `col`, `tick`. The JS renderer handles both: `handleHubInit` sets mode to `"hub"`, resizes the canvas, loads the background PNG, and `drawHubSprites()` draws all four members at their positions using the correct sprite sheet row per name (MELVIN=0, BILLY=1, SMELTRUD=2, POOTS=3). Each `hub_move` updates the member's position and redraws. Late-joiner snapshot tracks current member positions via `_update_snapshot` handling `hub_move` diffs.
 
 ### Interior scenes (`engine/scenes/interior.py`)
 
@@ -315,6 +325,7 @@ simtank_rpg/
 │   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features + interiors)
 │   └── scenes/
 │       ├── __init__.py
+│       ├── hub.py          # Hub scene: 4-member independent roam + leave-vote; load_hub_coords/grid
 │       └── interior.py     # Interior scene (cave or town); monster_spawn flag; exit-tile return
 ├── llm/
 │   ├── client.py           # provider-agnostic call + routing; LLMDecision; ask_with_retry
@@ -335,19 +346,22 @@ simtank_rpg/
 ├── data/
 │   └── party/              # character sheet JSONs
 ├── web/
-│   ├── server.py           # SSE endpoint + serves static files
+│   ├── server.py           # SSE endpoint; render_screen (overworld); render_hub_map (hub PNG blit)
 │   └── static/
 │       ├── index.html
-│       ├── app.js
+│       ├── app.js          # hub_init/hub_move + init/move/screen handlers; mode-aware 4-sprite draw
 │       ├── style.css
 │       └── tiles/
-│           ├── overworld_1.png             # overworld tileset (placeholder-coloured)
-│           ├── overworld_1_tilerules.txt   # tile name ↔ grid coord map
-│           ├── tiles_cave1.png             # cave/dungeon tileset
-│           └── tiles_cave_rules.txt        # cave tile name ↔ grid coord map
+│           ├── overworld_1.png                  # overworld tileset (placeholder-coloured)
+│           ├── overworld_1_tilerules.txt         # tile name ↔ grid coord map
+│           ├── tiles_cave1.png                  # cave/dungeon tileset
+│           ├── tiles_cave_rules.txt             # cave tile name ↔ grid coord map
+│           ├── tiles_town.png                   # hub/town tileset (16×12 tiles, 16px each)
+│           ├── tiles_town_rules.txt             # town tile name ↔ grid coord map
+│           └── hub_map_coords_bracketed.csv     # hub layout: [tileset_col,tileset_row] per cell
 ├── overworld_loop.py       # production overworld loop (propose→vote→move→journal); shared by both runners
-├── run_cli.py              # dev entry: overworld by default; `battle` arg for single fight
-├── run_web.py              # loop + web server (SSE layer pending; currently runs overworld headlessly)
+├── run_cli.py              # dev entry: hub→overworld by default; `overworld` skips hub; `battle` for single fight
+├── run_web.py              # hub→overworld + SSE web server; hub map PNG rendered on startup
 ├── secrets.py              # API keys (gitignored)
 ├── .gitignore
 └── README.md
@@ -392,6 +406,7 @@ stream. Get the whole game working in text, then bolt on the web layer.
 17. [x] Curated context + checkpoint discussion (JOB 11b) — `engine/navlog.py`: append-only unbounded event log (SCREEN/GOAL/CHECKPOINT/ENTERED; MOVE excluded); `engine/context.py`: `build_curated_context()` assembles `CuratedContext` from NavLog + DB + party state — the sole feed for all goal/checkpoint prompts; `llm/prompts.py`: `build_goal_context(member, ctx)` and `build_checkpoint_context(member, ctx, reason)` updated to consume `CuratedContext`; `llm/schema.py`: `parse_checkpoint_decision` (continue/abandon/modify with goal fields for modify); four checkpoint triggers in the main loop with `continue|abandon|modify` outcomes; branch-point trigger fires only on axis tie (`|dx|==|dy|`) — genuine ambiguity, not every diagonal step; `branch_points_seen` dedup prevents re-triggering per `(screen, target)` pair
 18. [x] Wire overworld to interior generation — `procgen/worldgen.py` + `procgen/cavegen.py` (renamed from `overworld_test.py`/`cave_test.py`); `procgen/towngen.py`: added `TownData` dataclass + `generate_town_data(seed)` (no PIL); `engine/worlddb.py`: `interiors` table, `compute_feature_id()`, `get_or_create_interior()` — generate-once/cache-forever matching screens pattern; `engine/scenes/interior.py`: `Interior` scene class (cave or town, `monster_spawn` flag, `entry_tile` exit, `combined_grid()`); `overworld_loop.py`: `_enter_interior()` fires on every `stop='enterable'`, dispatches by `FEATURE_TYPES`, emits `interior_enter`/`interior_exit` SSE events; interior navigation is a future job (stubs immediately); `procgen/worlddb_test.py`: interior replay guarantee test added
 19. [ ] Interior navigation — party movement within caves/towns, monster encounters (caves), NPC interaction (towns)
-20. [ ] Hub scene + free-roam / pet-sim mode
+20. [x] Hub scene — `engine/scenes/hub.py`: 4-member independent roam on hand-authored town map; each member runs viewscan→LLM→execute_move independently; edge detection triggers `_run_leave_vote()` (VotingState, 3-of-4 threshold, VOTE-only action set, nudge-on-fail); `run_hub()` returns `"overworld"` on pass; `render_hub_map()` blits `tiles_town.png` tiles into `screens/hub.png`; JS handles `hub_init`/`hub_move` with 4-sprite per-character drawing; game now starts on hub in both `run_web.py` and `run_cli.py` (default: hub→overworld; `overworld` arg skips hub)
+20a. [ ] Hub pet-sim mode — global chat, ambient reactions to events, NPC interaction
 21. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
 22. [ ] (later) player inputs

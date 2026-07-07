@@ -1,4 +1,4 @@
-"""Flask SSE server for the overworld viewer.
+"""Flask SSE server for simtank_rpg.
 
 Broadcasts engine events to connected browsers via Server-Sent Events.
 Screen PNGs are rendered on demand (deterministic, cached to disk).
@@ -18,6 +18,8 @@ _REPO_ROOT = Path(__file__).parent.parent
 _SCREENS_DIR = _REPO_ROOT / "web" / "static" / "screens"
 _TILESET_PATH = str(_REPO_ROOT / "web" / "static" / "tiles" / "overworld_1.png")
 _TILERULES_PATH = str(_REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_tilerules.txt")
+_TOWN_TILESET_PATH = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town.png"
+_HUB_TILE_PX = 16
 
 _raw_tiles = None
 _raw_tiles_lock = threading.Lock()
@@ -31,6 +33,33 @@ def _get_raw_tiles():
                 from procgen.worldgen import load_raw_tiles
                 _raw_tiles = load_raw_tiles(_TILESET_PATH, _TILERULES_PATH)
     return _raw_tiles
+
+
+def render_hub_map() -> str:
+    """Render hub map PNG from tiles_town.png; return URL path. Cached on disk."""
+    _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = _SCREENS_DIR / "hub.png"
+    if not out_path.exists():
+        _render_hub_map_to(out_path)
+    return "/screens/hub.png"
+
+
+def _render_hub_map_to(out_path: Path) -> None:
+    from PIL import Image
+    from engine.scenes.hub import load_hub_coords
+
+    px = _HUB_TILE_PX
+    tileset = Image.open(str(_TOWN_TILESET_PATH)).convert("RGBA")
+    coords = load_hub_coords()
+    rows_count = len(coords)
+    cols_count = max(len(r) for r in coords) if coords else 0
+
+    out = Image.new("RGBA", (cols_count * px, rows_count * px), (0, 0, 0, 255))
+    for r, row in enumerate(coords):
+        for c, (tc, tr) in enumerate(row):
+            tile = tileset.crop((tc * px, tr * px, (tc + 1) * px, (tr + 1) * px))
+            out.paste(tile, (c * px, r * px))
+    out.save(str(out_path))
 
 
 def render_screen(world_seed: int, sx: int, sy: int) -> str:
@@ -62,6 +91,16 @@ def _update_snapshot(event: dict):
     with _snapshot_lock:
         if t == "init":
             _snapshot = dict(event)
+        elif t == "hub_init":
+            _snapshot = dict(event)
+            # deep-copy party list so hub_move updates don't mutate the source event
+            _snapshot["party"] = [dict(m) for m in event.get("party", [])]
+        elif t == "hub_move" and _snapshot and _snapshot.get("type") == "hub_init":
+            for m in _snapshot["party"]:
+                if m["name"] == event["name"]:
+                    m["row"] = event["row"]
+                    m["col"] = event["col"]
+                    break
         elif t == "screen" and _snapshot is not None:
             _snapshot.update({
                 "sx": event["sx"], "sy": event["sy"],
@@ -122,9 +161,7 @@ def events():
 
     def stream():
         if snap:
-            snap_init = dict(snap)
-            snap_init["type"] = "init"
-            yield f"data: {json.dumps(snap_init)}\n\n"
+            yield f"data: {json.dumps(snap)}\n\n"
 
         with _subs_lock:
             _subscribers.add(q)
