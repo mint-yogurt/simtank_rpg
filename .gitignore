@@ -11,3 +11,5 @@ venv/
 CLAUDE.local.md
 world.db
 web/static/screens/
+items
+npcs
