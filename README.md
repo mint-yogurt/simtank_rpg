@@ -4,7 +4,7 @@ An LLM-powered, spectator-only hybrid of a turn-based 8-bit RPG and a
 Tamagotchi-style pet simulator. Four AI party members live, chatter, vote, and
 fight on their own — no player input (at first). You watch.
 
-**Status:** alpha → beta transition. Game starts on the **Front House** hub scene: four members roam the hand-authored home map independently; a leave vote can trigger at any time once someone reaches a map edge. Goal-setting and checkpoint decisions rotate through all alive members so no single character dominates. On vote pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). When the party steps onto a cave or town entrance they actually enter — navigating the interior via deterministic BFS. All four party members are rendered simultaneously in overworld and interior using a follow-the-leader formation: MELVIN leads at the current position, with BILLY, SMELTRUD, and POOTS each trailing 1 tile behind (stacked on spawn, spreading out as Melvin moves). Sprite movement is fully interpolated — each step animates smoothly over 400 ms with a 2-frame walk cycle that flips at the halfway point; the camera lerps to match. The web canvas draws scenes from a live tile-ID grid (SSE `tileset_url` + `tile_grid` per event) rather than baked PNGs. All pacing, display geometry, and tunable game parameters live in `config.json` — overworld and interior share a single `move_ms` value. `run_cli.py` defaults to hub → overworld; `run_cli.py battle` runs a single fight.
+**Status:** alpha → beta transition. Game starts on the **Front House** hub scene: four members roam the hand-authored home map independently; a leave vote can trigger at any time once someone reaches a map edge. Goal-setting and checkpoint decisions rotate through all alive members so no single character dominates. On vote pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). When the party steps onto a cave or town entrance they actually enter — navigating the interior via deterministic BFS. All four party members are rendered simultaneously in overworld and interior using a follow-the-leader formation: MELVIN leads at the current position, with BILLY, SMELTRUD, and POOTS each trailing 1 tile behind (stacked on spawn, spreading out as Melvin moves). Sprite movement is fully interpolated — each step animates smoothly over 400 ms with a 2-frame walk cycle that flips at the halfway point; the camera lerps to match. The web canvas draws scenes from a live tile-ID grid (SSE `tileset_url` + `tile_grid` per event) rather than baked PNGs. All pacing, display geometry, and tunable game parameters live in `config.json` — overworld and interior share a single `move_ms` value. **Enemies now roam the overworld and cave interiors.** Overworld screens spawn 0–3 enemies deterministically; caves spawn 0–3 enemies per room from a 6-entry pool shared across all caves on the same screen (so two dungeons on the same screen always have the same enemy types). Enemies are generated once (SQLite), assigned a random NPC sprite and one of three behavior types (wanderer/chaser, pacer, sentinel), and rendered live on the sprite canvas. Touching an enemy triggers a full battle: `engine/battle.py` runs the LLM-driven fight and emits `battle_start` / `battle_action` / `battle_end` SSE events; the web shows a DOM overlay with animated enemy sprite, HP bars per member, and action log. `run_cli.py` defaults to hub → overworld; `run_cli.py battle` runs a single fight.
 
 Before beta: a navigation/pacing pass is required — see **Issues** below. NPCs are deferred until that lands.
 
@@ -52,6 +52,45 @@ Turn order: all four party members act, then the enemy. After each member's acti
 
 **Prompt tuning:** The action menu is situationally adjusted. SNACK is flagged as "low value" when nobody in the party is below 70% HP. SING and LAUGH are flagged as "no additional effect" when the enemy already has an active status, preventing the LLM from wasting turns trying to stack.
 
+### Enemy system (`procgen/enemygen.py`, `engine/enemy_state.py`, `engine/worlddb.py`)
+
+Enemies are generated once per scope (screen or cave pool), stored in SQLite, and re-loaded on every visit — the same enemies always appear on the same screen or in the same cave.
+
+**Generation.** `procgen/enemygen.py generate_enemies(seed, count, level)` produces a deterministic list of enemies: name (via `procgen/names.py`), combat stats (IQ, weight, sweat, hair, level), a random NPC sprite (`npc01`–`npc04`, each with two 350 ms animation frames from `party_sprites.png`), and a behavior type. Enemy seed is derived from the terrain seed via SHA-256 so enemies never change if the screen is regenerated.
+
+Two scopes:
+- **`screen`** (overworld): 0–3 enemies per screen, placed on walkable tiles at screen load.
+- **`cave_screen`** (cave interiors): a pool of 6 level-2 enemies generated per screen (not per cave), shared across all caves/dungeons on that screen. Each cave room rolls 0–`MAX_ENEMIES_PER_ROOM` (currently 3) enemies independently from this pool; placement is per-room, seeded from `feature_id ^ room_idx` for determinism.
+
+**Behavior types:**
+| Type | Behavior |
+|---|---|
+| 1 — Wanderer/chaser | 65% step toward party (front member = MELVIN), 35% random walkable step |
+| 2 — Pacer | Walks H or V until it hits an impassable tile or screen edge, then reverses |
+| 3 — Sentinel | Frozen until party enters 8-tile cardinal line-of-sight, then chases |
+
+**Overworld placement.** `engine/enemy_state.py place_enemies(db_rows, grid, seed)` deterministically places enemies on walkable tiles (shuffled by XOR-derived seed so placement is stable across visits). `update_enemies(agents, grid, party_row, party_col, rng)` advances all enemies one tile per party step using the occupied-set-at-tick-start rule so enemies move simultaneously rather than serially blocking each other. Cardinal LOS (`_cardinal_los`) checks same row/column, no blocking tiles between enemy and party, within 8 tiles.
+
+**Cave interior placement.** `_place_interior_enemies(pool, rooms, grid_dict, feature_id, min_r, min_c)` in `overworld_loop.py` iterates the cave's room list from `interior.data['rooms']`, builds a compact 2D grid from the `combined_grid()` dict (offset by `min_r`/`min_c`), and for each room picks 0–3 walkable cells within the room bounds. Enemy positions are stored in grid2d-space; PNG-relative coordinates are emitted as `grid2d_row + CANVAS_PAD`. `is_passable(None)` is guarded to return False so out-of-bound sparse cells are correctly impassable.
+
+**Collision → battle trigger.** On the overworld, `_enemy_step` sets `pending_battle` after each move step; `_trigger_battle` fires after `_execute_proposal` returns. In cave interiors the collision check runs inline in the step loop: the defeated enemy is removed from `int_enemies`, the battle runs synchronously via `run_battle`, and the walk resumes.
+
+**Web rendering.** Enemies are broadcast as `{"type": "enemies", ...}` SSE events on each party step (overworld and interior). `app.js` draws enemies on the sprite-layer canvas using `NPC_SPRITE` lookup in both `"overworld"` and `"interior"` modes; `handleInteriorInit` clears the enemy list on entry, `handleInteriorExit` clears it on exit. Frame flips every 350 ms inside the RAF loop, which continues running while any enemies are present.
+
+### Battle renderer (`engine/battle.py`)
+
+`engine/battle.py` is the shared battle loop, extracted from `run_cli.py`. Both the CLI and overworld use it. `run_battle(party, enemy, rng, emit=None, battle_sleep_ms=800)` returns `{"outcome": "win"|"loss"|"flee"|"timeout", "rounds": N}`.
+
+When `emit` is provided (web mode), it emits three event types alongside the existing `print()` calls:
+
+- `battle_start` — initial HP state for all participants + enemy NPC sprite
+- `battle_action` — after each resolved action: actor, action type, outcome, damage, crit, current HP for all
+- `battle_end` — outcome and round count; client hides the overlay after a 2 s delay
+
+**Web battle panel.** A DOM overlay (`#battle-overlay`) sits above the tile canvas. On `battle_start` it becomes visible with an animated enemy sprite (canvas element, frame-flipped every 350 ms via `setInterval`), per-member HP bars (CSS width transition), and a VS label. Each `battle_action` updates HP bars and appends the action's flavor text to the log. On `battle_end`, a result label (`VICTORY! / DEFEATED... / ESCAPED!`) shows for 2 s, then the overlay hides and the overworld resumes.
+
+**SSE snapshot.** `web/server.py` saves the pre-battle overworld snapshot on `battle_start` and restores it on `battle_end`, so late-joining web clients see the battle in progress rather than a stale overworld frame.
+
 ### Tile rules (`engine/tiles.py`)
 
 Parses both tilerules files once on first call. Three public functions:
@@ -64,11 +103,12 @@ Handles `:rot` rotation suffixes (e.g. `path_corner_N+E:90`). No PIL, no game-st
 
 ### World database (`engine/worlddb.py`)
 
-SQLite persistence for the discovered world. Three tables:
+SQLite persistence for the discovered world. Four tables:
 
 - **screens** — one row per coordinate pair; grid cached on first visit, exits pre-computed
 - **features** — one row per interactable feature (cave, town, chest, etc.) with mutable state (`entered`, `cleared`, `npc_flags`)
 - **interiors** — one row per entered feature; interior grid cached on first entry keyed by `feature_id`
+- **enemies** — one row per enemy per scope (`scope_type` = `'screen'` or `'cave_screen'`, `scope_id` = screen_seed); generated once from `procgen/enemygen.py` on first visit, read on every subsequent visit; includes combat stats, NPC sprite, behavior type, and behavior axis. `screen` holds 0–3 overworld enemies; `cave_screen` holds a 6-entry level-2 pool shared across all caves on that screen
 
 `WorldDB.get_or_create_screen(world_seed, sx, sy, generator)` generates once and caches; subsequent calls are read-only. `_compute_exits` classifies each edge direction as open (passable + non-enterable tile on that edge) or closed.
 
@@ -333,6 +373,8 @@ simtank_rpg/
 │   ├── state.py            # full game state (party, world, scene, vote)
 │   ├── party.py            # character model: stats, inventory, personality
 │   ├── combat.py           #
+│   ├── battle.py           # shared battle loop (CLI + web); run_battle() with emit= SSE hooks
+│   ├── enemy_state.py      # EnemyAgent dataclass; place_enemies(); update_enemies() per-step AI
 │   ├── voting.py           # proposal/vote state machine; available_actions()
 │   ├── journal.py          # Journal (global narrative) + MemberJournal (per-member LLM window)
 │   ├── navlog.py           # append-only navigation event log (SCREEN/GOAL/CHECKPOINT/ENTERED)
@@ -342,8 +384,8 @@ simtank_rpg/
 │   ├── memory.py           # builds the context blob for each LLM call
 │   ├── tiles.py            # tile passability/quality lookup (parses tilerules files)
 │   ├── viewscan.py         # line-of-sight tile scan (N/S/E/W rays → ViewScan dataclass)
-│   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features + interiors)
-│   ├── config.py           # [PLANNED] global config: tick length, LLM provider, viewport/follow/vote params
+│   ├── worlddb.py          # persistent world-state DB (SQLite; screens + features + interiors + enemies)
+│   ├── config.py           # global config: tick length, LLM provider, viewport/follow/vote params
 │   └── scenes/
 │       ├── __init__.py
 │       ├── hub.py          # Hub scene: 4-member independent roam + leave-vote; load_hub_coords/grid
@@ -355,6 +397,7 @@ simtank_rpg/
 │   └── ascii_map.py        # ASCII tile renderer (harness/debug ONLY — never in LLM prompts)
 ├── procgen/
 │   ├── names.py            # procedural name generation
+│   ├── enemygen.py         # deterministic enemy generation (stats, sprite, behavior type)
 │   ├── spritegen.py        # 16x16 enemy sprite generator
 │   ├── worldgen.py         # overworld screen generator — outputs PNGs to procgen/out/
 │   ├── cavegen.py          # cave/dungeon interior generator — outputs PNGs to procgen/out/
@@ -446,9 +489,9 @@ This is a design decision, not just a config value — needs to be scoped proper
 ## Backlog (post-beta-refactor — each needs its own expanded spec before work starts)
 
 - **NPC implementation** — animations (reuses party 2-frame walk cycle work), placement in towns/caves, palette-swap variation so NPCs aren't visually identical clones, DB integration (persistent per-NPC state alongside existing `features`/`interiors` tables), names via `procgen/names.py`.
-- **Enemies on overworld/cave** — wire `procgen/spritegen.py` enemy generation into `worlddb.py` persistence; enemy spawn placement in `towngen.py`/`cavegen.py` output; enemy spawn logic on the overworld itself; a respawn cooldown so cleared overworld encounters don't immediately repopulate.
-- **Web UI overhaul** — party status panel in HTML/JS alongside the main canvas viewport: per-member HP, level, and an XP bar that fills as they gain XP; each member's status row shows their animated sprite (reuses Issue #2's frame-swap work).
-- **Random encounters** — tied into the global config (Issue #3): encounter rate/config-driven trigger, plus a battle-speed config value so combat pacing can be slowed independently of overworld tick speed.
+- **Enemy respawn / persistence** — enemies are currently cleared after battle regardless of outcome; a respawn cooldown (or cleared flag) so beaten enemies don't reappear until the screen is reloaded.
+- **Web UI overhaul** — party status panel in HTML/JS alongside the main canvas viewport: per-member HP, level, and an XP bar that fills as they gain XP; each member's status row shows their animated sprite.
+- **Battle-speed config** — a separate config value for battle action delay, independent of overworld `move_ms`; XP gain + level-up after victories.
 
 ---
 
@@ -480,9 +523,10 @@ This is a design decision, not just a config value — needs to be scoped proper
 22. [x] **Live tile-grid renderer** — `web/server.py`: `get_screen_tile_payload`, `get_hub_tile_payload`, `get_interior_tile_payload` return `{tileset_url, tile_grid}` (palette-remapped tileset PNG cached by hash + 2D tile-name grid); cave tile_grid cropped to content bounding box + 2-tile pad to match spawn coordinate origin; `web/gen_tilemaps.py` generates `tilemap_{overworld,cave,town}.json`; `app.js`: `drawTile()` + `drawTileGrid()` replace all `drawImage`-of-baked-PNG calls; unified `clampCamera()` for all modes
 23. [x] **Sprite animation + follow-the-leader** — interpolated 400 ms walk animation via `requestAnimationFrame` + `memberAnims` Map; walk-cycle frame flips at animation midpoint; camera lerps alongside sprites (fractional cam offset + ctx.translate in `drawTileGrid`); all 4 party members rendered simultaneously in follow-the-leader chain (MELVIN leads, others trail 1 tile each, stack on spawn); party load order fixed so MELVIN is always index 0; hub members animate independently
 24. [ ] **Navigation pacing pass** — Tier 2 execution pacing, goal-distance biasing, possible ambient narration ticks — see Issue #4
-25. [ ] NPC implementation — see Backlog
-26. [ ] Enemies on overworld/cave — see Backlog
-27. [ ] Web UI party status panel — see Backlog
-28. [ ] Random encounters + battle-speed config — see Backlog
-29. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
-30. [ ] (later) player inputs
+25. [x] **Enemies on overworld** — `procgen/enemygen.py`: deterministic stat/sprite/behavior generation; `engine/worlddb.py` enemies table (generate-once, SHA-256 seed derivation, `ALTER TABLE` migration for existing DBs); `engine/enemy_state.py`: `EnemyAgent`, three behavior types (wanderer/chaser, pacer, sentinel), `place_enemies`, `update_enemies`, cardinal LOS; `overworld_loop.py`: `_enemy_step` per-step hook, collision detection, `_trigger_battle` closure; `engine/battle.py`: shared battle loop with `emit=` SSE hooks; `web/static/app.js`: `NPC_SPRITE` lookup, enemy canvas rendering, battle DOM overlay; `web/static/index.html`: `#battle-overlay` with HP bars; `web/server.py`: battle snapshot save/restore
+26. [x] **Enemies in cave interiors** — `engine/worlddb.py`: `cave_screen` scope (6-entry level-2 pool per screen, shared across all caves on that screen; `_derive_cave_enemy_seed` uses separate SHA-256 constant); `engine/tiles.py`: `is_passable(None) → False` guard for sparse interior 2D grids; `overworld_loop.py`: `_place_interior_enemies` places 0–`MAX_ENEMIES_PER_ROOM` (3) enemies per cave room from the pool, seeded from `feature_id ^ room_idx`, restricted to walkable cells within each room's bounds; interior step loop runs `update_enemies` + inline collision → battle, emitting `enemies` events in PNG-relative coords (`grid2d + CANVAS_PAD`); `web/static/app.js`: `drawEnemySprites` added to interior render branch, `enemies = []` cleared on `interior_exit`
+27. [ ] NPC implementation — see Backlog
+28. [ ] Web UI party status panel — see Backlog
+29. [ ] Battle-speed config + XP/level-up — see Backlog
+30. [ ] Long-term memory — compressed journal summary (templating, not a GM call)
+31. [ ] (later) player inputs

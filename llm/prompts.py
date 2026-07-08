@@ -69,11 +69,14 @@ def build_battle_context(member, party: list, enemy, history: dict, run_attempts
         for name, desc in history.items():
             parts.append(f"{name}: {desc}")
 
+    on_cooldown = getattr(member, "special_cooldown", 0) > 0
+    has_special = bool(member.special.get("name")) and not on_cooldown
+
     parts.append("")
     parts.append("YOUR OPTIONS")
     parts.append("1. ATTACK — strike the enemy")
     parts.append("2. DEFEND — reduce incoming damage this turn")
-    if member.special["name"]:
+    if has_special:
         spec = member.special
         if spec.get("effect_type") == "heal":
             anyone_hurt = any(
@@ -90,16 +93,20 @@ def build_battle_context(member, party: list, enemy, history: dict, run_attempts
                 f"({enemy.name} is already {enemy.status} — no additional effect this turn)"
             )
         else:
-            parts.append(f"3. SPECIAL: {member.special['name']} — {member.special['description']}")
+            parts.append(f"3. SPECIAL: {spec['name']} — {spec['description']}")
+        parts.append("4. RUN — attempt to flee (low chance; increases each attempt)")
+        all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
+        parts.append("")
+        parts.append(
+            f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"SPECIAL"|"RUN", "target": {all_names}}}'
+        )
     else:
-        parts.append("3. SPECIAL — use your special move")
-    parts.append("4. RUN — attempt to flee (low chance; increases each attempt)")
-
-    all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
-    parts.append("")
-    parts.append(
-        f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"SPECIAL"|"RUN", "target": {all_names}}}'
-    )
+        parts.append("3. RUN — attempt to flee (low chance; increases each attempt)")
+        all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
+        parts.append("")
+        parts.append(
+            f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"RUN", "target": {all_names}}}'
+        )
 
     return "\n".join(parts)
 

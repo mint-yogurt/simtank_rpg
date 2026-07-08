@@ -70,6 +70,8 @@ def tile_quality(tile):
 
 def is_passable(tile):
     """True if the party can walk onto this tile (see module docstring for rules)."""
+    if not tile:
+        return False
     q = tile_quality(tile)
     if 'impassable' in q:
         return False

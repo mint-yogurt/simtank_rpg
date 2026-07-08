@@ -12,6 +12,16 @@ const PARTY_SPRITE_ROW = { MELVIN: 0, BILLY: 1, SMELTRUD: 2, POOTS: 3 };
 // Sprite sheet cols per facing direction: [frame1_col, frame2_col]
 const FACING_COL = { S: [0, 1], N: [2, 3], W: [4, 5], E: [6, 7] };
 
+// NPC sprites: [sheetRow, sheetCol] for S1 and S2 frames.
+// Source: web/static/sprites/partysprites.txt  format: col,row
+const NPC_SPRITE = {
+    npc01: [[4, 0], [4, 1]],
+    npc02: [[4, 2], [4, 3]],
+    npc03: [[5, 0], [5, 1]],
+    npc04: [[5, 2], [5, 3]],
+};
+const ENEMY_ANIM_MS = 350;
+
 // ── DOM ───────────────────────────────────────────────────────────────────────
 const mapCanvas    = document.getElementById("map");
 const spriteCanvas = document.getElementById("sprite-layer");
@@ -53,6 +63,15 @@ let state = {
 };
 
 let hubParty = [];   // [{name, row, col, facing}, ...]
+
+let enemies = [];  // [{index, row, col, npc_sprite, name}] — current screen enemies
+
+let battle = {
+    active: false,
+    enemyName: "", enemySprite: "",
+    enemyHp: 0, enemyMaxHp: 0,
+    partyHp: {}, partyMaxHp: {},
+};
 
 let interior = {
     row: 0, col: 0,
@@ -142,7 +161,8 @@ function rafTick(now) {
         _camStillAnimating(now) ||
         (memberAnims.size > 0 && [...memberAnims.values()].some(a => now - a.startTime < ANIM_DURATION_MS));
     redrawAt(now);
-    if (stillAnimating) {
+    // Keep looping while enemies are on screen (their sprites animate continuously)
+    if (stillAnimating || enemies.length > 0) {
         rafId = requestAnimationFrame(rafTick);
     } else {
         memberAnims.clear();
@@ -306,6 +326,25 @@ function drawInteriorSprites(now, camRow, camCol) {
     }
 }
 
+function drawEnemySprites(now, camRow, camCol) {
+    if (!spriteSheet.complete || spriteSheet.naturalWidth === 0) return;
+    const frame = Math.floor(now / ENEMY_ANIM_MS) % 2;  // 0 or 1
+    spriteCtx.imageSmoothingEnabled = false;
+    for (const en of enemies) {
+        const frames = NPC_SPRITE[en.npc_sprite];
+        if (!frames) continue;
+        const [sheetRow, sheetCol] = frames[frame];
+        const destCol = en.col - camCol;
+        const destRow = en.row - camRow;
+        if (destRow < -1 || destRow > VIEW_ROWS || destCol < -1 || destCol > VIEW_COLS) continue;
+        spriteCtx.drawImage(
+            spriteSheet,
+            sheetCol * TILE_PX, sheetRow * TILE_PX, TILE_PX, TILE_PX,
+            Math.round(destCol * TILE_DRAW), Math.round(destRow * TILE_DRAW), TILE_DRAW, TILE_DRAW,
+        );
+    }
+}
+
 // ── Mode-aware redraw ─────────────────────────────────────────────────────────
 function redrawAt(now) {
     mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
@@ -314,6 +353,7 @@ function redrawAt(now) {
         const camC = getVisualCam(interior.camCol, interior.camColSrc, interior.camAnimStart, now);
         drawTileGrid(mapCtx, interior.tileGrid, interior.tilesetImg, camR, camC);
         drawInteriorSprites(now, camR, camC);
+        if (!battle.active) drawEnemySprites(now, camR, camC);
     } else if (mode === "hub") {
         drawTileGrid(mapCtx, state.tileGrid, state.tilesetImg,
                      state.camRow, state.camCol);
@@ -323,6 +363,7 @@ function redrawAt(now) {
         const camC = getVisualCam(state.camCol, state.camColSrc, state.camAnimStart, now);
         drawTileGrid(mapCtx, state.tileGrid, state.tilesetImg, camR, camC);
         drawSprite(now, camR, camC);
+        if (!battle.active) drawEnemySprites(now, camR, camC);
     }
 }
 
@@ -426,6 +467,7 @@ function handleMove(e) {
 
 function handleScreen(e) {
     cancelAllAnims();
+    enemies = [];
     state.history = [];
     state.sx = e.sx; state.sy = e.sy;
     state.row = e.row; state.col = e.col;
@@ -443,6 +485,7 @@ function handleScreen(e) {
 
 function handleInteriorInit(e) {
     cancelAllAnims();
+    enemies = [];
     mode = "interior";
     interior.row = e.row; interior.col = e.col;
     interior.rows = e.rows; interior.cols = e.cols;
@@ -496,11 +539,166 @@ function handleInteriorMove(e) {
 
 function handleInteriorExit(e) {
     cancelAllAnims();
+    enemies = [];
     mode = "overworld";
     appendLog("screen", `↑ exited interior`);
     statusEl.textContent = `overworld — screen (${state.sx},${state.sy})`;
     resizeCanvases(VIEW_COLS, VIEW_ROWS);
     redraw();
+}
+
+// ── Enemy overworld events ────────────────────────────────────────────────────
+function handleEnemies(e) {
+    enemies = e.enemies || [];
+    // Enemies animate continuously — keep RAF running when enemies are present
+    if (enemies.length > 0 && rafId === null) startRafLoop();
+}
+
+// ── Battle panel ──────────────────────────────────────────────────────────────
+const battleOverlay  = document.getElementById("battle-overlay");
+const battlePartySide = document.getElementById("battle-party-side");
+const battleEnemySide = document.getElementById("battle-enemy-side");
+const battleResult   = document.getElementById("battle-result");
+
+function _hpColor(hp, max) {
+    const pct = max > 0 ? hp / max : 0;
+    if (pct > 0.5) return "";       // default green
+    if (pct > 0.25) return "low";   // orange
+    return "crit";                  // red
+}
+
+function _makeSide(name, sprite, hp, maxHp) {
+    const div = document.createElement("div");
+    div.className = "battle-side";
+    div.dataset.name = name;
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "battle-name";
+    nameEl.textContent = name;
+    div.appendChild(nameEl);
+
+    if (sprite) {
+        const frames = NPC_SPRITE[sprite];
+        const canvas = document.createElement("canvas");
+        canvas.width = TILE_PX; canvas.height = TILE_PX;
+        canvas.className = "battle-sprite";
+        canvas.dataset.sprite = sprite;
+        canvas.dataset.frame = "0";
+        if (frames && spriteSheet.complete) {
+            const ctx2 = canvas.getContext("2d");
+            ctx2.imageSmoothingEnabled = false;
+            const [sr, sc] = frames[0];
+            ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
+                           0, 0, TILE_PX, TILE_PX);
+        }
+        div.appendChild(canvas);
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "hp-bar-wrap";
+    const bar = document.createElement("div");
+    bar.className = "hp-bar " + _hpColor(hp, maxHp);
+    bar.style.width = (maxHp > 0 ? (hp / maxHp * 100) : 0) + "%";
+    wrap.appendChild(bar);
+    div.appendChild(wrap);
+
+    const txt = document.createElement("div");
+    txt.className = "hp-text";
+    txt.textContent = `${hp}/${maxHp}`;
+    div.appendChild(txt);
+
+    return div;
+}
+
+function _updateHpBar(container, name, hp, maxHp) {
+    const side = container.querySelector(`[data-name="${name}"]`);
+    if (!side) return;
+    const bar = side.querySelector(".hp-bar");
+    const txt = side.querySelector(".hp-text");
+    const pct = maxHp > 0 ? (hp / maxHp * 100) : 0;
+    bar.style.width = pct + "%";
+    bar.className = "hp-bar " + _hpColor(hp, maxHp);
+    txt.textContent = `${hp}/${maxHp}`;
+}
+
+let battleSpriteInterval = null;
+
+function _startBattleSpriteAnim() {
+    if (battleSpriteInterval) return;
+    battleSpriteInterval = setInterval(() => {
+        battleEnemySide.querySelectorAll("canvas[data-sprite]").forEach(canvas => {
+            const sprite = canvas.dataset.sprite;
+            const frames = NPC_SPRITE[sprite];
+            if (!frames || !spriteSheet.complete) return;
+            const frame = (parseInt(canvas.dataset.frame) + 1) % 2;
+            canvas.dataset.frame = frame;
+            const ctx2 = canvas.getContext("2d");
+            ctx2.clearRect(0, 0, TILE_PX, TILE_PX);
+            ctx2.imageSmoothingEnabled = false;
+            const [sr, sc] = frames[frame];
+            ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
+                           0, 0, TILE_PX, TILE_PX);
+        });
+    }, ENEMY_ANIM_MS);
+}
+
+function _stopBattleSpriteAnim() {
+    if (battleSpriteInterval) { clearInterval(battleSpriteInterval); battleSpriteInterval = null; }
+}
+
+function handleBattleStart(e) {
+    battle.active      = true;
+    battle.enemyName   = e.enemy.name;
+    battle.enemySprite = e.enemy.npc_sprite;
+    battle.enemyHp     = e.enemy.hp;
+    battle.enemyMaxHp  = e.enemy.max_hp;
+    battle.partyMaxHp  = {};
+    battle.partyHp     = {};
+    for (const m of (e.party || [])) {
+        battle.partyMaxHp[m.name] = m.max_hp;
+        battle.partyHp[m.name]    = m.hp;
+    }
+
+    // Build enemy side
+    battleEnemySide.innerHTML = "";
+    battleEnemySide.appendChild(_makeSide(e.enemy.name, e.enemy.npc_sprite, e.enemy.hp, e.enemy.max_hp));
+
+    // Build party side (one card per member)
+    battlePartySide.innerHTML = "";
+    for (const m of (e.party || [])) {
+        battlePartySide.appendChild(_makeSide(m.name, null, m.hp, m.max_hp));
+    }
+
+    battleResult.textContent = "";
+    battleOverlay.classList.add("active");
+    _startBattleSpriteAnim();
+
+    appendLog("resolve", `⚔ battle: ${e.enemy.name}`);
+    statusEl.textContent = `BATTLE — ${e.enemy.name}`;
+}
+
+function handleBattleAction(e) {
+    battle.enemyHp = e.enemy_hp;
+    battle.partyHp = e.party_hp || {};
+
+    _updateHpBar(battleEnemySide, battle.enemyName, e.enemy_hp, battle.enemyMaxHp);
+    for (const [name, hp] of Object.entries(e.party_hp || {})) {
+        _updateHpBar(battlePartySide, name, hp, battle.partyMaxHp[name] || hp);
+    }
+    if (e.flavor) appendLog("resolve", e.flavor);
+}
+
+function handleBattleEnd(e) {
+    const labels = { win: "VICTORY!", loss: "DEFEATED...", flee: "ESCAPED!", timeout: "STALEMATE" };
+    battleResult.textContent = labels[e.outcome] || e.outcome.toUpperCase();
+    appendLog("resolve", `⚔ battle end: ${e.outcome} (${e.rounds} rounds)`);
+    statusEl.textContent = `screen (${state.sx},${state.sy})`;
+    setTimeout(() => {
+        battleOverlay.classList.remove("active");
+        battle.active = false;
+        _stopBattleSpriteAnim();
+        redraw();
+    }, 2000);
 }
 
 function handleEvent(raw) {
@@ -515,6 +713,10 @@ function handleEvent(raw) {
         case "interior_init":  handleInteriorInit(e); break;
         case "interior_move":  handleInteriorMove(e); break;
         case "interior_exit":  handleInteriorExit(e); break;
+        case "enemies":        handleEnemies(e);      break;
+        case "battle_start":   handleBattleStart(e);  break;
+        case "battle_action":  handleBattleAction(e); break;
+        case "battle_end":     handleBattleEnd(e);    break;
         case "propose":  appendLog("propose", e.text); break;
         case "vote":     appendLog("vote",    e.text); break;
         case "resolve":  appendLog("resolve", e.text); break;

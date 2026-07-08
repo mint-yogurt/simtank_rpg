@@ -31,6 +31,10 @@ def parse_action(
         logger.warning("JSON parse failed. Raw: %.200s", raw)
         return _FALLBACK.copy()
 
+    if not isinstance(parsed, dict):
+        logger.warning("JSON not an object. Raw: %.200s", raw)
+        return _FALLBACK.copy()
+
     action = str(parsed.get("action", "")).upper()
     if action not in VALID_ACTIONS:
         if special_name and action == special_name.upper():
@@ -81,6 +85,10 @@ def parse_overworld_action(raw: str | None, available_actions: set) -> dict | No
         parsed = json.loads(text)
     except json.JSONDecodeError:
         logger.warning("overworld: JSON parse failed. Raw: %.200s", raw)
+        return None
+
+    if not isinstance(parsed, dict):
+        logger.warning("overworld: JSON not an object. Raw: %.200s", raw)
         return None
 
     action = str(parsed.get("action", "")).upper()
@@ -144,6 +152,10 @@ def parse_checkpoint_decision(raw: str | None) -> dict | None:
         logger.warning("checkpoint: JSON parse failed. Raw: %.200s", raw)
         return None
 
+    if not isinstance(parsed, dict):
+        logger.warning("checkpoint: JSON not an object. Raw: %.200s", raw)
+        return None
+
     decision = str(parsed.get("decision", "")).lower()
     if decision not in _CHECKPOINT_DECISIONS:
         logger.warning("checkpoint: invalid decision %r", decision)
@@ -187,6 +199,10 @@ def parse_goal_decision(raw: str | None) -> dict | None:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         logger.warning("goal: JSON parse failed. Raw: %.200s", raw)
+        return None
+
+    if not isinstance(parsed, dict):
+        logger.warning("goal: JSON not an object. Raw: %.200s", raw)
         return None
 
     goal_type = str(parsed.get("goal_type", "")).lower()

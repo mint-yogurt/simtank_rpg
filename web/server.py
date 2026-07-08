@@ -154,18 +154,22 @@ _subs_lock = threading.Lock()
 
 # Snapshot of latest state — sent to clients that connect after loop has started.
 _snapshot: dict | None = None
+_pre_battle_snapshot: dict | None = None  # saved overworld state, restored after battle
+_enemies_snapshot: dict | None = None     # latest enemies event for reconnecting clients
 _snapshot_lock = threading.Lock()
 
 
 def _update_snapshot(event: dict):
-    global _snapshot
+    global _snapshot, _pre_battle_snapshot, _enemies_snapshot
     t = event.get("type")
     with _snapshot_lock:
         if t == "init":
             _snapshot = dict(event)
+            _enemies_snapshot = None
         elif t == "hub_init":
             _snapshot = dict(event)
             _snapshot["party"] = [dict(m) for m in event.get("party", [])]
+            _enemies_snapshot = None
         elif t == "hub_move" and _snapshot and _snapshot.get("type") == "hub_init":
             for m in _snapshot["party"]:
                 if m["name"] == event["name"]:
@@ -180,6 +184,9 @@ def _update_snapshot(event: dict):
                 "tileset_url": event["tileset_url"],
                 "tile_grid": event["tile_grid"],
             })
+            _enemies_snapshot = None  # clear on screen crossing
+        elif t == "enemies":
+            _enemies_snapshot = dict(event)
         elif t == "move" and _snapshot is not None:
             _snapshot.update({
                 "row": event["row"], "col": event["col"],
@@ -187,8 +194,19 @@ def _update_snapshot(event: dict):
             })
         elif t == "interior_init":
             _snapshot = dict(event)
+            _enemies_snapshot = None
         elif t == "interior_move" and _snapshot is not None:
             _snapshot.update({"row": event["row"], "col": event["col"]})
+        elif t == "battle_start":
+            _pre_battle_snapshot = dict(_snapshot) if _snapshot else None
+            _snapshot = dict(event)
+        elif t == "battle_action" and _snapshot is not None:
+            _snapshot["enemy_hp"]  = event.get("enemy_hp", _snapshot.get("enemy_hp"))
+            _snapshot["party_hp"]  = event.get("party_hp", _snapshot.get("party_hp"))
+        elif t == "battle_end":
+            if _pre_battle_snapshot is not None:
+                _snapshot = _pre_battle_snapshot
+                _pre_battle_snapshot = None
 
 
 def broadcast(event: dict):
@@ -232,11 +250,14 @@ def events():
     q: queue.Queue = queue.Queue(maxsize=256)
 
     with _snapshot_lock:
-        snap = dict(_snapshot) if _snapshot else None
+        snap  = dict(_snapshot) if _snapshot else None
+        esnap = dict(_enemies_snapshot) if _enemies_snapshot else None
 
     def stream():
         if snap:
             yield f"data: {json.dumps(snap)}\n\n"
+        if esnap:
+            yield f"data: {json.dumps(esnap)}\n\n"
 
         with _subs_lock:
             _subscribers.add(q)

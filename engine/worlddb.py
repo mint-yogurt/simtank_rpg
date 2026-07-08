@@ -34,6 +34,7 @@ import sqlite3
 import struct
 
 from engine.tiles import is_enterable, is_passable
+from procgen import enemygen
 
 
 def _to_s64(n):
@@ -74,6 +75,22 @@ CREATE TABLE IF NOT EXISTS interiors (
     interior_seed   INTEGER NOT NULL,
     data_json       TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS enemies (
+    scope_type    TEXT    NOT NULL,
+    scope_id      INTEGER NOT NULL,
+    enemy_index   INTEGER NOT NULL,
+    name          TEXT    NOT NULL,
+    iq            INTEGER NOT NULL,
+    weight        INTEGER NOT NULL,
+    sweat         INTEGER NOT NULL,
+    hair          INTEGER NOT NULL,
+    level         INTEGER NOT NULL,
+    npc_sprite    TEXT    NOT NULL,
+    behavior_type INTEGER NOT NULL,
+    behavior_axis TEXT,
+    PRIMARY KEY (scope_type, scope_id, enemy_index)
+);
 """
 
 
@@ -87,6 +104,20 @@ def compute_feature_id(world_seed: int, sx: int, sy: int,
 
 def _derive_interior_seed(world_seed: int, feature_id: int) -> int:
     raw = struct.pack('>qq', world_seed, feature_id)
+    digest = hashlib.sha256(raw).digest()[:8]
+    return _to_s64(struct.unpack('>Q', digest)[0])
+
+
+def _derive_enemy_seed(base_seed: int) -> int:
+    """Derive a separate seed for enemy generation from a screen/interior seed."""
+    raw = struct.pack('>QQ', int(base_seed) & 0xFFFFFFFFFFFFFFFF, 0xE4E4E4E4E4E4E4E4)
+    digest = hashlib.sha256(raw).digest()[:8]
+    return _to_s64(struct.unpack('>Q', digest)[0])
+
+
+def _derive_cave_enemy_seed(base_seed: int) -> int:
+    """Derive the shared cave encounter pool seed for a screen."""
+    raw = struct.pack('>QQ', int(base_seed) & 0xFFFFFFFFFFFFFFFF, 0xC0DE1234C0DE5678)
     digest = hashlib.sha256(raw).digest()[:8]
     return _to_s64(struct.unpack('>Q', digest)[0])
 
@@ -120,7 +151,19 @@ class WorldDB:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self):
+        """Add columns introduced after initial schema without dropping existing data."""
+        existing = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(enemies)").fetchall()
+        }
+        if "behavior_type" not in existing:
+            self._conn.execute("ALTER TABLE enemies ADD COLUMN behavior_type INTEGER NOT NULL DEFAULT 1")
+        if "behavior_axis" not in existing:
+            self._conn.execute("ALTER TABLE enemies ADD COLUMN behavior_axis TEXT")
 
     # ── READ / WRITE SCREENS ──────────────────────────────────────────────────
 
@@ -159,6 +202,15 @@ class WorldDB:
             )
 
         self._conn.commit()
+
+        enemy_count = data.screen_seed % 4  # 0-3, deterministic
+        if enemy_count > 0:
+            enemy_seed = _derive_enemy_seed(data.screen_seed)
+            self.get_or_create_enemies('screen', data.screen_seed, enemy_seed, enemy_count, level=1)
+
+        # Cave encounter pool: 6 enemies shared across all caves on this screen.
+        cave_seed = _derive_cave_enemy_seed(data.screen_seed)
+        self.get_or_create_enemies('cave_screen', data.screen_seed, cave_seed, 6, level=2)
 
         return dict(self._conn.execute(
             "SELECT * FROM screens WHERE world_seed=? AND sx=? AND sy=?",
@@ -257,7 +309,54 @@ class WorldDB:
             (_to_s64(feature_id), _to_s64(interior_seed), data_json),
         )
         self._conn.commit()
+
         return data_dict
+
+    # ── READ / WRITE ENEMIES ──────────────────────────────────────────────────
+
+    def get_or_create_enemies(self, scope_type: str, scope_id: int,
+                              seed: int, count: int, level: int = 1) -> list[dict]:
+        """Return enemies for this scope, generating and caching if absent.
+
+        scope_type: 'screen' or 'interior'
+        scope_id:   screen_seed (for screens) or feature_id (for interiors)
+        seed:       enemy-specific seed derived from the terrain seed
+        count:      number of enemies to generate
+        level:      base level for generated enemies
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM enemies WHERE scope_type=? AND scope_id=? ORDER BY enemy_index",
+            (scope_type, _to_s64(scope_id)),
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        enemies = enemygen.generate_enemies(seed, count, level)
+        for i, e in enumerate(enemies):
+            self._conn.execute(
+                """INSERT INTO enemies
+                   (scope_type, scope_id, enemy_index,
+                    name, iq, weight, sweat, hair, level,
+                    npc_sprite, behavior_type, behavior_axis)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (scope_type, _to_s64(scope_id), i,
+                 e["name"], e["iq"], e["weight"], e["sweat"], e["hair"], e["level"],
+                 e["npc_sprite"], e["behavior_type"], e["behavior_axis"]),
+            )
+        self._conn.commit()
+
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM enemies WHERE scope_type=? AND scope_id=? ORDER BY enemy_index",
+            (scope_type, _to_s64(scope_id)),
+        ).fetchall()]
+
+    def list_enemies(self, scope_type: str, scope_id: int) -> list[dict]:
+        """Return all enemies for a scope (screen or interior) as dicts."""
+        rows = self._conn.execute(
+            "SELECT * FROM enemies WHERE scope_type=? AND scope_id=? ORDER BY enemy_index",
+            (scope_type, _to_s64(scope_id)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
         self._conn.close()

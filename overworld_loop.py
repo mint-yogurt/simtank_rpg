@@ -19,6 +19,7 @@ Both default to None (CLI mode: no web output).
 """
 
 import json
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ from llm.schema import parse_checkpoint_decision, parse_goal_decision
 from procgen.cavegen import generate_cave_data
 from procgen.towngen import generate_town_data
 from procgen.worldgen import FEATURE_TYPES, generate_screen_data
+from engine.battle import BattleEnemy, load_party as load_battle_party, run_battle
+from engine.combat import Fighter
+from engine.enemy_state import EnemyAgent, place_enemies, update_enemies
 
 
 @dataclass
@@ -151,8 +155,12 @@ def _goal_directed_open_exits(sx: int, sy: int,
 
 def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
                       generator, emit=None, render_screen_fn=None,
-                      member_name: str | None = None):
-    """Execute scripted movement. Returns (stop_reason, final_grid)."""
+                      member_name: str | None = None, on_step=None):
+    """Execute scripted movement. Returns (stop_reason, final_grid, crossed).
+
+    on_step: optional callable(party_row, party_col, grid) called on each
+             non-crossing step, used to update enemy positions each tile move.
+    """
     result = execute_move(pos, direction, steps, grid, db,
                           journals=journals, tick=tick, generator=generator)
     final_grid = result.final_grid if result.final_grid is not None else grid
@@ -182,14 +190,20 @@ def _execute_proposal(pos, direction, steps, grid, db, journals, navlog, tick,
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
                       "sx": pos.sx, "sy": pos.sy, "member": member_name})
+            if on_step and not crossed:
+                on_step(step.after_row, step.after_col, final_grid)
+            if emit:
                 time.sleep(cfg.move_ms / 1000)
         else:
             if emit:
                 emit({"type": "move", "row": step.after_row, "col": step.after_col,
                       "sx": pos.sx, "sy": pos.sy, "member": member_name})
+            if on_step and not crossed:
+                on_step(step.after_row, step.after_col, final_grid)
+            if emit:
                 time.sleep(cfg.move_ms / 1000)
 
-    return result.stop_reason, final_grid
+    return result.stop_reason, final_grid, crossed
 
 
 # ── TIER 1: goal-setting ──────────────────────────────────────────────────────
@@ -401,9 +415,78 @@ def _interior_find_far_tile(grid_dict: dict, start: tuple,
     return farthest[0]
 
 
+MAX_ENEMIES_PER_ROOM = 3
+
+
+def _place_interior_enemies(pool, rooms, grid_dict, feature_id, min_r, min_c):
+    """Place 0-MAX_ENEMIES_PER_ROOM enemies per cave room from pool on walkable tiles.
+
+    Returns (agents, grid2d) where agents are in grid2d-space (0-based offset from
+    min_r/min_c) and grid2d is the compact 2D tile list for update_enemies().
+    Each room gets its own deterministic RNG seeded from feature_id ^ room_idx.
+    """
+    max_r = max(r for r, c in grid_dict)
+    max_c = max(c for r, c in grid_dict)
+    grid2d = [[None] * (max_c - min_c + 1) for _ in range(max_r - min_r + 1)]
+    for (r, c), tile in grid_dict.items():
+        grid2d[r - min_r][c - min_c] = tile
+
+    if not pool or not rooms:
+        return [], grid2d
+
+    agents = []
+    taken = set()
+    global_idx = 0
+    fid = abs(int(feature_id))
+
+    for room_idx, room in enumerate(rooms):
+        rng = random.Random((fid ^ (room_idx * 0x9E3779B9 + 1)) & 0xFFFFFFFFFFFFFFFF)
+        count = rng.randint(0, MAX_ENEMIES_PER_ROOM)
+        if count == 0:
+            continue
+
+        walkable = []
+        for dr in range(room['h']):
+            for dc in range(room['w']):
+                g_r = room['r0'] + dr - min_r
+                g_c = room['c0'] + dc - min_c
+                if (g_r, g_c) not in taken and is_passable(
+                        grid_dict.get((room['r0'] + dr, room['c0'] + dc))):
+                    walkable.append((g_r, g_c))
+        if not walkable:
+            continue
+
+        rng.shuffle(walkable)
+        for pos_g in walkable[:count]:
+            taken.add(pos_g)
+            db_row = pool[rng.randrange(len(pool))]
+            agents.append(EnemyAgent(
+                index=global_idx,
+                row=pos_g[0],
+                col=pos_g[1],
+                behavior_type=db_row['behavior_type'],
+                behavior_axis=db_row.get('behavior_axis'),
+                pace_dir=1,
+                activated=False,
+                npc_sprite=db_row['npc_sprite'],
+                name=db_row['name'],
+                iq=db_row.get('iq', 80),
+                weight=db_row.get('weight', 200),
+                sweat=db_row.get('sweat', 4),
+                hair=db_row.get('hair', 0),
+                level=db_row.get('level', 1),
+            ))
+            global_idx += 1
+
+    return agents, grid2d
+
+
 def _run_interior_loop(interior: Interior, pos: PartyPos,
                        emit=None, render_interior_fn=None,
-                       party: list | None = None) -> None:
+                       party: list | None = None,
+                       cave_enemy_pool: list | None = None,
+                       enemy_rng=None,
+                       data_dir: Path | None = None) -> None:
     """Navigate the party through an interior: spawn → wander → exit.
 
     Renders the interior PNG on first visit (cached), shows it on the web
@@ -414,6 +497,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
     No LLM calls — purely deterministic.  Combat and NPC interaction are
     roadmap items.
     """
+    _CAVE_PNG_PAD = 2  # matches CANVAS_PAD in cavegen.py
+
     grid_dict = interior.combined_grid()
     spawn = interior.spawn
     exit_tile = interior.entry_tile
@@ -424,8 +509,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
     # Compute PNG-relative origin so emitted row/col match the rendered image.
     # Cave PNGs are cropped to content bounding box plus CANVAS_PAD=2 border rows/cols.
     # Town grids start at (0,0) so origin is (0,0) and no translation needed.
+    _min_r = _min_c = 0
     if interior.monster_spawn and grid_dict:
-        _CAVE_PNG_PAD = 2  # matches CANVAS_PAD in cavegen.py
         _min_r = min(r for r, c in grid_dict)
         _min_c = min(c for r, c in grid_dict)
         _max_r = max(r for r, c in grid_dict)
@@ -442,6 +527,26 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         else:
             img_rows, img_cols = 1, 1
 
+    # Place cave enemies (per room, drawn from shared screen pool).
+    int_enemies: list = []
+    grid2d = None
+    if interior.monster_spawn and grid_dict and cave_enemy_pool:
+        rooms = interior.data.get('rooms', [])
+        int_enemies, grid2d = _place_interior_enemies(
+            cave_enemy_pool, rooms, grid_dict, interior.feature_id, _min_r, _min_c)
+        print(f"  Cave enemies placed: {len(int_enemies)}", flush=True)
+
+    def _emit_int_enemies():
+        if emit:
+            emit({"type": "enemies", "enemies": [
+                {"index": e.index,
+                 "row": e.row + _CAVE_PNG_PAD,
+                 "col": e.col + _CAVE_PNG_PAD,
+                 "npc_sprite": e.npc_sprite,
+                 "name": e.name}
+                for e in int_enemies
+            ]})
+
     if emit:
         tile_payload = {}
         if render_interior_fn:
@@ -457,6 +562,7 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
               'party': party_names,
               **tile_payload})
         time.sleep(cfg.interior_entry_ms / 1000)
+        _emit_int_enemies()
 
     kind = "town" if not interior.monster_spawn else "cave"
     print(f"\n  INTERIOR [{kind}]  spawn={spawn}  exit={exit_tile}", flush=True)
@@ -479,7 +585,41 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         cur = (step_r, step_c)
         if emit:
             emit({'type': 'interior_move', 'row': cur[0] - origin_r, 'col': cur[1] - origin_c})
+
+        # Enemy step: move enemies, check collision with party.
+        pending_cave_battle = None
+        if int_enemies and grid2d is not None and enemy_rng is not None:
+            party_g_r = step_r - _min_r
+            party_g_c = step_c - _min_c
+            collision = next(
+                (e for e in int_enemies if e.row == party_g_r and e.col == party_g_c), None)
+            int_enemies = update_enemies(
+                int_enemies, grid2d, party_g_r, party_g_c, enemy_rng)
+            if collision is None:
+                collision = next(
+                    (e for e in int_enemies if e.row == party_g_r and e.col == party_g_c), None)
+            if collision is not None:
+                pending_cave_battle = collision
+                int_enemies = [e for e in int_enemies if e.index != collision.index]
+            _emit_int_enemies()
+
+        if emit:
             time.sleep(cfg.move_ms / 1000)
+
+        if pending_cave_battle is not None and data_dir is not None:
+            agent = pending_cave_battle
+            bparty = load_battle_party(data_dir)
+            benemy = BattleEnemy(
+                fighter=Fighter(
+                    name=agent.name, iq=agent.iq, weight=agent.weight,
+                    sweat=agent.sweat, hair=agent.hair, level=agent.level,
+                    is_enemy=True,
+                ),
+                npc_sprite=agent.npc_sprite,
+            )
+            run_battle(bparty, benemy, enemy_rng, emit=emit,
+                       battle_sleep_ms=cfg.move_ms * 2)
+            _emit_int_enemies()
 
     print(f"  Interior done — returning to overworld at {(pos.row, pos.col)}.", flush=True)
     if emit:
@@ -492,7 +632,9 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
 
 
 def _enter_interior(pos: PartyPos, db, emit=None,
-                    render_interior_fn=None, party: list | None = None) -> None:
+                    render_interior_fn=None, party: list | None = None,
+                    screen_seed: int | None = None,
+                    enemy_rng=None, data_dir: Path | None = None) -> None:
     """Generate (or load from cache) the interior at pos and navigate through it.
 
     Looks up the feature, derives feature_id, dispatches to the right generator,
@@ -522,8 +664,15 @@ def _enter_interior(pos: PartyPos, db, emit=None,
     interior = Interior(feature_id=feature_id, data=data,
                         monster_spawn=monster_spawn)
 
+    cave_enemy_pool = None
+    if monster_spawn and screen_seed is not None:
+        cave_enemy_pool = db.list_enemies('cave_screen', screen_seed)
+
     _run_interior_loop(interior, pos, emit=emit,
-                       render_interior_fn=render_interior_fn, party=party)
+                       render_interior_fn=render_interior_fn, party=party,
+                       cave_enemy_pool=cave_enemy_pool,
+                       enemy_rng=enemy_rng,
+                       data_dir=data_dir)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
@@ -562,12 +711,66 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     pos.row, pos.col = start
     print(f"Start: row={pos.row} col={pos.col}", flush=True)
 
+    enemy_rng    = random.Random(world_seed ^ 0xDEADBEEF)
+    enemy_agents: list = place_enemies(
+        db.list_enemies('screen', screen['screen_seed']), grid, screen['screen_seed'])
+    pending_battle = None  # EnemyAgent that collided; resolved after execute_proposal returns
+
+    def _emit_enemies():
+        if emit:
+            emit({"type": "enemies", "enemies": [
+                {"index": e.index, "row": e.row, "col": e.col,
+                 "npc_sprite": e.npc_sprite, "name": e.name}
+                for e in enemy_agents
+            ]})
+
+    def _reload_enemies(current_grid):
+        nonlocal enemy_agents
+        cur = db.get_or_create_screen(world_seed, pos.sx, pos.sy, generate_screen_data)
+        raw = db.list_enemies('screen', cur['screen_seed'])
+        enemy_agents = place_enemies(raw, current_grid, cur['screen_seed'])
+        _emit_enemies()
+
+    def _enemy_step(party_row, party_col, current_grid):
+        nonlocal enemy_agents, pending_battle
+        # Check if the party stepped onto an enemy tile (party-initiated collision)
+        collision = next(
+            (e for e in enemy_agents if e.row == party_row and e.col == party_col), None)
+        enemy_agents = update_enemies(
+            enemy_agents, current_grid, party_row, party_col, enemy_rng)
+        # Check if an enemy stepped onto the party tile (enemy-initiated collision)
+        if collision is None:
+            collision = next(
+                (e for e in enemy_agents if e.row == party_row and e.col == party_col), None)
+        if collision is not None:
+            pending_battle = collision
+            return  # skip enemies broadcast — battle takes over
+        _emit_enemies()
+
+    def _trigger_battle(agent):
+        nonlocal enemy_agents
+        bparty = load_battle_party(data_dir)
+        benemy = BattleEnemy(
+            fighter=Fighter(
+                name=agent.name, iq=agent.iq, weight=agent.weight,
+                sweat=agent.sweat, hair=agent.hair, level=agent.level,
+                is_enemy=True,
+            ),
+            npc_sprite=agent.npc_sprite,
+        )
+        run_battle(bparty, benemy, enemy_rng, emit=emit,
+                   battle_sleep_ms=cfg.move_ms * 2)
+        # Remove the enemy win or flee — it's gone for this visit
+        enemy_agents = [e for e in enemy_agents if e.index != agent.index]
+        _emit_enemies()
+
     if emit:
         tile_payload = render_screen_fn(world_seed, 0, 0) if render_screen_fn else {}
         alive0 = [m for m in party if m.alive]
         init_leader = alive0[0].name if alive0 else None
         emit({"type": "init", "sx": 0, "sy": 0, "row": pos.row, "col": pos.col,
               "rows": rows, "cols": cols, "member": init_leader, **tile_payload})
+        _emit_enemies()
 
     active_goal: Goal | None = None
     previous_goal: Goal | None = None
@@ -705,17 +908,29 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                     segments = path_to_segments(feat_path)
                     feat_stop = 'completed'
                     for direction, steps in segments:
-                        feat_stop, grid = _execute_proposal(
+                        feat_stop, grid, _crossed = _execute_proposal(
                             pos, direction, steps, grid, db, journals, navlog, tick,
                             generate_screen_data, emit=emit,
                             render_screen_fn=render_screen_fn,
-                            member_name=cur_leader_name)
+                            member_name=cur_leader_name, on_step=_enemy_step)
+                        if _crossed:
+                            _reload_enemies(grid)
+                        if pending_battle is not None:
+                            break
                         if feat_stop in ('blocker', 'enterable'):
                             break
+                    if pending_battle is not None:
+                        _trigger_battle(pending_battle)
+                        pending_battle = None
+                        continue
                     if feat_stop == 'enterable':
+                        enemy_agents.clear()
                         _enter_interior(pos, db, emit=emit,
                                         render_interior_fn=render_interior_fn,
-                                        party=party)
+                                        party=party,
+                                        screen_seed=screen_row['screen_seed'],
+                                        enemy_rng=enemy_rng, data_dir=data_dir)
+                        _reload_enemies(grid)
                         continue  # resume goal after exiting interior
 
             # ── Within-screen BFS to exit edge ────────────────────────────────
@@ -752,17 +967,29 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
             segments = path_to_segments(path)
             stop = 'completed'
             for direction, steps in segments:
-                stop, grid = _execute_proposal(
+                stop, grid, _crossed = _execute_proposal(
                     pos, direction, steps, grid, db, journals, navlog, tick,
                     generate_screen_data, emit=emit, render_screen_fn=render_screen_fn,
-                    member_name=cur_leader_name)
+                    member_name=cur_leader_name, on_step=_enemy_step)
+                if _crossed:
+                    _reload_enemies(grid)
+                if pending_battle is not None:
+                    break
                 if stop in ('blocker', 'enterable'):
                     break
+            if pending_battle is not None:
+                _trigger_battle(pending_battle)
+                pending_battle = None
+                continue
 
             if stop == 'enterable':
                 movements += 1
+                enemy_agents.clear()
                 _enter_interior(pos, db, emit=emit,
-                                render_interior_fn=render_interior_fn, party=party)
+                                render_interior_fn=render_interior_fn, party=party,
+                                screen_seed=screen_row['screen_seed'],
+                                enemy_rng=enemy_rng, data_dir=data_dir)
+                _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
@@ -775,15 +1002,25 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 continue
 
             # ── Trigger the screen crossing (one step off the exit edge) ──────
-            stop, grid = _execute_proposal(
+            stop, grid, crossed = _execute_proposal(
                 pos, next_dir, 1, grid, db, journals, navlog, tick,
                 generate_screen_data, emit=emit, render_screen_fn=render_screen_fn,
-                member_name=cur_leader_name)
+                member_name=cur_leader_name, on_step=_enemy_step)
+
+            if crossed:
+                _reload_enemies(grid)
+
+            if pending_battle is not None:
+                _trigger_battle(pending_battle)
+                pending_battle = None
+                continue
 
             if stop == 'enterable':
                 movements += 1
+                enemy_agents.clear()
                 _enter_interior(pos, db, emit=emit,
                                 render_interior_fn=render_interior_fn, party=party)
+                _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
                 active_goal = None
