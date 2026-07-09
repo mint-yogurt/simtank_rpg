@@ -36,10 +36,11 @@ from engine.party_state import PartyPos, enter_screen, execute_move
 from engine.pathfinding import bfs_to_exit, bfs_to_tile, path_to_segments, screen_direction_toward
 from engine.scenes import Interior
 from engine.tiles import is_enterable, is_passable
-from llm.client import ask_with_retry
+from llm.client import ask, ask_with_retry
 from llm.prompts import (build_checkpoint_context, build_checkpoint_system_prompt,
                           build_goal_context, build_goal_system_prompt,
                           build_interior_system_prompt, build_interior_goal_context,
+                          build_healer_prompts,
                           OVERWORLD_CRITICAL_HP)
 from llm.schema import (parse_checkpoint_decision, parse_goal_decision,
                          parse_interior_destination)
@@ -605,7 +606,18 @@ def _build_interior_pois(interior: Interior, grid_dict: dict) -> list[dict]:
 
 
 def _do_healer_interaction(party: list, emit=None) -> None:
-    """Restore full HP and MP to all living party members."""
+    """Restore full HP and MP to all living party members, with LLM flavor dialogue."""
+    user_p, sys_p = build_healer_prompts(party)
+    try:
+        dialogue = (ask(user_p, sys_p) or "").strip().strip('"').strip("'")
+    except Exception:
+        dialogue = ""
+    if not dialogue:
+        dialogue = "Rest now, weary travelers. Your strength is restored."
+    print(f"  HEALER: \"{dialogue}\"", flush=True)
+    if emit:
+        emit({"type": "resolve", "text": f'HEALER: "{dialogue}"'})
+
     healed = []
     for m in party:
         if m.alive and (m.hp < m.max_hp or m.mp < m.max_mp):
@@ -614,6 +626,8 @@ def _do_healer_interaction(party: list, emit=None) -> None:
             healed.append(m.name)
     if healed:
         print(f"  HEALER: restored HP and MP to {', '.join(healed)}", flush=True)
+        if emit:
+            emit({"type": "resolve", "text": f"HEALER restored HP+MP to: {', '.join(healed)}"})
     else:
         print("  HEALER: party already at full HP and MP.", flush=True)
 
@@ -1332,19 +1346,36 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                   f"heading={next_dir}", flush=True)
             print(f"{'─'*60}", flush=True)
 
-            # ── Feature detour: visit unvisited enterables before crossing ────
+            # ── Feature detour: visit enterables before crossing ──────────────
             # bfs_to_exit avoids enterable tiles by design, so we must
-            # explicitly route to any unvisited caves/towns on this screen
-            # before executing the crossing path.
+            # explicitly route to any caves/towns on this screen before
+            # executing the crossing path. Visited towns are re-entered
+            # when party HP is critical so the healer is always reachable.
             screen_feats = db.list_screen_features(pos.world_seed, pos.sx, pos.sy)
-            unvisited_feats = [
+            _alive_now = [m for m in party if m.alive]
+            _hp_critical = any(
+                m.max_hp > 0 and m.hp / m.max_hp < OVERWORLD_CRITICAL_HP
+                for m in _alive_now
+            )
+            candidate_feats = [
                 f for f in screen_feats
-                if f.get('enterable') and not f.get('entered')
+                if f.get('enterable')
                 and (f['local_row'], f['local_col']) != (pos.row, pos.col)
-                and f.get('feature_type') in FEATURE_TYPES  # skip hub and unknowns
+                and f.get('feature_type') in FEATURE_TYPES
+                and (
+                    not f.get('entered')
+                    or (_hp_critical and FEATURE_TYPES.get(f['feature_type']) == 'town')
+                )
             ]
-            if unvisited_feats:
-                nearest = min(unvisited_feats,
+            # When HP is critical, prefer towns over unvisited dungeons so the
+            # party heals first rather than walking into more combat.
+            if _hp_critical and candidate_feats:
+                towns = [f for f in candidate_feats
+                         if FEATURE_TYPES.get(f['feature_type']) == 'town']
+                if towns:
+                    candidate_feats = towns
+            if candidate_feats:
+                nearest = min(candidate_feats,
                               key=lambda f: (abs(f['local_row'] - pos.row)
                                              + abs(f['local_col'] - pos.col)))
                 feat_path = bfs_to_tile(grid, pos.row, pos.col,

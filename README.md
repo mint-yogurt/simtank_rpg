@@ -358,9 +358,10 @@ Do the numeric fixes before touching visuals (Phase 5 depends on the data this p
 
 Self-contained, good as a breather task between Phases 2/3 and 5.
 
-- [ ] **Face-to-face interaction trigger.** Party member steps adjacent to and facing an NPC (direction check against NPC tile). Start narrow: hardcode the trigger for the healer only (`name == 'HEALER'`), rather than building the general NPC dialogue system (`27a` backlog) up front.
-- [ ] **Heal effect.** Deterministic, no LLM needed: on interaction, restore full HP (and, once Phase 3 lands, full MP) to the whole party. Optional single LLM-flavor line for the healer's "dialogue" instead of the current `"..."` stub — small enough to not need the full dialogue system.
-- [ ] Town NPC placement/behavior already exists (`procgen/npcgen.py`, `engine/scenes/interior.py Interior.healer_spawn`) — this phase is purely the trigger + effect, no new generation work.
+- [x] **Face-to-face interaction trigger.** Party member steps adjacent to the healer NPC tile (POI adjacency in `_build_interior_pois`). Healer-only; general NPC dialogue system is a post-beta backlog item.
+- [x] **Heal effect + LLM flavor.** `_do_healer_interaction` restores full HP and MP to all living members; one LLM-generated greeting line replaces the `"..."` stub.
+- [x] Town NPC placement/behavior already existed (`procgen/npcgen.py`, `engine/scenes/interior.py Interior.healer_spawn`) — trigger + effect were wired in the same commit.
+- [x] **Town re-entry for healing.** Fixed detour logic so the party re-enters visited towns when any member is critically low on HP (previously the `entered` flag permanently blocked re-entry).
 
 ### Phase 5 — Battle screen redesign
 

@@ -373,6 +373,27 @@ _CHECKPOINT_REASON_DESC: dict[str, str] = {
 }
 
 
+def build_healer_prompts(party: list) -> tuple[str, str]:
+    """Return (user_prompt, system_prompt) for a short healer NPC greeting line."""
+    dead  = [m for m in party if not m.alive]
+    hurt  = [m for m in party if m.alive and m.hp < m.max_hp]
+    if dead:
+        names = ', '.join(m.name for m in dead)
+        situation = f"Some party members ({names}) are fallen and others are injured."
+    elif hurt:
+        names = ', '.join(m.name for m in hurt)
+        situation = f"The party is wounded ({names} need healing)."
+    else:
+        situation = "The party has returned in good health."
+    sys_p = (
+        "You are HEALER, a gentle and wise NPC in a small town. "
+        "Speak one short sentence welcoming the party and restoring their strength. "
+        "Output only the dialogue line — no JSON, no quotes, no stage directions."
+    )
+    user_p = situation
+    return user_p, sys_p
+
+
 def build_interior_system_prompt(member, kind: str) -> str:
     lines = [f"You are {member.name} (LVL {member.lvl}) leading your party through a {kind}."]
     if getattr(member, 'personality', None):
