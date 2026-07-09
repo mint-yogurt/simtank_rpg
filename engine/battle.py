@@ -61,7 +61,8 @@ class BattleMember:
 @dataclass
 class BattleEnemy:
     fighter:         Fighter
-    npc_sprite:      str = ""          # "npc01"–"npc04" for web renderer
+    npc_sprite:      str = ""          # "npc01"–"npc08" for web renderer
+    sprite_url:      str = ""          # pre-rendered recolored sprite strip URL
     status:          str | None = None
     status_turns:    int = 0
     status_duration: int | None = None
@@ -260,7 +261,8 @@ def run_battle(party: list[BattleMember], enemy: BattleEnemy,
         emit({
             "type":  "battle_start",
             "enemy": {"name": enemy.name, "hp": enemy.hp,
-                      "max_hp": enemy.max_hp, "npc_sprite": enemy.npc_sprite},
+                      "max_hp": enemy.max_hp, "npc_sprite": enemy.npc_sprite,
+                      "sprite_url": enemy.sprite_url},
             "party": [{"name": m.name, "hp": m.hp, "max_hp": m.max_hp} for m in party],
         })
 

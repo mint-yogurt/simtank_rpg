@@ -44,7 +44,7 @@ from procgen.towngen import generate_town_data
 from procgen.worldgen import FEATURE_TYPES, generate_screen_data
 from engine.battle import BattleEnemy, load_party as load_battle_party, run_battle
 from engine.combat import Fighter
-from engine.enemy_state import EnemyAgent, place_enemies, update_enemies
+from engine.enemy_state import EnemyAgent, place_enemies, update_enemies, update_town_npcs
 
 
 @dataclass
@@ -485,8 +485,10 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                        emit=None, render_interior_fn=None,
                        party: list | None = None,
                        cave_enemy_pool: list | None = None,
+                       town_npc_pool: list | None = None,
                        enemy_rng=None,
-                       data_dir: Path | None = None) -> None:
+                       data_dir: Path | None = None,
+                       render_npc_sprite_fn=None) -> None:
     """Navigate the party through an interior: spawn → wander → exit.
 
     Renders the interior PNG on first visit (cached), shows it on the web
@@ -520,12 +522,11 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         img_rows = _max_r + _CAVE_PNG_PAD - origin_r + 1
         img_cols = _max_c + _CAVE_PNG_PAD - origin_c + 1
     else:
-        origin_r = origin_c = 0
-        if grid_dict:
-            img_rows = max(r for r, c in grid_dict) + 1
-            img_cols = max(c for r, c in grid_dict) + 1
-        else:
-            img_rows, img_cols = 1, 1
+        # Towns are rendered cropped to crop_box; image (0,0) = absolute (r0,c0).
+        cb = interior.data.get('crop_box', [0, 0, 0, 0])
+        origin_r, origin_c = cb[0], cb[1]
+        img_rows = cb[2] - cb[0]
+        img_cols = cb[3] - cb[1]
 
     # Place cave enemies (per room, drawn from shared screen pool).
     int_enemies: list = []
@@ -536,16 +537,74 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
             cave_enemy_pool, rooms, grid_dict, interior.feature_id, _min_r, _min_c)
         print(f"  Cave enemies placed: {len(int_enemies)}", flush=True)
 
+    # Place town NPCs (friendly; no battles).
+    town_npcs: list = []
+    town_grid2d = None
+    t_r0 = t_c0 = 0
+    if not interior.monster_spawn and grid_dict and town_npc_pool:
+        cb = interior.data.get('crop_box', [0, 0, 0, 0])
+        t_r0, t_c0, t_r1, t_c1 = cb
+        t_rows, t_cols = t_r1 - t_r0, t_c1 - t_c0
+        town_grid2d = [[None] * t_cols for _ in range(t_rows)]
+        for (r, c), tile in grid_dict.items():
+            ri, ci = r - t_r0, c - t_c0
+            if 0 <= ri < t_rows and 0 <= ci < t_cols:
+                town_grid2d[ri][ci] = tile
+
+        # Healer (index 0): fixed at healerHutwallMid (impassable; party can't reach it)
+        healer_db = next((r for r in town_npc_pool if r['enemy_index'] == 0), None)
+        healer_abs = interior.healer_spawn
+        if healer_db and healer_abs:
+            raw_pal = healer_db.get('sprite_palette_json')
+            town_npcs.append(EnemyAgent(
+                index=0,
+                row=healer_abs[0] - t_r0, col=healer_abs[1] - t_c0,
+                behavior_type=3, behavior_axis=None, pace_dir=1, activated=False,
+                npc_sprite=healer_db['npc_sprite'], name=healer_db['name'],
+                iq=healer_db.get('iq', 80), weight=healer_db.get('weight', 200),
+                sweat=healer_db.get('sweat', 4), hair=healer_db.get('hair', 0),
+                level=healer_db.get('level', 1),
+                sprite_palette=json.loads(raw_pal) if raw_pal else None,
+            ))
+
+        # Others (index 1+): placed on random walkable tiles
+        other_rows = [r for r in town_npc_pool if r['enemy_index'] != 0]
+        if other_rows:
+            placed = place_enemies(other_rows, town_grid2d,
+                                   interior.feature_id ^ 0xABCD1234)
+            for i, a in enumerate(placed):
+                a.index = i + 1
+            town_npcs.extend(placed)
+
+        print(f"  Town NPCs placed: {len(town_npcs)}", flush=True)
+
     def _emit_int_enemies():
         if emit:
-            emit({"type": "enemies", "enemies": [
-                {"index": e.index,
-                 "row": e.row + _CAVE_PNG_PAD,
-                 "col": e.col + _CAVE_PNG_PAD,
-                 "npc_sprite": e.npc_sprite,
-                 "name": e.name}
-                for e in int_enemies
-            ]})
+            enemy_list = []
+            for e in int_enemies:
+                d = {"index": e.index,
+                     "row": e.row + _CAVE_PNG_PAD,
+                     "col": e.col + _CAVE_PNG_PAD,
+                     "npc_sprite": e.npc_sprite,
+                     "name": e.name}
+                if render_npc_sprite_fn and e.sprite_palette:
+                    url = render_npc_sprite_fn(e.npc_sprite, e.sprite_palette)
+                    if url:
+                        d["sprite_url"] = url
+                enemy_list.append(d)
+            for e in town_npcs:
+                d = {"index": e.index + 1000,  # offset avoids collision with cave indices
+                     "row": e.row,
+                     "col": e.col,
+                     "npc_sprite": e.npc_sprite,
+                     "name": e.name,
+                     "anim_ms": 500}
+                if render_npc_sprite_fn and e.sprite_palette:
+                    url = render_npc_sprite_fn(e.npc_sprite, e.sprite_palette)
+                    if url:
+                        d["sprite_url"] = url
+                enemy_list.append(d)
+            emit({"type": "enemies", "enemies": enemy_list})
 
     if emit:
         tile_payload = {}
@@ -586,6 +645,11 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         if emit:
             emit({'type': 'interior_move', 'row': cur[0] - origin_r, 'col': cur[1] - origin_c})
 
+        # Town NPC step: move NPCs, no collision/battle check.
+        if town_npcs and town_grid2d is not None and enemy_rng is not None:
+            town_npcs = update_town_npcs(town_npcs, town_grid2d, enemy_rng)
+            _emit_int_enemies()
+
         # Enemy step: move enemies, check collision with party.
         pending_cave_battle = None
         if int_enemies and grid2d is not None and enemy_rng is not None:
@@ -609,6 +673,9 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
         if pending_cave_battle is not None and data_dir is not None:
             agent = pending_cave_battle
             bparty = load_battle_party(data_dir)
+            cave_sprite_url = ""
+            if render_npc_sprite_fn and agent.sprite_palette:
+                cave_sprite_url = render_npc_sprite_fn(agent.npc_sprite, agent.sprite_palette) or ""
             benemy = BattleEnemy(
                 fighter=Fighter(
                     name=agent.name, iq=agent.iq, weight=agent.weight,
@@ -616,6 +683,7 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                     is_enemy=True,
                 ),
                 npc_sprite=agent.npc_sprite,
+                sprite_url=cave_sprite_url,
             )
             run_battle(bparty, benemy, enemy_rng, emit=emit,
                        battle_sleep_ms=cfg.move_ms * 2)
@@ -634,7 +702,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
 def _enter_interior(pos: PartyPos, db, emit=None,
                     render_interior_fn=None, party: list | None = None,
                     screen_seed: int | None = None,
-                    enemy_rng=None, data_dir: Path | None = None) -> None:
+                    enemy_rng=None, data_dir: Path | None = None,
+                    render_npc_sprite_fn=None) -> None:
     """Generate (or load from cache) the interior at pos and navigate through it.
 
     Looks up the feature, derives feature_id, dispatches to the right generator,
@@ -668,26 +737,35 @@ def _enter_interior(pos: PartyPos, db, emit=None,
     if monster_spawn and screen_seed is not None:
         cave_enemy_pool = db.list_enemies('cave_screen', screen_seed)
 
+    town_npc_pool = None
+    if not monster_spawn:
+        town_npc_pool = db.get_or_create_town_npcs(feature_id)
+
     _run_interior_loop(interior, pos, emit=emit,
                        render_interior_fn=render_interior_fn, party=party,
                        cave_enemy_pool=cave_enemy_pool,
+                       town_npc_pool=town_npc_pool,
                        enemy_rng=enemy_rng,
-                       data_dir=data_dir)
+                       data_dir=data_dir,
+                       render_npc_sprite_fn=render_npc_sprite_fn)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
 
 def run_overworld(world_seed: int, db_path: str = "world.db",
                   emit=None, render_screen_fn=None,
-                  render_interior_fn=None) -> None:
+                  render_interior_fn=None,
+                  render_npc_sprite_fn=None) -> None:
     """Main overworld loop. Runs until KeyboardInterrupt.
 
-    world_seed:        logged at launch; determines all procedural generation.
-    db_path:           SQLite path for the world DB. Use ':memory:' for ephemeral runs.
-    emit:              optional callback(dict) — called with typed event dicts for the
-                       web SSE layer. None in CLI mode.
-    render_screen_fn:  optional callback(world_seed, sx, sy) → {tileset_url, tile_grid}
-                       dict — builds the tile payload for the web layer. None in CLI mode.
+    world_seed:           logged at launch; determines all procedural generation.
+    db_path:              SQLite path for the world DB. Use ':memory:' for ephemeral runs.
+    emit:                 optional callback(dict) — called with typed event dicts for the
+                          web SSE layer. None in CLI mode.
+    render_screen_fn:     optional callback(world_seed, sx, sy) → {tileset_url, tile_grid}
+                          dict — builds the tile payload for the web layer. None in CLI mode.
+    render_npc_sprite_fn: optional callback(npc_key, palette) → sprite_url string.
+                          Generates a cached recolored NPC sprite strip. None in CLI mode.
     """
     print(f"WORLD SEED: {world_seed}", flush=True)
 
@@ -718,11 +796,18 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
 
     def _emit_enemies():
         if emit:
-            emit({"type": "enemies", "enemies": [
-                {"index": e.index, "row": e.row, "col": e.col,
-                 "npc_sprite": e.npc_sprite, "name": e.name}
-                for e in enemy_agents
-            ]})
+            enemy_list = []
+            for e in enemy_agents:
+                d = {"index": e.index, "row": e.row, "col": e.col,
+                     "npc_sprite": e.npc_sprite, "name": e.name}
+                if e.overworld_sprite:
+                    d["overworld_sprite"] = e.overworld_sprite
+                if render_npc_sprite_fn and e.sprite_palette:
+                    url = render_npc_sprite_fn(e.npc_sprite, e.sprite_palette)
+                    if url:
+                        d["sprite_url"] = url
+                enemy_list.append(d)
+            emit({"type": "enemies", "enemies": enemy_list})
 
     def _reload_enemies(current_grid):
         nonlocal enemy_agents
@@ -750,6 +835,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
     def _trigger_battle(agent):
         nonlocal enemy_agents
         bparty = load_battle_party(data_dir)
+        sprite_url = ""
+        if render_npc_sprite_fn and agent.sprite_palette:
+            sprite_url = render_npc_sprite_fn(agent.npc_sprite, agent.sprite_palette) or ""
         benemy = BattleEnemy(
             fighter=Fighter(
                 name=agent.name, iq=agent.iq, weight=agent.weight,
@@ -757,6 +845,7 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 is_enemy=True,
             ),
             npc_sprite=agent.npc_sprite,
+            sprite_url=sprite_url,
         )
         run_battle(bparty, benemy, enemy_rng, emit=emit,
                    battle_sleep_ms=cfg.move_ms * 2)
@@ -929,7 +1018,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                                         render_interior_fn=render_interior_fn,
                                         party=party,
                                         screen_seed=screen_row['screen_seed'],
-                                        enemy_rng=enemy_rng, data_dir=data_dir)
+                                        enemy_rng=enemy_rng, data_dir=data_dir,
+                                        render_npc_sprite_fn=render_npc_sprite_fn)
                         _reload_enemies(grid)
                         continue  # resume goal after exiting interior
 
@@ -988,7 +1078,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 _enter_interior(pos, db, emit=emit,
                                 render_interior_fn=render_interior_fn, party=party,
                                 screen_seed=screen_row['screen_seed'],
-                                enemy_rng=enemy_rng, data_dir=data_dir)
+                                enemy_rng=enemy_rng, data_dir=data_dir,
+                                render_npc_sprite_fn=render_npc_sprite_fn)
                 _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
@@ -1019,7 +1110,8 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                 movements += 1
                 enemy_agents.clear()
                 _enter_interior(pos, db, emit=emit,
-                                render_interior_fn=render_interior_fn, party=party)
+                                render_interior_fn=render_interior_fn, party=party,
+                                render_npc_sprite_fn=render_npc_sprite_fn)
                 _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal

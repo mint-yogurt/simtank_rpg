@@ -128,7 +128,7 @@ unless a tile has the tag "impassable", it is able to be walked upon freely.
 12,5 = roof2side2W, houseB, transparentbg, impassable # houseb variant, always has roof2side2E next to it
 13,5 = roof2side2E, houseB, transparentbg, impassable #
 14,5 = # unused for now
-15,5 = # unused for now
+15,5 = roof2side2mid, houseB, impassable # wide mid section between roof2transition2W and roof2transition2E pairs
 
 0,6 = door1, houseA, impassable # door for houseA constructions
 1,6 = wallA1, houseA, impassable # basic construction tile for houseA constructions
@@ -173,13 +173,13 @@ unless a tile has the tag "impassable", it is able to be walked upon freely.
 6,8 = windowB3, houseB, impassable # ground-floor version of windowA1
 7,8 = windowB4, houseB, impassable # ground floor variant of windowA2
 8,8 = wallB4, houseB, impassable # ground floor var of wallA2
-9,8 = garagedoorB_W, houseB, impassable # unused for now
-10,8 = # unused for now
-11,8 = # unused for now
-12,8 = # unused for now
-13,8 = # unused for now
-14,8 = # unused for now
-15,8 = # unused for now
+9,8 = garagedoorB_SW, houseB, impassable # ground floor garage door tile SW
+10,8 = garagedoorB_SE, houseB, impassable #
+11,8 = garagedoorB_NW, houseB, impassable # 
+12,8 = garagedoorB_NE, houseB, impassable # 
+13,8 = fronthouseWall_W, houseB, impassable # text tile for hub house
+14,8 = fronthouseWall_mid, houseB, impassable
+15,8 = fronthouseWall_E, houseB, impassable
 
 
 

@@ -19,8 +19,18 @@ const NPC_SPRITE = {
     npc02: [[4, 2], [4, 3]],
     npc03: [[5, 0], [5, 1]],
     npc04: [[5, 2], [5, 3]],
+    npc05: [[4, 4], [4, 5]],
+    npc06: [[5, 4], [5, 5]],
+    npc07: [[6, 0], [6, 1]],
+    npc08: [[6, 2], [6, 3]],
+    enemy_overworld1: [[4, 6], [4, 7]],
+    enemy_overworld2: [[5, 6], [5, 7]],
+    enemy_overworld3: [[6, 6], [6, 7]],
 };
 const ENEMY_ANIM_MS = 350;
+
+// Per-enemy recolored sprite images: sprite_url → Image object.
+const enemySpriteImgs = {};
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 const mapCanvas    = document.getElementById("map");
@@ -328,20 +338,42 @@ function drawInteriorSprites(now, camRow, camCol) {
 
 function drawEnemySprites(now, camRow, camCol) {
     if (!spriteSheet.complete || spriteSheet.naturalWidth === 0) return;
-    const frame = Math.floor(now / ENEMY_ANIM_MS) % 2;  // 0 or 1
     spriteCtx.imageSmoothingEnabled = false;
     for (const en of enemies) {
-        const frames = NPC_SPRITE[en.npc_sprite];
-        if (!frames) continue;
-        const [sheetRow, sheetCol] = frames[frame];
+        const animMs = en.anim_ms || ENEMY_ANIM_MS;
+        const frame = Math.floor(now / animMs) % 2;
         const destCol = en.col - camCol;
         const destRow = en.row - camRow;
         if (destRow < -1 || destRow > VIEW_ROWS || destCol < -1 || destCol > VIEW_COLS) continue;
-        spriteCtx.drawImage(
-            spriteSheet,
-            sheetCol * TILE_PX, sheetRow * TILE_PX, TILE_PX, TILE_PX,
-            Math.round(destCol * TILE_DRAW), Math.round(destRow * TILE_DRAW), TILE_DRAW, TILE_DRAW,
-        );
+        // Overworld map: prefer overworld_sprite (unmodified sheet); otherwise fall through.
+        if (mode === "overworld" && en.overworld_sprite) {
+            const frames = NPC_SPRITE[en.overworld_sprite];
+            if (!frames) continue;
+            const [sheetRow, sheetCol] = frames[frame];
+            spriteCtx.drawImage(
+                spriteSheet,
+                sheetCol * TILE_PX, sheetRow * TILE_PX, TILE_PX, TILE_PX,
+                Math.round(destCol * TILE_DRAW), Math.round(destRow * TILE_DRAW), TILE_DRAW, TILE_DRAW,
+            );
+        } else if (en.sprite_url) {
+            // Per-enemy recolored sprite strip: frame 0 at x=0, frame 1 at x=TILE_PX.
+            const img = enemySpriteImgs[en.sprite_url];
+            if (!img || !img.complete || img.naturalWidth === 0) continue;
+            spriteCtx.drawImage(
+                img,
+                frame * TILE_PX, 0, TILE_PX, TILE_PX,
+                Math.round(destCol * TILE_DRAW), Math.round(destRow * TILE_DRAW), TILE_DRAW, TILE_DRAW,
+            );
+        } else {
+            const frames = NPC_SPRITE[en.npc_sprite];
+            if (!frames) continue;
+            const [sheetRow, sheetCol] = frames[frame];
+            spriteCtx.drawImage(
+                spriteSheet,
+                sheetCol * TILE_PX, sheetRow * TILE_PX, TILE_PX, TILE_PX,
+                Math.round(destCol * TILE_DRAW), Math.round(destRow * TILE_DRAW), TILE_DRAW, TILE_DRAW,
+            );
+        }
     }
 }
 
@@ -358,6 +390,7 @@ function redrawAt(now) {
         drawTileGrid(mapCtx, state.tileGrid, state.tilesetImg,
                      state.camRow, state.camCol);
         drawHubSprites(now);
+        drawEnemySprites(now, state.camRow, state.camCol);
     } else if (mode === "overworld") {
         const camR = getVisualCam(state.camRow, state.camRowSrc, state.camAnimStart, now);
         const camC = getVisualCam(state.camCol, state.camColSrc, state.camAnimStart, now);
@@ -391,6 +424,7 @@ function appendLog(cls, text) {
 // ── SSE event handlers ────────────────────────────────────────────────────────
 function handleHubInit(e) {
     mode = "hub";
+    enemies = [];
     state.rows = e.rows; state.cols = e.cols;
     state.tileGrid = e.tile_grid || null;
     hubParty = (e.party || []).map(m => ({ name: m.name, row: m.row, col: m.col, facing: "S" }));
@@ -548,8 +582,20 @@ function handleInteriorExit(e) {
 }
 
 // ── Enemy overworld events ────────────────────────────────────────────────────
+function _preloadEnemySprites(enemyList) {
+    for (const en of enemyList) {
+        if (en.sprite_url && !enemySpriteImgs[en.sprite_url]) {
+            const img = new Image();
+            img.onload = () => redraw();
+            img.src = en.sprite_url;
+            enemySpriteImgs[en.sprite_url] = img;
+        }
+    }
+}
+
 function handleEnemies(e) {
     enemies = e.enemies || [];
+    _preloadEnemySprites(enemies);
     // Enemies animate continuously — keep RAF running when enemies are present
     if (enemies.length > 0 && rafId === null) startRafLoop();
 }
@@ -567,7 +613,7 @@ function _hpColor(hp, max) {
     return "crit";                  // red
 }
 
-function _makeSide(name, sprite, hp, maxHp) {
+function _makeSide(name, sprite, hp, maxHp, spriteUrl) {
     const div = document.createElement("div");
     div.className = "battle-side";
     div.dataset.name = name;
@@ -577,19 +623,27 @@ function _makeSide(name, sprite, hp, maxHp) {
     nameEl.textContent = name;
     div.appendChild(nameEl);
 
-    if (sprite) {
-        const frames = NPC_SPRITE[sprite];
+    if (sprite || spriteUrl) {
         const canvas = document.createElement("canvas");
         canvas.width = TILE_PX; canvas.height = TILE_PX;
         canvas.className = "battle-sprite";
-        canvas.dataset.sprite = sprite;
+        canvas.dataset.sprite = sprite || "";
+        canvas.dataset.spriteUrl = spriteUrl || "";
         canvas.dataset.frame = "0";
-        if (frames && spriteSheet.complete) {
-            const ctx2 = canvas.getContext("2d");
-            ctx2.imageSmoothingEnabled = false;
-            const [sr, sc] = frames[0];
-            ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
-                           0, 0, TILE_PX, TILE_PX);
+        const ctx2 = canvas.getContext("2d");
+        ctx2.imageSmoothingEnabled = false;
+        if (spriteUrl) {
+            const img = enemySpriteImgs[spriteUrl];
+            if (img && img.complete && img.naturalWidth > 0) {
+                ctx2.drawImage(img, 0, 0, TILE_PX, TILE_PX, 0, 0, TILE_PX, TILE_PX);
+            }
+        } else {
+            const frames = NPC_SPRITE[sprite];
+            if (frames && spriteSheet.complete) {
+                const [sr, sc] = frames[0];
+                ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
+                               0, 0, TILE_PX, TILE_PX);
+            }
         }
         div.appendChild(canvas);
     }
@@ -626,18 +680,27 @@ let battleSpriteInterval = null;
 function _startBattleSpriteAnim() {
     if (battleSpriteInterval) return;
     battleSpriteInterval = setInterval(() => {
-        battleEnemySide.querySelectorAll("canvas[data-sprite]").forEach(canvas => {
-            const sprite = canvas.dataset.sprite;
-            const frames = NPC_SPRITE[sprite];
-            if (!frames || !spriteSheet.complete) return;
+        battleEnemySide.querySelectorAll("canvas[data-sprite], canvas[data-sprite-url]").forEach(canvas => {
             const frame = (parseInt(canvas.dataset.frame) + 1) % 2;
             canvas.dataset.frame = frame;
             const ctx2 = canvas.getContext("2d");
             ctx2.clearRect(0, 0, TILE_PX, TILE_PX);
             ctx2.imageSmoothingEnabled = false;
-            const [sr, sc] = frames[frame];
-            ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
-                           0, 0, TILE_PX, TILE_PX);
+            const spriteUrl = canvas.dataset.spriteUrl;
+            if (spriteUrl) {
+                const img = enemySpriteImgs[spriteUrl];
+                if (img && img.complete && img.naturalWidth > 0) {
+                    ctx2.drawImage(img, frame * TILE_PX, 0, TILE_PX, TILE_PX,
+                                   0, 0, TILE_PX, TILE_PX);
+                }
+            } else {
+                const sprite = canvas.dataset.sprite;
+                const frames = NPC_SPRITE[sprite];
+                if (!frames || !spriteSheet.complete) return;
+                const [sr, sc] = frames[frame];
+                ctx2.drawImage(spriteSheet, sc * TILE_PX, sr * TILE_PX, TILE_PX, TILE_PX,
+                               0, 0, TILE_PX, TILE_PX);
+            }
         });
     }, ENEMY_ANIM_MS);
 }
@@ -659,9 +722,17 @@ function handleBattleStart(e) {
         battle.partyHp[m.name]    = m.hp;
     }
 
+    // Preload recolored enemy sprite if provided.
+    const enemySpriteUrl = e.enemy.sprite_url || null;
+    if (enemySpriteUrl && !enemySpriteImgs[enemySpriteUrl]) {
+        const img = new Image();
+        img.src = enemySpriteUrl;
+        enemySpriteImgs[enemySpriteUrl] = img;
+    }
+
     // Build enemy side
     battleEnemySide.innerHTML = "";
-    battleEnemySide.appendChild(_makeSide(e.enemy.name, e.enemy.npc_sprite, e.enemy.hp, e.enemy.max_hp));
+    battleEnemySide.appendChild(_makeSide(e.enemy.name, e.enemy.npc_sprite, e.enemy.hp, e.enemy.max_hp, enemySpriteUrl));
 
     // Build party side (one card per member)
     battlePartySide.innerHTML = "";

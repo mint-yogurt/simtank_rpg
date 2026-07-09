@@ -20,6 +20,7 @@ from engine.config import cfg
 _REPO_ROOT = Path(__file__).parent.parent
 _SCREENS_DIR = _REPO_ROOT / "web" / "static" / "screens"
 
+_PARTY_SPRITES      = _REPO_ROOT / "web" / "static" / "sprites" / "party_sprites.png"
 _OVERWORLD_TILESET  = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1.png"
 _OVERWORLD_RULES    = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_tilerules.txt"
 _CAVE_TILESET       = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave1.png"
@@ -29,7 +30,21 @@ _TOWN_RULES         = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town_rule
 
 # ── Tileset PNG cache (palette-remapped copies, keyed by content hash) ────────
 
-_tileset_lock = threading.Lock()
+_tileset_lock   = threading.Lock()
+_npcsprite_lock = threading.Lock()
+
+# Sheet [sheetRow, sheetCol] positions for each NPC sprite's two animation frames.
+# Matches partysprites.txt col,row entries — NPC_SPRITE in app.js mirrors this.
+_NPC_SPRITE_FRAMES = {
+    "npc01": [(4, 0), (4, 1)],
+    "npc02": [(4, 2), (4, 3)],
+    "npc03": [(5, 0), (5, 1)],
+    "npc04": [(5, 2), (5, 3)],
+    "npc05": [(4, 4), (4, 5)],
+    "npc06": [(5, 4), (5, 5)],
+    "npc07": [(6, 0), (6, 1)],
+    "npc08": [(6, 2), (6, 3)],
+}
 
 
 def _palette_hash(*colors) -> str:
@@ -63,6 +78,48 @@ def _render_tileset_png(src_path: Path, tag: str, color_map: dict | None) -> str
                 img = _remap_png(img, color_map)
             img.save(str(out_path))
     return f"/screens/{fname}"
+
+
+def _render_npcsprite_png(npc_key: str, palette: list) -> str:
+    """Extract the two frames for npc_key, remap placeholder colors, cache, return URL.
+
+    palette is a list of [r,g,b] lists — one per placeholder color for this sprite.
+    Returns empty string if the sprite key is unknown or palette is empty.
+    """
+    from procgen.enemygen import NPC_PLACEHOLDER_COLORS
+    placeholders = NPC_PLACEHOLDER_COLORS.get(npc_key)
+    if not placeholders or not palette:
+        return ""
+    frames = _NPC_SPRITE_FRAMES.get(npc_key)
+    if not frames:
+        return ""
+
+    color_map = {src: tuple(dst) for src, dst in zip(placeholders, palette)}
+    h = _palette_hash(*[tuple(c) for c in palette])
+    fname = f"npcsprite_{npc_key}_{h}.png"
+    out_path = _SCREENS_DIR / fname
+
+    with _npcsprite_lock:
+        if not out_path.exists():
+            from PIL import Image
+            _SCREENS_DIR.mkdir(parents=True, exist_ok=True)
+            sheet = Image.open(str(_PARTY_SPRITES)).convert("RGBA")
+            TILE = 16
+            # Build a 2-frame horizontal strip (32 × 16) from the sheet.
+            strip = Image.new("RGBA", (TILE * 2, TILE), (0, 0, 0, 0))
+            for i, (row, col) in enumerate(frames):
+                frame_img = sheet.crop(
+                    (col * TILE, row * TILE, (col + 1) * TILE, (row + 1) * TILE))
+                strip.paste(frame_img, (i * TILE, 0))
+            strip = _remap_png(strip, color_map)
+            strip.save(str(out_path))
+
+    return f"/screens/{fname}"
+
+
+def get_npc_sprite_url(npc_key: str, palette: list) -> str:
+    """Public entry point: return a cached URL for a recolored NPC sprite strip."""
+    return _render_npcsprite_png(npc_key, palette)
 
 
 # ── Per-tileset payload builders ──────────────────────────────────────────────

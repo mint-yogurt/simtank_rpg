@@ -263,6 +263,10 @@
     13,
     5
   ],
+  "roof2side2mid": [
+    15,
+    5
+  ],
   "door1": [
     0,
     6
@@ -391,8 +395,32 @@
     8,
     8
   ],
-  "garagedoorB_W": [
+  "garagedoorB_SW": [
     9,
+    8
+  ],
+  "garagedoorB_SE": [
+    10,
+    8
+  ],
+  "garagedoorB_NW": [
+    11,
+    8
+  ],
+  "garagedoorB_NE": [
+    12,
+    8
+  ],
+  "fronthouseWall_W": [
+    13,
+    8
+  ],
+  "fronthouseWall_mid": [
+    14,
+    8
+  ],
+  "fronthouseWall_E": [
+    15,
     8
   ],
   "healerHutroof_W": [

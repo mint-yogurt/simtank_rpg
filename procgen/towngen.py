@@ -728,13 +728,14 @@ def render_town(ground_grid, overlay, tiles, crop_box):
 
 @dataclass
 class TownData:
-    seed:        int
-    ground_grid: dict   # {(r,c): tile_name}
-    overlay:     dict   # {(r,c): tile_name}
-    crop_box:    tuple  # (r0, c0, r1, c1) — valid tile range after cropping
-    palette:     list   # [(r,g,b), ...]
-    spawn:       tuple  # (row, col) — party starts here
-    entry_tile:  tuple  # (row, col) — exit triggers return to overworld
+    seed:         int
+    ground_grid:  dict         # {(r,c): tile_name}
+    overlay:      dict         # {(r,c): tile_name}
+    crop_box:     tuple        # (r0, c0, r1, c1) — valid tile range after cropping
+    palette:      list         # [(r,g,b), ...]
+    spawn:        tuple        # (row, col) — party starts here
+    entry_tile:   tuple        # (row, col) — exit triggers return to overworld
+    healer_spawn: tuple | None = None  # absolute (row, col) of healerHutwallMid tile
 
     def to_dict(self):
         return {
@@ -745,6 +746,7 @@ class TownData:
             'palette':  [list(p) for p in self.palette],
             'spawn':    list(self.spawn),
             'entry_tile': list(self.entry_tile),
+            'healer_spawn': list(self.healer_spawn) if self.healer_spawn else None,
         }
 
 
@@ -768,6 +770,10 @@ def generate_town_data(seed: int) -> TownData:
     occupied = set()
     buildings   = []
     cluster_box = place_healer_hut(overlay, occupied, buildings, rng)
+    healer_spawn = next(
+        ((r, c) for (r, c), tile in overlay.items() if tile == 'healerHutwallMid'),
+        None
+    )
 
     for _ in range(n_buildings):
         kind = rng.choice(['houseA', 'houseB', 'stone', 'houseA', 'houseB'])
@@ -812,6 +818,7 @@ def generate_town_data(seed: int) -> TownData:
         palette=palette,
         spawn=spawn,
         entry_tile=entry_tile,
+        healer_spawn=healer_spawn,
     )
 
 

@@ -53,6 +53,19 @@ class Interior:
                 result[(r, c)] = tile
         return result
 
+    @property
+    def healer_spawn(self):
+        """(row, col) absolute position of healerHutwallMid, or None."""
+        raw = self.data.get('healer_spawn')
+        if raw is not None:
+            return tuple(raw)
+        # Backwards-compat: scan overlay for old cached town data missing healer_spawn
+        for key, tile in self.data.get('overlay', {}).items():
+            if tile == 'healerHutwallMid':
+                r, c = map(int, key.split(','))
+                return (r, c)
+        return None
+
     def is_exit(self, row: int, col: int) -> bool:
         """True when the party steps onto the exit-trigger tile."""
         return self.entry_tile is not None and (row, col) == self.entry_tile

@@ -34,7 +34,7 @@ import sqlite3
 import struct
 
 from engine.tiles import is_enterable, is_passable
-from procgen import enemygen
+from procgen import enemygen, npcgen
 
 
 def _to_s64(n):
@@ -164,6 +164,10 @@ class WorldDB:
             self._conn.execute("ALTER TABLE enemies ADD COLUMN behavior_type INTEGER NOT NULL DEFAULT 1")
         if "behavior_axis" not in existing:
             self._conn.execute("ALTER TABLE enemies ADD COLUMN behavior_axis TEXT")
+        if "overworld_sprite" not in existing:
+            self._conn.execute("ALTER TABLE enemies ADD COLUMN overworld_sprite TEXT")
+        if "sprite_palette_json" not in existing:
+            self._conn.execute("ALTER TABLE enemies ADD COLUMN sprite_palette_json TEXT")
 
     # ── READ / WRITE SCREENS ──────────────────────────────────────────────────
 
@@ -331,17 +335,21 @@ class WorldDB:
         if rows:
             return [dict(r) for r in rows]
 
-        enemies = enemygen.generate_enemies(seed, count, level)
+        allow_overworld_sprite = (scope_type == 'screen')
+        enemies = enemygen.generate_enemies(seed, count, level, allow_overworld_sprite)
         for i, e in enumerate(enemies):
             self._conn.execute(
                 """INSERT INTO enemies
                    (scope_type, scope_id, enemy_index,
                     name, iq, weight, sweat, hair, level,
-                    npc_sprite, behavior_type, behavior_axis)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    npc_sprite, overworld_sprite, sprite_palette_json,
+                    behavior_type, behavior_axis)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (scope_type, _to_s64(scope_id), i,
                  e["name"], e["iq"], e["weight"], e["sweat"], e["hair"], e["level"],
-                 e["npc_sprite"], e["behavior_type"], e["behavior_axis"]),
+                 e["npc_sprite"], e.get("overworld_sprite"),
+                 json.dumps(e.get("sprite_palette") or []),
+                 e["behavior_type"], e["behavior_axis"]),
             )
         self._conn.commit()
 
@@ -357,6 +365,42 @@ class WorldDB:
             (scope_type, _to_s64(scope_id)),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_or_create_town_npcs(self, feature_id: int) -> list[dict]:
+        """Return town NPCs for this feature_id, generating and caching if absent.
+
+        scope_type='town', scope_id=feature_id. Count is 3–8, derived from seed.
+        """
+        scope_id = _to_s64(feature_id)
+        rows = self._conn.execute(
+            "SELECT * FROM enemies WHERE scope_type='town' AND scope_id=? ORDER BY enemy_index",
+            (scope_id,),
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        seed = _derive_enemy_seed(feature_id)
+        count = int(abs(seed) % 6) + 3   # 3–8 inclusive
+        npcs = npcgen.generate_town_npcs(seed, count)
+        for i, n in enumerate(npcs):
+            self._conn.execute(
+                """INSERT INTO enemies
+                   (scope_type, scope_id, enemy_index,
+                    name, iq, weight, sweat, hair, level,
+                    npc_sprite, overworld_sprite, sprite_palette_json,
+                    behavior_type, behavior_axis)
+                   VALUES ('town', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (scope_id, i,
+                 n["name"], n["iq"], n["weight"], n["sweat"], n["hair"], n["level"],
+                 n["npc_sprite"], None,
+                 json.dumps(n.get("sprite_palette") or []),
+                 n["behavior_type"], n["behavior_axis"]),
+            )
+        self._conn.commit()
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM enemies WHERE scope_type='town' AND scope_id=? ORDER BY enemy_index",
+            (scope_id,),
+        ).fetchall()]
 
     def close(self):
         self._conn.close()

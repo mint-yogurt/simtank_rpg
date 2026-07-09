@@ -9,12 +9,15 @@ the caller can chain into run_overworld().
 """
 
 import json
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from engine.config import cfg
+from engine.enemy_state import EnemyAgent, update_town_npcs
 from engine.party_state import PartyPos, execute_move
+from engine.tiles import is_passable
 from engine.viewscan import scan
 from engine.voting import VotingState
 from llm.client import ask_with_retry
@@ -27,6 +30,15 @@ _TOWN_RULES = _HERE.parent.parent / 'web' / 'static' / 'tiles' / 'tiles_town_rul
 
 PARTY_ORDER = ['MELVIN', 'BILLY', 'POOTS', 'SMELTRUD']
 _OPPOSITE = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+
+# Fixed hub NPC definitions — indices are stable (healer always 0).
+# No palette swap: these are drawn straight from the base sprite sheet.
+_HUB_NPC_DEFS = [
+    {"npc_sprite": "npc02", "behavior_type": 3, "behavior_axis": None},  # healer, static
+    {"npc_sprite": "npc01", "behavior_type": 1, "behavior_axis": None},  # wanderer
+    {"npc_sprite": "npc05", "behavior_type": 2, "behavior_axis": "H"},   # pacer
+    {"npc_sprite": "npc08", "behavior_type": 3, "behavior_axis": None},  # static
+]
 
 
 
@@ -44,11 +56,7 @@ class HubMember:
 
 
 def _parse_coord_to_name(rules_path: Path) -> dict:
-    """Build {(tileset_col, tileset_row): tilename} from town tilerules.
-
-    The tilerules format is: col,row = tilename, tag1, tag2 ...
-    This is a different mapping from what tiles._parse_one builds (name→tags).
-    """
+    """Build {(tileset_col, tileset_row): (tilename, is_transparentbg)} from town tilerules."""
     result = {}
     with open(rules_path) as f:
         for line in f:
@@ -68,7 +76,8 @@ def _parse_coord_to_name(rules_path: Path) -> dict:
             parts = [p.strip().rstrip('_').replace(' ', '') for p in rest.split(',')]
             name = parts[0]
             if name:
-                result[(tc, tr)] = name
+                transparent = 'transparentbg' in parts
+                result[(tc, tr)] = (name, transparent)
     return result
 
 
@@ -92,30 +101,99 @@ def load_hub_coords() -> list[list[tuple[int, int]]]:
     return coords
 
 
-def load_hub_grid() -> list[list[str]]:
+def load_hub_grid() -> list[list]:
     """Parse hub CSV into grid[row][col] of tile name strings.
 
-    CSV cells are [tileset_col,tileset_row].  Unknown coords fall back to
-    'grass1' (passable) and are logged so data gaps are visible.
+    Transparentbg tiles are returned as [ground, overlay] so the renderer
+    composites them over grass, matching how town interiors handle overlays.
+    Unknown coords are skipped (render nothing) rather than replaced with grass.
     """
     coord_to_name = _parse_coord_to_name(_TOWN_RULES)
     coords = load_hub_coords()
-    grid: list[list[str]] = []
+    grid: list[list] = []
     unknowns: list[tuple[int, int]] = []
     for coord_row in coords:
-        row: list[str] = []
+        row: list = []
         for (tc, tr) in coord_row:
-            name = coord_to_name.get((tc, tr))
-            if name:
-                row.append(name)
+            entry = coord_to_name.get((tc, tr))
+            if entry:
+                name, transparent = entry
+                row.append(['grass1', name] if transparent else name)
             else:
                 row.append('grass1')
                 unknowns.append((tc, tr))
         grid.append(row)
     if unknowns:
         unique = sorted(set(unknowns))
-        print(f"  [hub] unknown tile coords (falling back to grass1): {unique}", flush=True)
+        print(f"  [hub] unknown tile coords (no label in rules): {unique}", flush=True)
     return grid
+
+
+def _hub_str_grid(grid: list) -> list[list[str]]:
+    """Return a string-only grid suitable for passability checks.
+
+    Hub cells can be lists ['grass1', 'overlay_name'] for transparent tiles.
+    The overlay (last element) determines passability, not the ground beneath.
+    """
+    result = []
+    for row in grid:
+        r = []
+        for cell in row:
+            r.append(cell[-1] if isinstance(cell, list) else cell)
+        result.append(r)
+    return result
+
+
+def _find_hub_healer_spawn(grid: list) -> tuple[int, int] | None:
+    """Scan hub grid for the healerHutwallMid tile; return (row, col) or None."""
+    for r, row in enumerate(grid):
+        for c, cell in enumerate(row):
+            name = cell[-1] if isinstance(cell, list) else cell
+            if name == 'healerHutwallMid':
+                return (r, c)
+    return None
+
+
+def _place_hub_npcs(grid: list) -> tuple[list[EnemyAgent], list[list[str]]]:
+    """Place hub NPCs deterministically. Returns (agents, str_grid).
+
+    Healer (npc02) always goes to healerHutwallMid (impassable tile — party
+    can never step there). Others are placed on walkable tiles using a fixed
+    seed so positions are the same every run.
+    """
+    str_grid = _hub_str_grid(grid)
+    healer_pos = _find_hub_healer_spawn(grid)
+
+    walkable = [
+        (r, c)
+        for r in range(len(str_grid))
+        for c in range(len(str_grid[0]))
+        if is_passable(str_grid[r][c])
+    ]
+
+    rng = random.Random(0x4875624E5043)  # stable seed: "HubNPC" in hex
+    rng.shuffle(walkable)
+    spare = list(walkable)
+
+    agents = []
+    spare_idx = 0
+    for i, defn in enumerate(_HUB_NPC_DEFS):
+        if defn["npc_sprite"] == "npc02" and healer_pos:
+            row, col = healer_pos
+        else:
+            row, col = spare[spare_idx]
+            spare_idx += 1
+        agents.append(EnemyAgent(
+            index=i,
+            row=row, col=col,
+            behavior_type=defn["behavior_type"],
+            behavior_axis=defn["behavior_axis"],
+            pace_dir=1,
+            activated=False,
+            npc_sprite=defn["npc_sprite"],
+            name="NPC",
+        ))
+    return agents, str_grid
 
 
 def _spawn_positions(grid: list) -> list[tuple[int, int]]:
@@ -305,10 +383,24 @@ def run_hub(emit=None, render_hub_fn=None) -> str | None:
     for i, member in enumerate(party):
         member.row, member.col = spawns[i]
 
+    hub_npcs, str_grid = _place_hub_npcs(grid)
+    npc_rng = random.Random(0x4875624E5043)
+    print(f"  Hub NPCs placed: {len(hub_npcs)}", flush=True)
+
     rows, cols = len(grid), len(grid[0]) if grid else 0
     print(f"\nHUB SCENE  grid={rows}×{cols}", flush=True)
     for m in party:
         print(f"  {m.name}: row={m.row} col={m.col}", flush=True)
+
+    def _emit_hub_npcs():
+        if not emit or not hub_npcs:
+            return
+        npc_list = [
+            {"index": n.index + 1000, "row": n.row, "col": n.col,
+             "npc_sprite": n.npc_sprite, "name": n.name, "anim_ms": 500}
+            for n in hub_npcs
+        ]
+        emit({"type": "int_enemies", "enemies": npc_list})
 
     if emit:
         payload: dict = {"type": "hub_init", "rows": rows, "cols": cols,
@@ -317,6 +409,7 @@ def run_hub(emit=None, render_hub_fn=None) -> str | None:
         if render_hub_fn:
             payload.update(render_hub_fn())
         emit(payload)
+        _emit_hub_npcs()
 
     reprompt = (
         "You MUST output exactly one JSON object, nothing else.\n"
@@ -364,6 +457,10 @@ def run_hub(emit=None, render_hub_fn=None) -> str | None:
                     if _run_leave_vote(member, direction, party, emit=emit):
                         print(f"\nLeaving hub → overworld.", flush=True)
                         return "overworld"
+
+                if hub_npcs and str_grid:
+                    update_town_npcs(hub_npcs, str_grid, npc_rng)
+                    _emit_hub_npcs()
 
                 if result.stop_reason == 'edge':
                     # Nudge away from boundary (vote failed or too early)

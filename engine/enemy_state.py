@@ -10,6 +10,7 @@ Behavior types:
   3 — sentinel: frozen until party enters cardinal LOS (8 tiles), then chases
 """
 
+import json
 import random
 from dataclasses import dataclass, field
 
@@ -35,6 +36,9 @@ class EnemyAgent:
     sweat:  int = 4
     hair:   int = 0
     level:  int = 1
+    # Visual overrides
+    overworld_sprite: str | None = None   # map-only sprite; None for cave/interior enemies
+    sprite_palette:   list | None = None  # [[r,g,b], ...] NES colors swapped over placeholders
 
 
 # =============================================================================
@@ -154,6 +158,8 @@ def place_enemies(db_rows, grid, seed):
 
         btype = row_dict["behavior_type"]
         baxis = row_dict.get("behavior_axis")
+        raw_palette = row_dict.get("sprite_palette_json")
+        sprite_palette = json.loads(raw_palette) if raw_palette else None
         agents.append(EnemyAgent(
             index=row_dict["enemy_index"],
             row=pos[0],
@@ -169,6 +175,8 @@ def place_enemies(db_rows, grid, seed):
             sweat=row_dict.get("sweat", 4),
             hair=row_dict.get("hair", 0),
             level=row_dict.get("level", 1),
+            overworld_sprite=row_dict.get("overworld_sprite"),
+            sprite_palette=sprite_palette or None,
         ))
 
     return agents
@@ -220,6 +228,33 @@ def _step_type3(agent, grid, party_row, party_col, occupied):
     if candidate and candidate not in occupied:
         return candidate
     return (agent.row, agent.col)
+
+
+def update_town_npcs(agents, grid, rng):
+    """Move town NPCs one step. No party chasing.
+
+    Type 1 (wander): pure random walk.
+    Type 2 (pace): pace along behavior_axis, reverse at walls.
+    Type 3 / other (static/healer): never move.
+    """
+    occupied = {(a.row, a.col) for a in agents}
+    for agent in agents:
+        occupied.discard((agent.row, agent.col))
+        if agent.behavior_type == 1:
+            options = [
+                (agent.row + dr, agent.col + dc) for dr, dc in _DIRS
+                if _walkable(agent.row + dr, agent.col + dc, grid)
+                and (agent.row + dr, agent.col + dc) not in occupied
+            ]
+            nr, nc = rng.choice(options) if options else (agent.row, agent.col)
+        elif agent.behavior_type == 2:
+            (nr, nc), new_dir = _step_type2(agent, grid, occupied)
+            agent.pace_dir = new_dir
+        else:
+            nr, nc = agent.row, agent.col
+        agent.row, agent.col = nr, nc
+        occupied.add((nr, nc))
+    return agents
 
 
 def update_enemies(agents, grid, party_row, party_col, rng):
