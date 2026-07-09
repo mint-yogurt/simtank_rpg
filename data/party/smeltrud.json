@@ -17,5 +17,7 @@
     "buff_mult": 1.15,
     "buff_turns": 2
   },
-  "items": []
+  "items": [],
+  "mp": 20,
+  "max_mp": 20
 }

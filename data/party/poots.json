@@ -17,5 +17,7 @@
     "heal_pct_min": 0.15,
     "heal_pct_max": 0.25
   },
-  "items": []
+  "items": [],
+  "mp": 20,
+  "max_mp": 20
 }

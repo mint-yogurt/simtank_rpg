@@ -171,6 +171,7 @@ class WorldDB:
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()
+        self.party_level: int = 1
 
     def _migrate(self):
         """Add columns introduced after initial schema without dropping existing data."""
@@ -202,7 +203,9 @@ class WorldDB:
         journals: dict[str, MemberJournal]
         """
         party_data = [
-            {"name": m.name, "hp": m.hp, "max_hp": m.max_hp, "alive": m.alive}
+            {"name": m.name, "hp": m.hp, "max_hp": m.max_hp, "alive": m.alive,
+             "xp": getattr(m, "xp", 0), "lvl": getattr(m, "lvl", 1),
+             "mp": getattr(m, "mp", 0), "max_mp": getattr(m, "max_mp", 0)}
             for m in party
         ]
         goal_data = goal.to_dict() if goal is not None else None
@@ -299,11 +302,15 @@ class WorldDB:
         enemy_count = data.screen_seed % 4  # 0-3, deterministic
         if enemy_count > 0:
             enemy_seed = _derive_enemy_seed(data.screen_seed)
-            self.get_or_create_enemies('screen', data.screen_seed, enemy_seed, enemy_count, level=1)
+            self.get_or_create_enemies(
+                'screen', data.screen_seed, enemy_seed, enemy_count,
+                level=max(1, self.party_level))
 
         # Cave encounter pool: 6 enemies shared across all caves on this screen.
         cave_seed = _derive_cave_enemy_seed(data.screen_seed)
-        self.get_or_create_enemies('cave_screen', data.screen_seed, cave_seed, 6, level=2)
+        self.get_or_create_enemies(
+            'cave_screen', data.screen_seed, cave_seed, 6,
+            level=max(2, self.party_level + 1))
 
         return dict(self._conn.execute(
             "SELECT * FROM screens WHERE world_seed=? AND sx=? AND sy=?",

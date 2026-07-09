@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from engine.combat import Fighter, hit_chance, resolve_attack, try_run
+from engine.combat import Fighter, hit_chance, resolve_attack, try_run, SPECIAL_MP_COSTS
 from engine.config import cfg
 from engine.journal import Journal
 from llm.client import ask
@@ -30,6 +30,7 @@ SPECIAL_COOLDOWNS: dict[str, int] = {
     "SNACK":  3,
     "LAUGH":  3,
 }
+
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,10 @@ class BattleMember:
     def hp(self):      return max(0, self.fighter.hp)
     @property
     def max_hp(self):  return self.fighter.max_hp
+    @property
+    def mp(self):      return max(0, self.fighter.mp)
+    @property
+    def max_mp(self):  return self.fighter.max_mp
     @property
     def lvl(self):     return self.fighter.level
     @property
@@ -91,6 +96,7 @@ def load_party(data_dir: Path) -> list[BattleMember]:
             name=s["name"], iq=s["iq"], weight=s["weight"],
             sweat=s["sweat"], hair=s["hair"], level=s["lvl"],
             hp=s["hp"], max_hp=s["max_hp"],
+            mp=s.get("mp", 0), max_mp=s.get("max_mp", 0),
         )
         members.append(BattleMember(
             fighter=fighter,
@@ -285,7 +291,13 @@ def run_battle(party: list[BattleMember], enemy: BattleEnemy,
                                special_name=member.special.get("name", ""))
             action, target = dec["action"], dec["target"]
 
-            if action == "SPECIAL" and (not member.special.get("name") or member.special_cooldown > 0):
+            spec_name = member.special.get("name", "")
+            mp_cost = SPECIAL_MP_COSTS.get(spec_name, 0)
+            if action == "SPECIAL" and (
+                not spec_name
+                or member.special_cooldown > 0
+                or member.fighter.mp < mp_cost
+            ):
                 action = "ATTACK"
 
             if action == "ATTACK":
@@ -377,6 +389,7 @@ def run_battle(party: list[BattleMember], enemy: BattleEnemy,
                                  {"outcome": "special"}, flavor, enemy, party, battle_sleep_ms)
 
                 member.special_cooldown = SPECIAL_COOLDOWNS.get(spec.get("name", ""), 0)
+                member.fighter.mp = max(0, member.fighter.mp - SPECIAL_MP_COSTS.get(spec.get("name", ""), 0))
 
             elif action == "RUN":
                 success, chance = try_run(run_attempts, rng)

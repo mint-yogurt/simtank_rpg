@@ -15,5 +15,7 @@
     "target": "enemy",
     "status_effect": "MESMERIZED"
   },
-  "items": []
+  "items": [],
+  "mp": 20,
+  "max_mp": 20
 }

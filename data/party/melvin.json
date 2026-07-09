@@ -17,5 +17,7 @@
     "status_duration_min": 3,
     "status_duration_max": 5
   },
-  "items": []
+  "items": [],
+  "mp": 20,
+  "max_mp": 20
 }

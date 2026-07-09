@@ -78,9 +78,21 @@ RUN_STEP = 0.15          # per failed attempt by anyone
 # --- hp ------------------------------------------------------
 PARTY_HP_BASE = 25
 PARTY_HP_PER_LEVEL = 2
-ENEMY_HP_BASE = 22
-ENEMY_HP_WEIGHT = 20     # + WEIGHT_frac * this
+ENEMY_HP_BASE = 14
+ENEMY_HP_WEIGHT = 12     # + WEIGHT_frac * this
 ENEMY_HP_PER_LEVEL = 3
+
+# --- mp ------------------------------------------------------
+PARTY_MP_BASE = 20
+PARTY_MP_PER_LEVEL = 1
+
+# MP cost per special move name (used by both battle loop and prompt builder)
+SPECIAL_MP_COSTS: dict[str, int] = {
+    "SING":   8,
+    "LAUGH":  7,
+    "SNACK":  6,
+    "TICKLE": 5,
+}
 
 
 # =============================================================================
@@ -97,6 +109,8 @@ class Fighter:
     is_enemy: bool = False
     hp: int = field(default=0)
     max_hp: int = field(default=0)
+    mp: int = field(default=0)
+    max_mp: int = field(default=0)
     defending: bool = False
 
     def __post_init__(self):
@@ -110,6 +124,9 @@ class Fighter:
             else:
                 self.max_hp = PARTY_HP_BASE + (self.level - 1) * PARTY_HP_PER_LEVEL
             self.hp = self.max_hp
+        if not self.is_enemy and self.max_mp == 0:
+            self.max_mp = PARTY_MP_BASE + (self.level - 1) * PARTY_MP_PER_LEVEL
+            self.mp = self.max_mp
 
     @property
     def alive(self):

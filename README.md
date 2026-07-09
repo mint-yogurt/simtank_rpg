@@ -158,7 +158,7 @@ Each town interior contains 3–8 friendly NPCs, generated once and cached (`sco
 
 Movement runs through `update_town_npcs()` — no party-chasing, no collision-to-battle check. Rendered at `anim_ms: 500` (slower than the 350 ms enemy rate) via the same `enemies` SSE event and sprite pipeline as combat enemies.
 
-**Dialogue stub.** All NPCs carry placeholder `"..."` dialogue. Face-to-face interaction is not yet implemented — see [Beta Phase 4](#phase-4--healer-npc-interaction).
+**Dialogue stub.** All NPCs carry placeholder `"..."` dialogue. The healer NPC generates a live LLM greeting on interaction (Phase 4); general face-to-face dialogue for other NPCs is a post-beta backlog item.
 
 ### Battle loop (`engine/battle.py`)
 
@@ -175,9 +175,7 @@ Shared battle loop used by both CLI and web. `run_battle(party, enemy, rng, emit
 | POOTS | SNACK | Heals a party member for 15–25% of max HP |
 | SMELTRUD | TICKLE | Buffs an ally's damage by +15% for 2 turns |
 
-Status effects don't stack — one active at a time on the enemy. The action menu is situationally adjusted: SNACK flagged "low value" when nobody is below 70% HP; SING/LAUGH flagged "no additional effect" when the enemy already has a status.
-
-> **Known gap (Beta Phase 3):** enemy HP currently makes even generic lvl-1 fights run boss-length; there's no mana/ability cost, no enemy level scaling with party progress, and no XP/leveling. See [Beta Phase 3](#phase-3--battle-overhaul).
+Status effects don't stack — one active at a time on the enemy. The action menu is situationally adjusted: SNACK flagged "low value" when nobody is below 70% HP; SING/LAUGH flagged "no additional effect" when the enemy already has a status. Each special costs MP (SING 8, LAUGH 7, SNACK 6, TICKLE 5); the menu shows current MP and marks moves unavailable when the member can't afford them. MP is only restored by the healer. XP is awarded on win and levels up members (bumps max HP/MP, stat ceilings); enemy level scaling locks to party level at time of first generation per scope.
 
 **Web battle panel.** A DOM overlay (`#battle-overlay`) becomes visible on `battle_start` with an animated enemy sprite, per-member HP bars, and a VS label; `battle_action` updates HP/log; `battle_end` shows a result label for 2 s then hides. `web/server.py` snapshots the pre-battle overworld and restores it after, so late-joining clients see the battle in progress.
 
@@ -349,10 +347,10 @@ Closes the long-standing gap where the party performs a programmatic, pointless 
 
 Do the numeric fixes before touching visuals (Phase 5 depends on the data this phase adds — mana, level — existing).
 
-- [ ] **Enemy HP tuning.** Generic lvl-1 fights currently run boss-length. Pure numeric pass on `procgen/enemygen.py` HP generation — lower the base/scaling formula. Do this first; it's the fastest quality-of-life win and unblocks meaningful playtesting of everything else in this phase.
-- [ ] **Mana / ability costs.** Add an `MP` stat to `engine/party.py` alongside HP; each special move (SING/LAUGH/SNACK/TICKLE) gets a cost. `llm/prompts.py` action menu must show current MP and grey out (mark unavailable) specials the member can't afford — mirrors the existing SNACK "low value" flagging pattern. `engine/battle.py` deducts MP on use; regen behavior (per-turn trickle vs. only-at-healer) is a design call — leaning toward "only restored by the healer" (Phase 4) to give that NPC's interaction actual stakes.
-- [ ] **Enemy level scaling.** `generate_enemies()` already accepts a `level` param — wire average party level into the call. Since enemy generation already follows the DB's generate-once/cache-forever pattern (`screen`/`cave_screen` scopes), scaling naturally locks at first generation per screen/pool with no extra bookkeeping: pass `avg_party_level ± 2` (clamped ≥1) as `level` the first time a scope is generated.
-- [ ] **XP tracking / level-up.** Add `XP` + `LVL` progression to `engine/party.py`. `engine/battle.py` awards XP to the party on `outcome == "win"`; a leveling formula bumps stats (HP/MP ceiling, IQ/WEIGHT/SWEAT/HAIR) on threshold crossing. Feeds the level value used by enemy scaling above, and the XP bar planned for the web UI party panel (backlog).
+- [x] **Enemy HP tuning.** `ENEMY_HP_BASE` lowered 22→14, `ENEMY_HP_WEIGHT` 20→12 in `engine/combat.py`. Lvl-1 fights now resolve in a reasonable number of rounds.
+- [x] **Mana / ability costs.** `MP` / `max_MP` added to `Fighter` and party JSONs. `SPECIAL_MP_COSTS` dict in `combat.py` (SING 8, LAUGH 7, SNACK 6, TICKLE 5). `battle.py` deducts MP on use and falls back to ATTACK when insufficient. Battle context shows current MP and marks specials unaffordable. MP restored only by the healer (Phase 4).
+- [x] **Enemy level scaling.** `db.party_level` attribute on `WorldDB` (default 1, updated after each battle). New screens generate enemies at `party_level` (overworld) and `party_level + 1` (cave pools). Locks at generation time per the generate-once/cache-forever pattern.
+- [x] **XP tracking / level-up.** `xp` field on `OverworldMember` and party JSONs. `_apply_battle_result` awards `enemy_lvl × 30` XP on win; threshold formula (`80 × lvl`) triggers level-up, bumping max HP/MP. Level and XP persisted in session table.
 
 ### Phase 4 — Healer NPC interaction
 
