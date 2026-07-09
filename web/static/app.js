@@ -81,6 +81,7 @@ let battle = {
     enemyName: "", enemySprite: "",
     enemyHp: 0, enemyMaxHp: 0,
     partyHp: {}, partyMaxHp: {},
+    partyMp: {}, partyMaxMp: {},
 };
 
 let interior = {
@@ -613,7 +614,7 @@ function _hpColor(hp, max) {
     return "crit";                  // red
 }
 
-function _makeSide(name, sprite, hp, maxHp, spriteUrl) {
+function _makeSide(name, sprite, hp, maxHp, spriteUrl, mp, maxMp) {
     const div = document.createElement("div");
     div.className = "battle-side";
     div.dataset.name = name;
@@ -623,7 +624,24 @@ function _makeSide(name, sprite, hp, maxHp, spriteUrl) {
     nameEl.textContent = name;
     div.appendChild(nameEl);
 
-    if (sprite || spriteUrl) {
+    // Party member sprite (from party sheet)
+    const partyRow = PARTY_SPRITE_ROW[name];
+    if (partyRow !== undefined) {
+        const canvas = document.createElement("canvas");
+        canvas.width = TILE_PX; canvas.height = TILE_PX;
+        canvas.className = "battle-sprite";
+        canvas.dataset.partyName = name;
+        canvas.dataset.frame = "0";
+        const ctx2 = canvas.getContext("2d");
+        ctx2.imageSmoothingEnabled = false;
+        if (spriteSheet.complete && spriteSheet.naturalWidth > 0) {
+            ctx2.drawImage(spriteSheet,
+                FACING_COL["S"][0] * TILE_PX, partyRow * TILE_PX, TILE_PX, TILE_PX,
+                0, 0, TILE_PX, TILE_PX);
+        }
+        div.appendChild(canvas);
+    } else if (sprite || spriteUrl) {
+        // Enemy NPC sprite
         const canvas = document.createElement("canvas");
         canvas.width = TILE_PX; canvas.height = TILE_PX;
         canvas.className = "battle-sprite";
@@ -648,18 +666,33 @@ function _makeSide(name, sprite, hp, maxHp, spriteUrl) {
         div.appendChild(canvas);
     }
 
-    const wrap = document.createElement("div");
-    wrap.className = "hp-bar-wrap";
-    const bar = document.createElement("div");
-    bar.className = "hp-bar " + _hpColor(hp, maxHp);
-    bar.style.width = (maxHp > 0 ? (hp / maxHp * 100) : 0) + "%";
-    wrap.appendChild(bar);
-    div.appendChild(wrap);
+    const hpWrap = document.createElement("div");
+    hpWrap.className = "hp-bar-wrap";
+    const hpBar = document.createElement("div");
+    hpBar.className = "hp-bar " + _hpColor(hp, maxHp);
+    hpBar.style.width = (maxHp > 0 ? (hp / maxHp * 100) : 0) + "%";
+    hpWrap.appendChild(hpBar);
+    div.appendChild(hpWrap);
 
-    const txt = document.createElement("div");
-    txt.className = "hp-text";
-    txt.textContent = `${hp}/${maxHp}`;
-    div.appendChild(txt);
+    const hpTxt = document.createElement("div");
+    hpTxt.className = "hp-text";
+    hpTxt.textContent = `${hp}/${maxHp}`;
+    div.appendChild(hpTxt);
+
+    if (mp !== undefined && maxMp !== undefined) {
+        const mpWrap = document.createElement("div");
+        mpWrap.className = "mp-bar-wrap";
+        const mpBar = document.createElement("div");
+        mpBar.className = "mp-bar";
+        mpBar.style.width = (maxMp > 0 ? (mp / maxMp * 100) : 0) + "%";
+        mpWrap.appendChild(mpBar);
+        div.appendChild(mpWrap);
+
+        const mpTxt = document.createElement("div");
+        mpTxt.className = "mp-text";
+        mpTxt.textContent = `${mp}/${maxMp}`;
+        div.appendChild(mpTxt);
+    }
 
     return div;
 }
@@ -675,11 +708,22 @@ function _updateHpBar(container, name, hp, maxHp) {
     txt.textContent = `${hp}/${maxHp}`;
 }
 
+function _updateMpBar(container, name, mp, maxMp) {
+    const side = container.querySelector(`[data-name="${name}"]`);
+    if (!side) return;
+    const bar = side.querySelector(".mp-bar");
+    const txt = side.querySelector(".mp-text");
+    if (!bar || !txt) return;
+    bar.style.width = (maxMp > 0 ? (mp / maxMp * 100) : 0) + "%";
+    txt.textContent = `${mp}/${maxMp}`;
+}
+
 let battleSpriteInterval = null;
 
 function _startBattleSpriteAnim() {
     if (battleSpriteInterval) return;
     battleSpriteInterval = setInterval(() => {
+        // Enemy NPC sprites
         battleEnemySide.querySelectorAll("canvas[data-sprite], canvas[data-sprite-url]").forEach(canvas => {
             const frame = (parseInt(canvas.dataset.frame) + 1) % 2;
             canvas.dataset.frame = frame;
@@ -702,6 +746,22 @@ function _startBattleSpriteAnim() {
                                0, 0, TILE_PX, TILE_PX);
             }
         });
+        // Party member sprites (walk cycle, south-facing)
+        if (!spriteSheet.complete || spriteSheet.naturalWidth === 0) return;
+        battlePartySide.querySelectorAll("canvas[data-party-name]").forEach(canvas => {
+            const frame = (parseInt(canvas.dataset.frame) + 1) % 2;
+            canvas.dataset.frame = frame;
+            const ctx2 = canvas.getContext("2d");
+            ctx2.clearRect(0, 0, TILE_PX, TILE_PX);
+            ctx2.imageSmoothingEnabled = false;
+            const name = canvas.dataset.partyName;
+            const sprRow = PARTY_SPRITE_ROW[name];
+            if (sprRow === undefined) return;
+            const sprCol = FACING_COL["S"][frame];
+            ctx2.drawImage(spriteSheet,
+                sprCol * TILE_PX, sprRow * TILE_PX, TILE_PX, TILE_PX,
+                0, 0, TILE_PX, TILE_PX);
+        });
     }, ENEMY_ANIM_MS);
 }
 
@@ -717,9 +777,13 @@ function handleBattleStart(e) {
     battle.enemyMaxHp  = e.enemy.max_hp;
     battle.partyMaxHp  = {};
     battle.partyHp     = {};
+    battle.partyMaxMp  = {};
+    battle.partyMp     = {};
     for (const m of (e.party || [])) {
         battle.partyMaxHp[m.name] = m.max_hp;
         battle.partyHp[m.name]    = m.hp;
+        battle.partyMaxMp[m.name] = m.max_mp ?? 0;
+        battle.partyMp[m.name]    = m.mp    ?? 0;
     }
 
     // Preload recolored enemy sprite if provided.
@@ -734,10 +798,11 @@ function handleBattleStart(e) {
     battleEnemySide.innerHTML = "";
     battleEnemySide.appendChild(_makeSide(e.enemy.name, e.enemy.npc_sprite, e.enemy.hp, e.enemy.max_hp, enemySpriteUrl));
 
-    // Build party side (one card per member)
+    // Build party side (one card per member, with sprite + HP + MP)
     battlePartySide.innerHTML = "";
     for (const m of (e.party || [])) {
-        battlePartySide.appendChild(_makeSide(m.name, null, m.hp, m.max_hp));
+        battlePartySide.appendChild(
+            _makeSide(m.name, null, m.hp, m.max_hp, null, m.mp ?? 0, m.max_mp ?? 0));
     }
 
     battleResult.textContent = "";
@@ -751,10 +816,14 @@ function handleBattleStart(e) {
 function handleBattleAction(e) {
     battle.enemyHp = e.enemy_hp;
     battle.partyHp = e.party_hp || {};
+    battle.partyMp = e.party_mp || battle.partyMp;
 
     _updateHpBar(battleEnemySide, battle.enemyName, e.enemy_hp, battle.enemyMaxHp);
     for (const [name, hp] of Object.entries(e.party_hp || {})) {
         _updateHpBar(battlePartySide, name, hp, battle.partyMaxHp[name] || hp);
+    }
+    for (const [name, mp] of Object.entries(e.party_mp || {})) {
+        _updateMpBar(battlePartySide, name, mp, battle.partyMaxMp[name] || 0);
     }
     if (e.flavor) appendLog("resolve", e.flavor);
 }

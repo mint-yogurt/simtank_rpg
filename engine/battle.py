@@ -169,6 +169,10 @@ def _party_hp(party: list[BattleMember]) -> dict:
     return {m.name: m.hp for m in party}
 
 
+def _party_mp(party: list[BattleMember]) -> dict:
+    return {m.name: m.mp for m in party}
+
+
 # ---------------------------------------------------------------------------
 # SSE emit helpers
 # ---------------------------------------------------------------------------
@@ -188,6 +192,7 @@ def _emit_action(emit, actor, action, target, res, flavor, enemy, party, sleep_m
         "enemy_hp":    enemy.hp,
         "enemy_max_hp": enemy.max_hp,
         "party_hp":    _party_hp(party),
+        "party_mp":    _party_mp(party),
     })
     time.sleep(sleep_ms / 1000)
 
@@ -269,7 +274,8 @@ def run_battle(party: list[BattleMember], enemy: BattleEnemy,
             "enemy": {"name": enemy.name, "hp": enemy.hp,
                       "max_hp": enemy.max_hp, "npc_sprite": enemy.npc_sprite,
                       "sprite_url": enemy.sprite_url},
-            "party": [{"name": m.name, "hp": m.hp, "max_hp": m.max_hp} for m in party],
+            "party": [{"name": m.name, "hp": m.hp, "max_hp": m.max_hp,
+                   "mp": m.mp, "max_mp": m.max_mp} for m in party],
         })
 
     while True:
