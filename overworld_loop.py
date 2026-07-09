@@ -39,15 +39,24 @@ from engine.tiles import is_enterable, is_passable
 from llm.client import ask_with_retry
 from llm.prompts import (build_checkpoint_context, build_checkpoint_system_prompt,
                           build_goal_context, build_goal_system_prompt,
-                          build_interior_system_prompt, build_interior_goal_context)
+                          build_interior_system_prompt, build_interior_goal_context,
+                          OVERWORLD_CRITICAL_HP)
 from llm.schema import (parse_checkpoint_decision, parse_goal_decision,
                          parse_interior_destination)
 from procgen.cavegen import generate_cave_data
 from procgen.towngen import generate_town_data
 from procgen.worldgen import FEATURE_TYPES, generate_screen_data
 from engine.battle import BattleEnemy, load_party as load_battle_party, run_battle
-from engine.combat import Fighter
+from engine.combat import Fighter, PARTY_HP_BASE, PARTY_HP_PER_LEVEL, PARTY_MP_BASE, PARTY_MP_PER_LEVEL
 from engine.enemy_state import EnemyAgent, place_enemies, update_enemies, update_town_npcs
+
+
+XP_PER_ENEMY_LVL = 30
+XP_THRESHOLD_BASE = 80
+
+
+def xp_threshold(lvl: int) -> int:
+    return XP_THRESHOLD_BASE * lvl
 
 
 @dataclass
@@ -57,6 +66,9 @@ class OverworldMember:
     hp: int
     max_hp: int
     personality: str
+    xp: int = 0
+    mp: int = 0
+    max_mp: int = 0
     alive: bool = True
 
     @classmethod
@@ -69,6 +81,9 @@ class OverworldMember:
             hp=d["hp"],
             max_hp=d["max_hp"],
             personality=d.get("personality", ""),
+            xp=d.get("xp", 0),
+            mp=d.get("mp", 0),
+            max_mp=d.get("max_mp", 0),
         )
 
 
@@ -83,6 +98,53 @@ def load_overworld_party(data_dir: Path) -> list:
             continue
         members.append(OverworldMember.from_json(p))
     return members
+
+
+def _overlay_party_state(bparty: list, party: list) -> None:
+    """Overlay live OverworldMember state onto BattleMember objects before a battle.
+
+    JSON files supply static stats (iq/weight/sweat/hair/special).
+    OverworldMember supplies dynamic state (hp/max_hp/mp/max_mp/lvl/xp).
+    This ensures battles run with current in-memory state, including any
+    healer-restored HP/MP, rather than stale JSON-file values.
+    """
+    ow = {m.name: m for m in party}
+    for bm in bparty:
+        o = ow.get(bm.name)
+        if not o:
+            continue
+        bm.fighter.hp      = o.hp
+        bm.fighter.max_hp  = o.max_hp
+        bm.fighter.mp      = o.mp
+        bm.fighter.max_mp  = o.max_mp
+        bm.fighter.level   = o.lvl
+        bm.xp              = o.xp
+
+
+def _apply_battle_result(
+    bparty: list, party: list, result: dict, enemy_lvl: int
+) -> None:
+    """Write battle outcome back to OverworldMember list. Caller must call _save()."""
+    bm_by_name = {m.name: m for m in bparty}
+    leveled_up = []
+    for m in party:
+        bm = bm_by_name.get(m.name)
+        if not bm:
+            continue
+        m.hp    = bm.hp
+        m.mp    = bm.mp
+        m.alive = bm.alive
+        if result["outcome"] == "win" and bm.alive:
+            m.xp += enemy_lvl * XP_PER_ENEMY_LVL
+            while m.xp >= xp_threshold(m.lvl):
+                m.xp -= xp_threshold(m.lvl)
+                m.lvl += 1
+                m.max_hp = PARTY_HP_BASE + (m.lvl - 1) * PARTY_HP_PER_LEVEL
+                m.max_mp = PARTY_MP_BASE + (m.lvl - 1) * PARTY_MP_PER_LEVEL
+                m.hp = min(m.hp, m.max_hp)
+                leveled_up.append(m.name)
+    if leveled_up:
+        print(f"  *** LEVEL UP: {', '.join(leveled_up)} ***", flush=True)
 
 
 def _find_connected_start(grid, rows, cols):
@@ -510,7 +572,7 @@ def _build_interior_pois(interior: Interior, grid_dict: dict) -> list[dict]:
                     base = tile.split(':', 1)[0] if ':' in tile else tile
                     if is_passable(base):
                         pois.append({'name': 'healer', 'row': nr, 'col': nc,
-                                     'label': 'visit the healer (restores HP)'})
+                                     'label': 'visit the healer (restores HP and MP)'})
                         break
 
         # Town: 1 explore spot at the far end.
@@ -543,16 +605,17 @@ def _build_interior_pois(interior: Interior, grid_dict: dict) -> list[dict]:
 
 
 def _do_healer_interaction(party: list, emit=None) -> None:
-    """Restore full HP to all living party members."""
+    """Restore full HP and MP to all living party members."""
     healed = []
     for m in party:
-        if m.alive and m.hp < m.max_hp:
+        if m.alive and (m.hp < m.max_hp or m.mp < m.max_mp):
             m.hp = m.max_hp
+            m.mp = m.max_mp
             healed.append(m.name)
     if healed:
-        print(f"  HEALER: restored HP to {', '.join(healed)}", flush=True)
+        print(f"  HEALER: restored HP and MP to {', '.join(healed)}", flush=True)
     else:
-        print("  HEALER: party already at full HP.", flush=True)
+        print("  HEALER: party already at full HP and MP.", flush=True)
 
 
 def _nearby_enemies(enemy_agents: list, party_row: int, party_col: int,
@@ -585,7 +648,8 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                        enemy_rng=None,
                        data_dir: Path | None = None,
                        render_npc_sprite_fn=None,
-                       leader_idx: int = 0) -> int:
+                       leader_idx: int = 0,
+                       db=None) -> int:
     """Navigate the party through an interior with LLM-driven destination picks.
 
     The leader LLM chooses from a menu of POIs (healer, explore spots, exit).
@@ -755,6 +819,7 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
             if pending_cave_battle is not None and data_dir is not None:
                 agent = pending_cave_battle
                 bparty = load_battle_party(data_dir)
+                _overlay_party_state(bparty, party)
                 cave_sprite_url = ""
                 if render_npc_sprite_fn and agent.sprite_palette:
                     cave_sprite_url = (
@@ -768,8 +833,11 @@ def _run_interior_loop(interior: Interior, pos: PartyPos,
                     npc_sprite=agent.npc_sprite,
                     sprite_url=cave_sprite_url,
                 )
-                run_battle(bparty, benemy, enemy_rng, emit=emit,
-                           battle_sleep_ms=cfg.move_ms * 2)
+                cave_result = run_battle(bparty, benemy, enemy_rng, emit=emit,
+                                         battle_sleep_ms=cfg.move_ms * 2)
+                _apply_battle_result(bparty, party, cave_result, agent.level)
+                if db is not None:
+                    db.party_level = max(1, round(sum(m.lvl for m in party) / len(party)))
                 _emit_int_enemies()
 
     # ── LLM-driven destination loop ───────────────────────────────────────────
@@ -891,7 +959,8 @@ def _enter_interior(pos: PartyPos, db, emit=None,
                                enemy_rng=enemy_rng,
                                data_dir=data_dir,
                                render_npc_sprite_fn=render_npc_sprite_fn,
-                               leader_idx=leader_idx)
+                               leader_idx=leader_idx,
+                               db=db)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
@@ -934,13 +1003,19 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
         tick       = session.get("tick", 0)
         leader_idx = session.get("leader_idx", 0)
 
-        # Restore party HP (always max today; slot ready for Phase 3)
+        # Restore party HP, MP, XP, and level
         hp_by_name = {m["name"]: m for m in session.get("party", [])}
         for m in party:
             saved = hp_by_name.get(m.name)
             if saved:
                 m.hp    = saved["hp"]
                 m.alive = saved["alive"]
+                m.xp    = saved.get("xp", m.xp)
+                m.mp    = saved.get("mp", m.mp)
+                if saved.get("lvl", m.lvl) != m.lvl:
+                    m.lvl    = saved["lvl"]
+                    m.max_hp = PARTY_HP_BASE + (m.lvl - 1) * PARTY_HP_PER_LEVEL
+                    m.max_mp = PARTY_MP_BASE + (m.lvl - 1) * PARTY_MP_PER_LEVEL
 
         # Restore active goal
         goal_data = session.get("goal")
@@ -982,6 +1057,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
         assert start, "no exit-connected walkable tile on screen (0,0)"
         pos.row, pos.col = start
         print(f"Start: row={pos.row} col={pos.col}", flush=True)
+
+    # Set party_level after session restore so resumed parties use their actual level
+    db.party_level = max(1, round(sum(m.lvl for m in party) / len(party)))
 
     enemy_rng    = random.Random(world_seed ^ 0xDEADBEEF)
     enemy_agents: list = place_enemies(
@@ -1026,9 +1104,37 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
             return  # skip enemies broadcast — battle takes over
         _emit_enemies()
 
+    def _respawn_at_hub():
+        nonlocal active_goal, previous_goal, grid, rows, cols, enemy_agents
+        print("\n  *** PARTY WIPE — respawning at hub. ***\n", flush=True)
+        for m in party:
+            m.alive = True
+            m.hp = max(1, m.max_hp // 2)
+            m.mp = max(0, m.max_mp // 2)
+        pos.sx, pos.sy = 0, 0
+        hub_screen = enter_screen(pos, db, generate_screen_data, tick=tick)
+        grid = json.loads(hub_screen["grid_json"])
+        rows, cols = len(grid), len(grid[0])
+        start = _find_connected_start(grid, rows, cols)
+        if start:
+            pos.row, pos.col = start
+        active_goal = None
+        previous_goal = None
+        enemy_agents = place_enemies(
+            db.list_enemies('screen', hub_screen['screen_seed']), grid, hub_screen['screen_seed'])
+        if emit:
+            alive_members = [m for m in party if m.alive]
+            leader_name = alive_members[0].name if alive_members else None
+            tile_payload = render_screen_fn(world_seed, 0, 0) if render_screen_fn else {}
+            emit({"type": "init", "sx": 0, "sy": 0, "row": pos.row, "col": pos.col,
+                  "rows": rows, "cols": cols, "member": leader_name, **tile_payload})
+            _emit_enemies()
+        _save()
+
     def _trigger_battle(agent):
-        nonlocal enemy_agents
+        nonlocal enemy_agents, active_goal, previous_goal, leader_idx, branch_points_seen
         bparty = load_battle_party(data_dir)
+        _overlay_party_state(bparty, party)
         sprite_url = ""
         if render_npc_sprite_fn and agent.sprite_palette:
             sprite_url = render_npc_sprite_fn(agent.npc_sprite, agent.sprite_palette) or ""
@@ -1041,11 +1147,45 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
             npc_sprite=agent.npc_sprite,
             sprite_url=sprite_url,
         )
-        run_battle(bparty, benemy, enemy_rng, emit=emit,
-                   battle_sleep_ms=cfg.move_ms * 2)
-        # Remove the enemy win or flee — it's gone for this visit
+        battle_result = run_battle(bparty, benemy, enemy_rng, emit=emit,
+                                   battle_sleep_ms=cfg.move_ms * 2)
+        _apply_battle_result(bparty, party, battle_result, agent.level)
+        db.party_level = max(1, round(sum(m.lvl for m in party) / len(party)))
+        if battle_result["outcome"] == "loss":
+            _respawn_at_hub()
+            return
+        # Remove the enemy on win or flee — it's gone for this visit
         enemy_agents = [e for e in enemy_agents if e.index != agent.index]
         _emit_enemies()
+        # Post-battle health checkpoint: fire when anyone is dead or critically low HP
+        alive = [m for m in party if m.alive]
+        health_critical = (
+            any(not m.alive for m in party) or
+            any(m.max_hp > 0 and m.hp / m.max_hp < OVERWORLD_CRITICAL_HP for m in alive)
+        )
+        if health_critical and alive:
+            ctx = build_curated_context(active_goal, navlog, db, world_seed,
+                                        party, pos.sx, pos.sy)
+            vs  = _viewscan(grid, pos.row, pos.col)
+            en  = _nearby_enemies(enemy_agents, pos.row, pos.col)
+            outcome = _run_checkpoint('battle_wounds', active_goal, ctx, party,
+                                      pos, navlog, journals, tick, emit=emit,
+                                      leader_idx=leader_idx, vs=vs,
+                                      enemies_nearby=en or None)
+            leader_idx = (leader_idx + 1) % max(len(alive), 1)
+            if outcome.decision == 'abandon':
+                if active_goal:
+                    active_goal.abandon('battle_wounds')
+                previous_goal = active_goal
+                active_goal = None
+            elif outcome.decision == 'modify' and outcome.new_goal:
+                if active_goal:
+                    active_goal.abandon('battle_wounds_modify')
+                previous_goal = active_goal
+                active_goal = outcome.new_goal
+                branch_points_seen.clear()
+            # 'continue' → keep active_goal as-is
+        _save()
 
     if emit:
         tile_payload = render_screen_fn(world_seed, 0, 0) if render_screen_fn else {}
@@ -1074,7 +1214,10 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
         while True:
             tick += 1
             _alive = [m for m in party if m.alive]
-            cur_leader_name = _alive[leader_idx % len(_alive)].name if _alive else None
+            if not _alive:
+                _respawn_at_hub()
+                continue
+            cur_leader_name = _alive[leader_idx % len(_alive)].name
 
             # ── TIER 1: ensure active goal ────────────────────────────────────
             if active_goal is None or not active_goal.is_active():
@@ -1239,6 +1382,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                             enemy_rng=enemy_rng, data_dir=data_dir,
                             render_npc_sprite_fn=render_npc_sprite_fn,
                             leader_idx=leader_idx)
+                        if not any(m.alive for m in party):
+                            _respawn_at_hub()
+                            continue
                         _reload_enemies(grid)
                         _save()
                         continue  # resume goal after exiting interior
@@ -1308,6 +1454,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                     enemy_rng=enemy_rng, data_dir=data_dir,
                     render_npc_sprite_fn=render_npc_sprite_fn,
                     leader_idx=leader_idx)
+                if not any(m.alive for m in party):
+                    _respawn_at_hub()
+                    continue
                 _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal
@@ -1345,6 +1494,9 @@ def run_overworld(world_seed: int, db_path: str = "world.db",
                     render_interior_fn=render_interior_fn, party=party,
                     render_npc_sprite_fn=render_npc_sprite_fn,
                     leader_idx=leader_idx)
+                if not any(m.alive for m in party):
+                    _respawn_at_hub()
+                    continue
                 _reload_enemies(grid)
                 active_goal.abandon('enterable')
                 previous_goal = active_goal

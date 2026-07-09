@@ -1,7 +1,42 @@
 """Prompt templates and battle context renderer."""
 
+from engine.combat import SPECIAL_MP_COSTS
+
 
 HEAL_NEEDED_THRESHOLD = 0.70  # SNACK flagged as low-value if no one is below this fraction of max HP
+
+# Overworld health urgency thresholds (individual member HP fractions)
+OVERWORLD_CRITICAL_HP = 0.40
+OVERWORLD_LOW_HP      = 0.65
+
+
+def _health_urgency(party) -> str | None:
+    """Return a brief urgency string when party health is concerning, else None.
+
+    Accepts either a list of dicts {name, hp, max_hp, alive} (ctx.party_status)
+    or OverworldMember objects — both expose the same field names.
+    """
+    def _g(m, k):
+        return m[k] if isinstance(m, dict) else getattr(m, k)
+
+    dead     = [_g(m, 'name') for m in party if not _g(m, 'alive')]
+    critical = [_g(m, 'name') for m in party
+                if _g(m, 'alive') and _g(m, 'max_hp') > 0
+                and _g(m, 'hp') / _g(m, 'max_hp') < OVERWORLD_CRITICAL_HP]
+    crit_set = set(critical)
+    low      = [_g(m, 'name') for m in party
+                if _g(m, 'alive') and _g(m, 'max_hp') > 0
+                and _g(m, 'hp') / _g(m, 'max_hp') < OVERWORLD_LOW_HP
+                and _g(m, 'name') not in crit_set]
+
+    parts = []
+    if dead:
+        parts.append(f"{', '.join(dead)} {'is' if len(dead) == 1 else 'are'} dead")
+    if critical:
+        parts.append(f"{', '.join(critical)} critically low HP")
+    if low:
+        parts.append(f"{', '.join(low)} low HP")
+    return "; ".join(parts) if parts else None
 
 STATUS_DESCRIPTIONS = {
     "MESMERIZED": "cannot act 50% of the time",
@@ -38,7 +73,11 @@ def build_battle_context(member, party: list, enemy, history: dict, run_attempts
     parts = []
 
     parts.append("YOUR STATS")
-    parts.append(f"Name: {member.name}  LVL: {member.lvl}  HP: {member.hp}/{member.max_hp}")
+    parts.append(
+        f"Name: {member.name}  LVL: {member.lvl}"
+        f"  HP: {member.hp}/{member.max_hp}"
+        f"  MP: {member.mp}/{member.max_mp}"
+    )
 
     others = [m for m in party if m.name != member.name]
     if others:
@@ -70,13 +109,21 @@ def build_battle_context(member, party: list, enemy, history: dict, run_attempts
             parts.append(f"{name}: {desc}")
 
     on_cooldown = getattr(member, "special_cooldown", 0) > 0
-    has_special = bool(member.special.get("name")) and not on_cooldown
+    spec_name = member.special.get("name", "")
+    mp_cost = SPECIAL_MP_COSTS.get(spec_name, 0)
+    can_afford_mp = member.mp >= mp_cost
+    # Special is usable (shows as a selectable option) only when not on cooldown and MP is sufficient
+    special_usable = bool(spec_name) and not on_cooldown and can_afford_mp
+    # Special is visible (shown grayed out) when it exists but can't be used right now
+    special_visible = bool(spec_name) and not special_usable
 
+    all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
     parts.append("")
     parts.append("YOUR OPTIONS")
     parts.append("1. ATTACK — strike the enemy")
     parts.append("2. DEFEND — reduce incoming damage this turn")
-    if has_special:
+
+    if special_usable:
         spec = member.special
         if spec.get("effect_type") == "heal":
             anyone_hurt = any(
@@ -84,25 +131,36 @@ def build_battle_context(member, party: list, enemy, history: dict, run_attempts
                 for m in party
             )
             if anyone_hurt:
-                parts.append(f"3. SPECIAL: {spec['name']} — {spec['description']}")
+                parts.append(f"3. SPECIAL: {spec['name']} (costs {mp_cost} MP) — {spec['description']}")
             else:
-                parts.append(f"3. SPECIAL: {spec['name']} — (party is healthy, low value this turn)")
+                parts.append(f"3. SPECIAL: {spec['name']} (costs {mp_cost} MP) — (party is healthy, low value this turn)")
         elif spec.get("status_effect") and enemy.status:
             parts.append(
-                f"3. SPECIAL: {spec['name']} — "
+                f"3. SPECIAL: {spec['name']} (costs {mp_cost} MP) — "
                 f"({enemy.name} is already {enemy.status} — no additional effect this turn)"
             )
         else:
-            parts.append(f"3. SPECIAL: {spec['name']} — {spec['description']}")
+            parts.append(f"3. SPECIAL: {spec['name']} (costs {mp_cost} MP) — {spec['description']}")
         parts.append("4. RUN — attempt to flee (low chance; increases each attempt)")
-        all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
         parts.append("")
         parts.append(
             f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"SPECIAL"|"RUN", "target": {all_names}}}'
         )
+    elif special_visible:
+        if on_cooldown:
+            parts.append(f"3. SPECIAL: {spec_name} — [on cooldown, unavailable this turn]")
+        else:
+            parts.append(
+                f"3. SPECIAL: {spec_name} — "
+                f"[not enough MP — costs {mp_cost}, you have {member.mp}]"
+            )
+        parts.append("4. RUN — attempt to flee (low chance; increases each attempt)")
+        parts.append("")
+        parts.append(
+            f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"RUN", "target": {all_names}}}'
+        )
     else:
         parts.append("3. RUN — attempt to flee (low chance; increases each attempt)")
-        all_names = "|".join(m.name for m in party) + f"|{enemy.name}|null"
         parts.append("")
         parts.append(
             f'Respond with JSON only: {{"action": "ATTACK"|"DEFEND"|"RUN", "target": {all_names}}}'
@@ -253,12 +311,22 @@ def build_goal_context(member, ctx, previous_goal=None) -> str:
         you = " ← YOU" if m['name'] == member.name else ""
         parts.append(f"  {m['name']}: LVL {m['lvl']}  {status}{you}")
 
+    urgency = _health_urgency(ctx.party_status)
+    if urgency:
+        parts.append("")
+        parts.append(f"HEALTH WARNING: {urgency}")
+        towns = [p for p in ctx.pois if p['kind'] == 'town']
+        if towns:
+            parts.append("  Towns have healers that restore full HP and MP.")
+
     if ctx.pois:
         parts.append("")
-        parts.append("KNOWN POINTS OF INTEREST (enterable features)")
+        parts.append("KNOWN POINTS OF INTEREST")
         for p in ctx.pois[:16]:
-            visited = " (visited)" if p['visited'] else ""
-            parts.append(f"  screen ({p['sx']},{p['sy']}): {p['feature_type']}{visited}")
+            visited  = " (visited)" if p['visited'] else ""
+            kind_tag = "town (healer)" if p['kind'] == 'town' else "dungeon (enemies)"
+            dist_tag = f"  [{p['dist']} screens away]"
+            parts.append(f"  screen ({p['sx']},{p['sy']}): {kind_tag}{visited}{dist_tag}")
 
     if ctx.visited_count:
         parts.append("")
@@ -301,6 +369,7 @@ _CHECKPOINT_REASON_DESC: dict[str, str] = {
     'path_blocked':       'No path found through this screen toward the goal.',
     'screen_blocked':     'No path found through this screen toward the goal.',
     'all_exits_blocked':  'All exits from this screen are closed.',
+    'battle_wounds':      'The party just won a battle but took serious casualties.',
 }
 
 
@@ -354,6 +423,14 @@ def build_interior_goal_context(member, kind: str, reason: str,
     parts.append("AVAILABLE DESTINATIONS")
     for i, poi in enumerate(available_pois, 1):
         parts.append(f"  {i}. {poi['name']} — {poi['label']}")
+
+    # Urgency note: surface healer relevance when party is hurt, without prescribing the choice
+    healer_available = any(p['name'] == 'healer' for p in available_pois)
+    if kind == 'town' and healer_available:
+        urgency = _health_urgency(party)
+        if urgency:
+            parts.append("")
+            parts.append(f"NOTE: {urgency}. The healer here restores full HP and MP to all living members.")
 
     avail_names = "|".join(f'"{p["name"]}"' for p in available_pois)
     parts.append("")
@@ -412,6 +489,14 @@ def build_checkpoint_context(member, ctx, reason: str,
         you = " ← YOU" if m['name'] == member.name else ""
         parts.append(f"  {m['name']}: LVL {m['lvl']}  {status}{you}")
 
+    urgency = _health_urgency(ctx.party_status)
+    if urgency:
+        parts.append("")
+        parts.append(f"HEALTH WARNING: {urgency}")
+        towns = [p for p in ctx.pois if p['kind'] == 'town']
+        if towns:
+            parts.append("  Towns have healers that restore full HP and MP.")
+
     if vs is not None:
         parts.append("")
         parts.append("WHAT YOU CAN SEE")
@@ -434,14 +519,19 @@ def build_checkpoint_context(member, ctx, reason: str,
         parts.append("")
         parts.append("KNOWN POINTS OF INTEREST")
         for p in ctx.pois[:16]:
-            visited = " (visited)" if p['visited'] else ""
-            parts.append(f"  screen ({p['sx']},{p['sy']}): {p['feature_type']}{visited}")
+            visited  = " (visited)" if p['visited'] else ""
+            kind_tag = "town (healer)" if p['kind'] == 'town' else "dungeon (enemies)"
+            dist_tag = f"  [{p['dist']} screens away]"
+            parts.append(f"  screen ({p['sx']},{p['sy']}): {kind_tag}{visited}{dist_tag}")
 
     parts.append("")
     parts.append("DECIDE")
     parts.append("  continue — keep current goal, proceed as planned")
     parts.append("  abandon  — drop goal; party will set a new one next")
-    parts.append("  modify   — set a new goal now (provide target below)")
+    if reason == 'battle_wounds':
+        parts.append("  modify   — set a new goal now (e.g. travel to a nearby town to heal)")
+    else:
+        parts.append("  modify   — set a new goal now (provide target below)")
     parts.append("")
     parts.append(
         '  {"decision": "continue"|"abandon"|"modify", '

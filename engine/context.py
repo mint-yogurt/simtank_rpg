@@ -11,6 +11,19 @@ from engine.navlog import NavLog
 
 _DEFAULT_N_EVENTS = 8
 
+# Maps raw feature_type keys → broad kind label consumed by prompt builders.
+# Keep in sync with procgen/worldgen.py FEATURE_TYPES.
+_FEATURE_KIND: dict[str, str] = {
+    "town1":      "town",
+    "tower1":     "dungeon",
+    "tower2":     "dungeon",
+    "castle1":    "dungeon",
+    "skullhouse1":"dungeon",
+    "cave1":      "dungeon",
+    "mnt_cave":   "dungeon",
+    "mowdenpass": "dungeon",
+}
+
 
 @dataclass
 class CuratedContext:
@@ -40,18 +53,23 @@ def build_curated_context(
     entries = navlog.last_notable(n_events)
     recent_events = [f"t{e.tick} [{e.event_type}] {e.desc}" for e in entries]
 
-    # POI list: enterable features from all known screens
+    # POI list: enterable features from all known screens, annotated with kind + distance
     raw_features = db.list_known_features(world_seed)
-    pois = [
-        {
-            'sx': f['sx'],
-            'sy': f['sy'],
-            'feature_type': f['feature_type'],
-            'visited': bool(f.get('entered')),
-        }
-        for f in raw_features
-        if f.get('enterable')
-    ]
+    pois = sorted(
+        [
+            {
+                'sx': f['sx'],
+                'sy': f['sy'],
+                'feature_type': f['feature_type'],
+                'kind': _FEATURE_KIND.get(f['feature_type'], 'dungeon'),
+                'visited': bool(f.get('entered')),
+                'dist': abs(f['sx'] - pos_sx) + abs(f['sy'] - pos_sy),
+            }
+            for f in raw_features
+            if f.get('enterable')
+        ],
+        key=lambda p: p['dist'],
+    )
 
     # Visited screen summary
     known_screens = db.list_known_screens(world_seed)
