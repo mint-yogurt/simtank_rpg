@@ -1,9 +1,9 @@
 """Dev entry point: run the loop, print to terminal.
 
 Usage:
-  python run_cli.py            # full game: hub → overworld (default)
-  python run_cli.py hub        # standalone hub test (exits after vote passes)
-  python run_cli.py overworld  # skip hub, start directly in overworld
+  python run_cli.py            # full game: resumes saved session or hub → overworld
+  python run_cli.py hub        # force fresh start at the Front House (ignores session)
+  python run_cli.py overworld  # skip hub, start directly in overworld (fresh seed)
   python run_cli.py battle     # battle mode (single fight, then exit)
 """
 
@@ -14,6 +14,7 @@ from pathlib import Path
 
 from engine.battle import BattleEnemy, load_party, run_battle
 from engine.combat import Fighter
+from engine.worlddb import WorldDB
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
@@ -45,19 +46,34 @@ def main() -> None:
     if mode == "battle":
         _run_battle_main()
     elif mode == "hub":
-        from engine.scenes.hub import run_hub
-        run_hub()
-    elif mode == "overworld":
-        from overworld_loop import run_overworld
-        seed = random.randint(0, 2**32 - 1)
-        run_overworld(seed)
-    else:
+        # Forced fresh start — ignore any saved session
         from engine.scenes.hub import run_hub
         from overworld_loop import run_overworld
         seed = random.randint(0, 2**32 - 1)
         result = run_hub()
         if result == "overworld":
             run_overworld(seed)
+    elif mode == "overworld":
+        # Fresh overworld start (skip hub), no session resume
+        from overworld_loop import run_overworld
+        seed = random.randint(0, 2**32 - 1)
+        run_overworld(seed)
+    else:
+        # Default: resume saved session, or start fresh from hub
+        from engine.scenes.hub import run_hub
+        from overworld_loop import run_overworld
+        db = WorldDB("world.db")
+        saved = db.load_session()
+        db.close()
+        if saved and saved.get("scene") == "overworld":
+            seed = saved["world_seed"]
+            print(f"Resuming saved session (seed={seed})...", flush=True)
+            run_overworld(seed, session=saved)
+        else:
+            seed = random.randint(0, 2**32 - 1)
+            result = run_hub()
+            if result == "overworld":
+                run_overworld(seed)
 
 
 if __name__ == "__main__":

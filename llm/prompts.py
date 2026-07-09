@@ -304,6 +304,63 @@ _CHECKPOINT_REASON_DESC: dict[str, str] = {
 }
 
 
+def build_interior_system_prompt(member, kind: str) -> str:
+    lines = [f"You are {member.name} (LVL {member.lvl}) leading your party through a {kind}."]
+    if getattr(member, 'personality', None):
+        lines.append(f"Personality: {member.personality}")
+    lines.append(
+        "Choose where to go based on the party's needs and what remains unexplored.\n"
+        "Output JSON only — no other text, no explanation."
+    )
+    return "\n".join(lines)
+
+
+def build_interior_goal_context(member, kind: str, reason: str,
+                                 available_pois: list[dict],
+                                 visited_names: list[str],
+                                 party: list) -> str:
+    """Build the interior navigation pick prompt.
+
+    Args:
+        member:         the deciding member
+        kind:           'cave' or 'town'
+        reason:         'entered' | 'arrived at <name>' | 'continuing'
+        available_pois: list of {'name': str, 'label': str} dicts not yet visited
+        visited_names:  POI names already visited this interior session
+        party:          full party list (for HP display)
+    """
+    parts = []
+
+    parts.append(f"INTERIOR: {kind.upper()}")
+    parts.append(f"SITUATION: {reason}")
+
+    parts.append("")
+    parts.append("PARTY STATUS")
+    for m in party:
+        if not m.alive:
+            hp_str = f"HP {m.hp}/{m.max_hp} [DEAD]"
+        else:
+            hp_str = f"HP {m.hp}/{m.max_hp}"
+        you = " ← YOU" if m.name == member.name else ""
+        parts.append(f"  {m.name}: LVL {m.lvl}  {hp_str}{you}")
+
+    if visited_names:
+        parts.append("")
+        parts.append("ALREADY VISITED")
+        for n in visited_names:
+            parts.append(f"  {n}")
+
+    parts.append("")
+    parts.append("AVAILABLE DESTINATIONS")
+    for i, poi in enumerate(available_pois, 1):
+        parts.append(f"  {i}. {poi['name']} — {poi['label']}")
+
+    avail_names = "|".join(f'"{p["name"]}"' for p in available_pois)
+    parts.append("")
+    parts.append(f'Respond with exactly one JSON object: {{"target": {avail_names}, "reasoning": "brief"}}')
+    return "\n".join(parts)
+
+
 def build_checkpoint_system_prompt(member) -> str:
     lines = [f"You are {member.name} (LVL {member.lvl}) making a navigation decision for your party."]
     if getattr(member, 'personality', None):
@@ -315,13 +372,26 @@ def build_checkpoint_system_prompt(member) -> str:
     return "\n".join(lines)
 
 
-def build_checkpoint_context(member, ctx, reason: str) -> str:
+def _vs_direction_line(label: str, ds) -> str:
+    """One-line ViewScan direction summary for checkpoint context."""
+    if ds.kind == 'edge':
+        return f"  {label}: screen edge"
+    elif ds.kind == 'blocker':
+        return f"  {label}: blocked by {ds.tile} — {ds.distance} tiles"
+    else:  # enterable
+        return f"  {label}: {ds.tile} (enterable) — {ds.distance} tiles"
+
+
+def build_checkpoint_context(member, ctx, reason: str,
+                              vs=None, enemies_nearby: list | None = None) -> str:
     """Build the checkpoint discussion prompt.
 
     Args:
-        member:  the deciding member (needs .name for '← YOU' marker)
-        ctx:     CuratedContext from build_curated_context()
-        reason:  checkpoint trigger name (e.g. 'goal_reached', 'branch_point')
+        member:          the deciding member (needs .name for '← YOU' marker)
+        ctx:             CuratedContext from build_curated_context()
+        reason:          checkpoint trigger name (e.g. 'goal_reached', 'branch_point')
+        vs:              ViewScan at current position, or None
+        enemies_nearby:  list of {'name': str, 'distance': int, 'direction': str}, or None
     """
     parts = []
 
@@ -341,6 +411,18 @@ def build_checkpoint_context(member, ctx, reason: str) -> str:
         status = "[DEAD]" if not m['alive'] else f"HP {m['hp']}/{m['max_hp']}"
         you = " ← YOU" if m['name'] == member.name else ""
         parts.append(f"  {m['name']}: LVL {m['lvl']}  {status}{you}")
+
+    if vs is not None:
+        parts.append("")
+        parts.append("WHAT YOU CAN SEE")
+        for label in ("N", "S", "E", "W"):
+            parts.append(_vs_direction_line(label, getattr(vs, label)))
+
+    if enemies_nearby:
+        parts.append("")
+        parts.append("ENEMIES NEARBY")
+        for e in enemies_nearby:
+            parts.append(f"  {e['name']} — {e['distance']} tiles {e['direction']}")
 
     if ctx.recent_events:
         parts.append("")

@@ -35,3 +35,25 @@ class Goal:
         suffix = f' [{self.abandon_reason}]' if self.abandon_reason else ''
         return (f"{self.goal_type} → ({self.target_sx},{self.target_sy})"
                 f" [{self.status}{suffix}]: {self.reasoning}")
+
+    def to_dict(self) -> dict:
+        return {
+            "goal_type":     self.goal_type,
+            "target_sx":     self.target_sx,
+            "target_sy":     self.target_sy,
+            "reasoning":     self.reasoning,
+            "status":        self.status,
+            "abandon_reason": self.abandon_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Goal":
+        g = cls(
+            goal_type=d["goal_type"],
+            target_sx=d["target_sx"],
+            target_sy=d["target_sy"],
+            reasoning=d["reasoning"],
+            status=d.get("status", "active"),
+            abandon_reason=d.get("abandon_reason", ""),
+        )
+        return g

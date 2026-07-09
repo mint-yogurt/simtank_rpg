@@ -182,6 +182,35 @@ def parse_checkpoint_decision(raw: str | None) -> dict | None:
     return result
 
 
+def parse_interior_destination(raw: str | None, available_targets: list[str]) -> dict | None:
+    """Parse interior navigation choice: {"target": str, "reasoning": str}.
+
+    Returns dict with 'target' and 'reasoning', or None on failure.
+    target must be in available_targets.
+    """
+    if raw is None:
+        return None
+
+    text = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", raw.strip(), flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("interior: JSON parse failed. Raw: %.200s", raw)
+        return None
+
+    if not isinstance(parsed, dict):
+        logger.warning("interior: JSON not an object. Raw: %.200s", raw)
+        return None
+
+    target = str(parsed.get("target", ""))
+    if target not in available_targets:
+        logger.warning("interior: target %r not in %s", target, available_targets)
+        return None
+
+    reasoning = str(parsed.get("reasoning", ""))[:200]
+    return {"target": target, "reasoning": reasoning}
+
+
 def parse_goal_decision(raw: str | None) -> dict | None:
     """Parse and validate a goal-setting LLM response.
 

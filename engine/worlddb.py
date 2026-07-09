@@ -28,6 +28,7 @@ Known interface warts:
   raising on zero rowcount if this becomes a bug magnet.
 """
 
+import datetime
 import hashlib
 import json
 import sqlite3
@@ -42,6 +43,23 @@ def _to_s64(n):
     return struct.unpack('>q', struct.pack('>Q', int(n) & 0xFFFFFFFFFFFFFFFF))[0]
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS session (
+    id            INTEGER PRIMARY KEY DEFAULT 1,
+    scene         TEXT    NOT NULL,
+    world_seed    INTEGER NOT NULL,
+    sx            INTEGER NOT NULL,
+    sy            INTEGER NOT NULL,
+    row_          INTEGER NOT NULL,
+    col_          INTEGER NOT NULL,
+    tick          INTEGER NOT NULL DEFAULT 0,
+    leader_idx    INTEGER NOT NULL DEFAULT 0,
+    party_json    TEXT    NOT NULL,
+    goal_json     TEXT,
+    navlog_json   TEXT,
+    journals_json TEXT,
+    saved_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS screens (
     world_seed        INTEGER NOT NULL,
     sx                INTEGER NOT NULL,
@@ -168,6 +186,77 @@ class WorldDB:
             self._conn.execute("ALTER TABLE enemies ADD COLUMN overworld_sprite TEXT")
         if "sprite_palette_json" not in existing:
             self._conn.execute("ALTER TABLE enemies ADD COLUMN sprite_palette_json TEXT")
+        # session table: created by _SCHEMA above; no column additions needed yet
+
+    # ── SESSION SAVE / LOAD ───────────────────────────────────────────────────
+
+    def save_session(self, *, scene: str, world_seed: int,
+                     sx: int, sy: int, row: int, col: int,
+                     tick: int, leader_idx: int,
+                     party: list, goal, navlog, journals: dict) -> None:
+        """Upsert the single-row session state.
+
+        party:    list of OverworldMember
+        goal:     Goal | None
+        navlog:   NavLog (last 20 notable entries are saved)
+        journals: dict[str, MemberJournal]
+        """
+        party_data = [
+            {"name": m.name, "hp": m.hp, "max_hp": m.max_hp, "alive": m.alive}
+            for m in party
+        ]
+        goal_data = goal.to_dict() if goal is not None else None
+
+        navlog_data = None
+        if navlog is not None:
+            navlog_data = [
+                {"tick": e.tick, "event_type": e.event_type, "desc": e.desc}
+                for e in navlog.last_notable(20)
+            ]
+
+        journals_data = None
+        if journals:
+            journals_data = {
+                name: [
+                    {"tick": e.tick, "event_type": e.event_type, "desc": e.desc}
+                    for e in mj._entries
+                ]
+                for name, mj in journals.items()
+            }
+
+        self._conn.execute(
+            """INSERT OR REPLACE INTO session
+               (id, scene, world_seed, sx, sy, row_, col_,
+                tick, leader_idx, party_json, goal_json,
+                navlog_json, journals_json, saved_at)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (scene, world_seed, sx, sy, row, col, tick, leader_idx,
+             json.dumps(party_data),
+             json.dumps(goal_data) if goal_data is not None else None,
+             json.dumps(navlog_data) if navlog_data is not None else None,
+             json.dumps(journals_data) if journals_data is not None else None,
+             datetime.datetime.utcnow().isoformat()),
+        )
+        self._conn.commit()
+
+    def load_session(self) -> dict | None:
+        """Return the saved session as a plain dict, or None if no session exists."""
+        row = self._conn.execute("SELECT * FROM session WHERE id=1").fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["party"]    = json.loads(d.pop("party_json"))
+        d["goal"]     = json.loads(d.pop("goal_json"))     if d.get("goal_json")     else None
+        d["navlog"]   = json.loads(d.pop("navlog_json"))   if d.get("navlog_json")   else []
+        d["journals"] = json.loads(d.pop("journals_json")) if d.get("journals_json") else {}
+        d["row"]      = d.pop("row_")
+        d["col"]      = d.pop("col_")
+        return d
+
+    def clear_session(self) -> None:
+        """Delete the saved session (forces a fresh start on next boot)."""
+        self._conn.execute("DELETE FROM session WHERE id=1")
+        self._conn.commit()
 
     # ── READ / WRITE SCREENS ──────────────────────────────────────────────────
 

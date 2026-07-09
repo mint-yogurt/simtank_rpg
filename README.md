@@ -6,7 +6,7 @@ fight on their own — no player input (at first). You watch.
 
 **Status:** alpha → beta transition. Game starts on the **Front House** hub scene: four members roam the hand-authored home map independently; a leave vote can trigger at any time once someone reaches a map edge. Goal-setting and checkpoint decisions rotate through all alive members so no single character dominates. On vote pass, the overworld begins. Battle loop is functional end-to-end. Overworld runs a three-tier goal-driven loop: the party sets a persistent navigation goal via LLM (Tier 1), executes BFS-guided movement silently toward that goal (Tier 2), and pauses at checkpoints (goal reached, path blocked, genuine branch point) to discuss continue / abandon / modify via LLM (Tier 3). When the party steps onto a cave or town entrance they actually enter — navigating the interior via deterministic BFS. All four party members are rendered simultaneously in overworld and interior using a follow-the-leader formation: MELVIN leads at the current position, with BILLY, SMELTRUD, and POOTS each trailing 1 tile behind (stacked on spawn, spreading out as Melvin moves). Sprite movement is fully interpolated — each step animates smoothly over 400 ms with a 2-frame walk cycle that flips at the halfway point; the camera lerps to match. The web canvas draws scenes from a live tile-ID grid (SSE `tileset_url` + `tile_grid` per event) rather than baked PNGs. All pacing, display geometry, and tunable game parameters live in `config.json` — overworld and interior share a single `move_ms` value. Enemies roam the overworld and cave interiors (0–3 per overworld screen; 0–3 per cave room from a shared 6-entry pool per screen), generated once and cached in SQLite, with recoloured NPC sprites and one of three behavior types (wanderer/chaser, pacer, sentinel). Touching an enemy triggers a full LLM-driven battle with a DOM overlay (animated sprite, HP bars, action log). Towns are populated with 3–8 NPCs (one fixed healer + a mix of wanderers/pacers/statics), all with stub `"..."` dialogue awaiting the interaction system below.
 
-**Beta plan:** five phases remain before NPCs/encounters — see [Beta Roadmap](#beta-roadmap) below. Foundation (config) is done; persistent state, navigation pacing, battle overhaul, healer interaction, and the battle screen redesign are in progress or planned in that order.
+**Beta plan:** five phases remain before NPCs/encounters — see [Beta Roadmap](#beta-roadmap) below. Foundation (config) and persistent session state are done; navigation pacing, battle overhaul, healer interaction, and the battle screen redesign are planned in that order.
 
 ---
 
@@ -101,7 +101,7 @@ The overworld loop is organised into three tiers so LLM calls happen only at dec
 
 The LLM returns `continue | abandon | modify`. `modify` produces a new `Goal` immediately (skipping Tier 1). `branch_point` fires at most once per `(screen, target)` pair.
 
-> **Known gap (Beta Phase 2):** Tier 2's silent BFS execution has no pacing of its own — the party can blow through several screens' worth of movement before a checkpoint fires, and checkpoint discussion doesn't yet react to what's actually visible. See [Beta Phase 2](#phase-2--navigation--decision-making-overhaul).
+> **Phase 2 status:** Tier 2 step pacing is wired (`cfg.move_ms` per tile in `_execute_proposal`). Checkpoint discussion now includes a `WHAT YOU CAN SEE` ViewScan block and a `ENEMIES NEARBY` list for decision input. Interior navigation is LLM-driven (see below).
 
 **Interior entry & feature detour.** When the party steps onto an enterable tile, `_enter_interior()` looks up the feature, computes the feature_id, dispatches to `generate_cave_data`/`generate_town_data`, calls `get_or_create_interior()` (generate-once/cache-forever), and emits `interior_init`/`interior_exit`. Since `bfs_to_exit` treats enterable tiles as walls (so screen-crossing doesn't stop mid-path), a detour block runs before each within-screen BFS: it routes to the nearest unvisited enterable feature via `bfs_to_tile()` (which allows enterables) and calls `_enter_interior()` on arrival. Only `FEATURE_TYPES`-recognized tiles are candidates.
 
@@ -130,7 +130,7 @@ The starting scene, the **Front House**. Four party members spawn 4 rows up from
 
 Key properties: `spawn`, `entry_tile` (exit-trigger tile), `combined_grid()` (merged floor/wall or ground/overlay dict), `healer_spawn` (towns only — the `healerHutwallMid` tile), `is_exit(row, col)`.
 
-**Interior navigation** is deterministic BFS (no LLM calls): `_interior_find_far_tile` floods from spawn to the most distant reachable tile (capped at 50 steps), `_interior_bfs` finds spawn → far point → exit, and the party walks that path with `interior_move` SSE events per step.
+**Interior navigation** is LLM-driven: `_build_interior_pois` assembles a menu of Points of Interest (healer, explore spots, exit) from the interior layout. The leader picks a destination via LLM call, `_interior_bfs` finds the BFS path, and the party walks it with `interior_move` SSE events per step (`cfg.move_ms` sleep per tile). On arrival the LLM picks again — including "exit" — until the party leaves. `_interior_find_far_tile` floods from spawn for explore-spot discovery; `_do_healer_interaction` restores full HP when the party visits the healer.
 
 ### Overworld movement (`engine/party_state.py`)
 
@@ -196,7 +196,7 @@ SQLite persistence for the discovered world. Four tables:
 
 `get_or_create_screen()` / `get_or_create_interior()` generate once and cache; subsequent calls are read-only. `compute_feature_id()` returns a stable signed 64-bit hash so interior keys survive world reordering.
 
-> **Note:** world/screen/feature/interior/enemy state is *already* persistent across runs — what's currently missing is **party session state** (position, scene, HP, tick), which is not yet stored anywhere and resets to the hub on every restart. See [Beta Phase 1](#phase-1--foundation).
+> **Note:** world/screen/feature/interior/enemy state persists across runs. Party session state (position, scene, HP, tick, active goal) also persists as of Beta Phase 1 — the game resumes where it left off on restart.
 
 Replay guarantee: a fresh DB with the same world seed produces identical grids, exits, features, and interiors.
 
@@ -333,19 +333,15 @@ Foundation is done (config, live tile-grid renderer, sprite animation). Five pha
 ### Phase 1 — Foundation (persistence)
 
 - [x] **Global config** (`engine/config.py` / `config.json`) — done, see [Config](#config-engineconfigpy).
-- [ ] **Persistent party/session state.** World data (screens, features, interiors, enemies) already persists in SQLite — what's missing is *session* state: current scene (`hub`/`overworld`/`interior`), party position, per-member HP/status, active goal, tick count. Add a `session` (or `party_state`) table in `worlddb.py`, written on every meaningful state change (move, battle end, scene transition) and loaded on boot instead of always starting at the hub.
-  - `run_web.py` / `run_cli.py`: default behavior resumes from saved session state; an explicit `hub` argument (e.g. `run_web.py hub`) forces a fresh start at the Front House regardless of saved state.
-  - Needs a decision on save granularity/frequency (every tick vs. every notable event) — bias toward "every notable event" (mirrors `NavLog`'s existing notable/non-notable split) to avoid excessive writes.
+- [x] **Persistent party/session state.** `session` table added to `world.db` (`engine/worlddb.py`). Saves scene, world seed, position, tick, leader index, per-member HP, active goal, last 20 navlog entries, and per-member journal windows. Written on every notable event (goal-set, checkpoint, screen crossing, battle end, interior exit) — mirrors `NavLog`'s notable/non-notable split. `run_cli.py` / `run_web.py` load the session before picking a seed and resume directly in the overworld; a `hub` argument forces a fresh start at the Front House.
 
 ### Phase 2 — Navigation & decision-making overhaul
 
 Closes the long-standing gap where the party performs a programmatic, pointless walk instead of actually playing. Builds on the existing three-tier goal system (Tiers 1–3 already eliminate oscillation — see [Goal-driven navigation](#goal-driven-navigation--three-tier-loop-overworld_loop-py-enginepathfinding-py-enginegoal-py)); this phase is about pacing and giving the LLM something real to react to.
 
-- [ ] **Tier 2 step pacing.** Silent BFS execution currently resolves an entire path in one loop iteration. Wire in `cfg.move_ms`-aware waits between individual `MOVE` events (already emitted per-step) so screen crossings are watchable rather than instantaneous.
-- [ ] **Viewscan-informed checkpoints.** Feed `ViewScan` results (not just NavLog/POI data) into checkpoint prompts so discussion reacts to what's actually visible right now (an enemy ahead, an item, an unexplored branch) rather than only abstract goal state.
-- [ ] **Goal-distance biasing.** Weight Tier 1 `explore` targets toward nearer screens more often than far `travel` targets, so silent traversals are naturally shorter and checkpoints fire more frequently.
-- [ ] **Checkpoint frequency floor.** Consider a step-count cap per goal that forces a checkpoint even without hitting an existing trigger condition — trades a few more LLM calls for a viewer experience that doesn't feel like fast-forward.
-- [ ] *(Optional/stretch)* Lightweight ambient narration ticks during long Tier 2 runs — not a real continue/abandon/modify decision, just flavor text, so long traversals aren't silent.
+- [x] **Tier 2 step pacing.** `cfg.move_ms` sleep per tile already wired in `_execute_proposal` — screen crossings are watchable.
+- [x] **Viewscan-informed checkpoints.** `ViewScan` + `ENEMIES NEARBY` injected into checkpoint prompts as decision input only *(not for generating spoken lines)* — discussion reacts to what's actually visible right now.
+- [x] **Real interior navigation.** Party makes LLM-driven decisions inside caves and towns: leader picks a POI, BFS walks there, LLM picks again on arrival (including exit). No scripted paths.
 
 ### Phase 3 — Battle overhaul
 
@@ -419,4 +415,6 @@ Last, since it's the most visually involved and should sit on stable data (mana,
 25a. [x] NPC sprite recoloring + expanded sprite pool + overworld-exclusive sprites
 26. [x] Town NPCs — healer + wanderer/pacer/static pool, town crop-origin fix
 
-*(Beta Phase 1–5 above are the active continuation of this roadmap.)*
+27. [x] Persistent session state — `session` table in `world.db`; resume on boot; `hub` arg forces fresh start
+
+*(Beta Phase 2–5 above are the active continuation of this roadmap.)*
