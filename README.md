@@ -177,9 +177,9 @@ Shared battle loop used by both CLI and web. `run_battle(party, enemy, rng, emit
 
 Status effects don't stack — one active at a time on the enemy. The action menu is situationally adjusted: SNACK flagged "low value" when nobody is below 70% HP; SING/LAUGH flagged "no additional effect" when the enemy already has a status. Each special costs MP (SING 8, LAUGH 7, SNACK 6, TICKLE 5); the menu shows current MP and marks moves unavailable when the member can't afford them. MP is only restored by the healer. XP is awarded on win and levels up members (bumps max HP/MP, stat ceilings); enemy level scaling locks to party level at time of first generation per scope.
 
-**Web battle panel.** A DOM overlay (`#battle-overlay`) becomes visible on `battle_start` with an animated enemy sprite, per-member HP bars, and a VS label; `battle_action` updates HP/log; `battle_end` shows a result label for 2 s then hides. `web/server.py` snapshots the pre-battle overworld and restores it after, so late-joining clients see the battle in progress.
+**Web battle panel.** A DOM overlay (`#battle-overlay`) becomes visible on `battle_start` with: an animated enemy sprite (recolored NPC strip), one card per party member showing their animated sprite (from the party sheet, south-facing walk cycle), an HP bar + `current/total` text, and a blue MP bar + `current/total` text. `battle_action` updates both HP and MP bars in real time as specials drain MP. `battle_end` shows a result label for 2 s then hides. `web/server.py` snapshots the pre-battle overworld and restores it after, so late-joining clients see the battle in progress.
 
-> **Known gap (Beta Phase 5):** this DOM overlay is a placeholder — the real battle screen (tileset-based, showing mana, with a tile-swipe entry transition) hasn't been built yet. See [Beta Phase 5](#phase-5--battle-screen-redesign).
+> **Known gap (Beta Phase 5):** this DOM overlay is a placeholder — the real battle screen (tileset-based, with a tile-swipe entry transition) hasn't been built yet. See [Beta Phase 5](#phase-5--battle-screen-redesign).
 
 ### Tile rules (`engine/tiles.py`)
 
