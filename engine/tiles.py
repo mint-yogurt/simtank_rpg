@@ -20,12 +20,10 @@ is_passable rules:
 import os
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_OVERWORLD_RULES = os.path.normpath(
-    os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'overworld_1_tilerules.txt'))
-_CAVE_RULES = os.path.normpath(
-    os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_cave_rules.txt'))
-_TOWN_RULES = os.path.normpath(
-    os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_town_rules.txt'))
+_ASSETS = os.path.normpath(os.path.join(_HERE, '..', 'assets', 'tiles'))
+_OVERWORLD_RULES = os.path.join(_ASSETS, 'overworld_1_tilerules.txt')
+_CAVE_RULES      = os.path.join(_ASSETS, 'tiles_cave_rules.txt')
+_TOWN_RULES      = os.path.join(_ASSETS, 'tiles_town_rules.txt')
 
 # tile_name → frozenset of quality strings; populated on first call to _load()
 _QUALITIES: dict = {}

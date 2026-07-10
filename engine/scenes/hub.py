@@ -25,8 +25,8 @@ from llm.prompts import _dir_summary_line
 from llm.schema import parse_overworld_action
 
 _HERE = Path(__file__).parent
-_HUB_CSV = _HERE.parent.parent / 'web' / 'static' / 'tiles' / 'hub_map_coords_bracketed.csv'
-_TOWN_RULES = _HERE.parent.parent / 'web' / 'static' / 'tiles' / 'tiles_town_rules.txt'
+_HUB_CSV    = _HERE.parent.parent / 'assets' / 'tiles' / 'hub_map_coords_bracketed.csv'
+_TOWN_RULES = _HERE.parent.parent / 'assets' / 'tiles' / 'tiles_town_rules.txt'
 
 PARTY_ORDER = ['MELVIN', 'BILLY', 'POOTS', 'SMELTRUD']
 _OPPOSITE = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}

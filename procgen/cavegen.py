@@ -40,8 +40,8 @@ SCATTER_CHANCE    = 0.04  # per cave-floor cell: skull or sock
 CONTAINER_CHANCE  = 0.04  # per dungeon-floor cell: chest or trashcan (max 2/room)
 
 _HERE          = os.path.dirname(os.path.abspath(__file__))
-TILESET_PATH   = os.path.join(_HERE, "..", "web", "static", "tiles", "tiles_cave1.png")
-TILERULES_PATH = os.path.join(_HERE, "..", "web", "static", "tiles", "tiles_cave_rules.txt")
+TILESET_PATH   = os.path.join(_HERE, "..", "assets", "tiles", "tiles_cave1.png")
+TILERULES_PATH = os.path.join(_HERE, "..", "assets", "tiles", "tiles_cave_rules.txt")
 OUTPUT_DIR     = os.path.join(_HERE, "out")
 
 # ── PALETTE ───────────────────────────────────────────────────────────────────

@@ -70,8 +70,8 @@ FEATURE_TYPES = {
 }
 
 _HERE          = os.path.dirname(os.path.abspath(__file__))
-TILESET_PATH   = os.path.join(_HERE, "..", "web", "static", "tiles", "overworld_1.png")
-TILERULES_PATH = os.path.join(_HERE, "..", "web", "static", "tiles", "overworld_1_tilerules.txt")
+TILESET_PATH   = os.path.join(_HERE, "..", "assets", "tiles", "overworld_1.png")
+TILERULES_PATH = os.path.join(_HERE, "..", "assets", "tiles", "overworld_1_tilerules.txt")
 OUTPUT_DIR     = os.path.join(_HERE, "out")
 
 # ── PALETTE ───────────────────────────────────────────────────────────────────

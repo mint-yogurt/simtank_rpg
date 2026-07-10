@@ -28,8 +28,8 @@ SCATTER_CHANCE   = 0.030
 CONTAINER_CHANCE = 0.012
 
 _HERE         = os.path.dirname(os.path.abspath(__file__))
-TILESET_PATH  = os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_town.png')
-TILERULES_PATH = os.path.join(_HERE, '..', 'web', 'static', 'tiles', 'tiles_town_rules.txt')
+TILESET_PATH  = os.path.join(_HERE, '..', 'assets', 'tiles', 'tiles_town.png')
+TILERULES_PATH = os.path.join(_HERE, '..', 'assets', 'tiles', 'tiles_town_rules.txt')
 OUTPUT_DIR    = os.path.join(_HERE, 'out')
 
 # ── PALETTE ───────────────────────────────────────────────────────────────────

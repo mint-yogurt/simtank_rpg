@@ -8,7 +8,7 @@ const TILE_DRAW = TILE_PX * SCALE;   // 48px on canvas
 const VIEW_COLS = 16;
 const VIEW_ROWS = 14;
 
-const SPRITE_SRC = "static/sprites/party_sprites.png";
+const SPRITE_SRC = "assets/sprites/party_sprites.png";
 
 const PARTY_SPRITE_ROW = { MELVIN: 0, BILLY: 1, SMELTRUD: 2, POOTS: 3 };
 const FACING_COL = { S: [0, 1], N: [2, 3], W: [4, 5], E: [6, 7] };

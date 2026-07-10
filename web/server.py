@@ -20,13 +20,14 @@ from engine.config import cfg
 _REPO_ROOT = Path(__file__).parent.parent
 _SCREENS_DIR = _REPO_ROOT / "web" / "static" / "screens"
 
-_PARTY_SPRITES      = _REPO_ROOT / "web" / "static" / "sprites" / "party_sprites.png"
-_OVERWORLD_TILESET  = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1.png"
-_OVERWORLD_RULES    = _REPO_ROOT / "web" / "static" / "tiles" / "overworld_1_tilerules.txt"
-_CAVE_TILESET       = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave1.png"
-_CAVE_RULES         = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_cave_rules.txt"
-_TOWN_TILESET       = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town.png"
-_TOWN_RULES         = _REPO_ROOT / "web" / "static" / "tiles" / "tiles_town_rules.txt"
+_ASSETS_DIR         = _REPO_ROOT / "assets"
+_PARTY_SPRITES      = _ASSETS_DIR / "sprites" / "party_sprites.png"
+_OVERWORLD_TILESET  = _ASSETS_DIR / "tiles" / "overworld_1.png"
+_OVERWORLD_RULES    = _ASSETS_DIR / "tiles" / "overworld_1_tilerules.txt"
+_CAVE_TILESET       = _ASSETS_DIR / "tiles" / "tiles_cave1.png"
+_CAVE_RULES         = _ASSETS_DIR / "tiles" / "tiles_cave_rules.txt"
+_TOWN_TILESET       = _ASSETS_DIR / "tiles" / "tiles_town.png"
+_TOWN_RULES         = _ASSETS_DIR / "tiles" / "tiles_town_rules.txt"
 
 # ── Tileset PNG cache (palette-remapped copies, keyed by content hash) ────────
 

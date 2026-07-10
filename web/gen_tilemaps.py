@@ -17,8 +17,8 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
-TILES_DIR = REPO_ROOT / "web" / "static" / "tiles"
-OUT_DIR   = REPO_ROOT / "web" / "static"
+TILES_DIR = REPO_ROOT / "assets" / "tiles"
+OUT_DIR   = REPO_ROOT / "web" / "static"   # tilemap JSONs stay web-specific
 
 TILESETS = {
     "overworld": TILES_DIR / "overworld_1_tilerules.txt",

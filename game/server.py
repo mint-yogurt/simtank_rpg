@@ -31,6 +31,7 @@ _KEY_TO_DIR = {
 _REPO_ROOT   = Path(__file__).parent.parent
 _STATIC_GAME = Path(__file__).parent / "static"
 _STATIC_WEB  = _REPO_ROOT / "web" / "static"
+_ASSETS_DIR  = _REPO_ROOT / "assets"
 _SCREENS_DIR = _STATIC_WEB / "screens"
 
 app  = Flask(__name__, static_folder=None)
@@ -44,10 +45,15 @@ def index():
 
 @app.route("/static/<path:filename>")
 def static_files(filename):
-    game_path = _STATIC_GAME / filename
-    if game_path.exists():
-        return send_from_directory(str(_STATIC_GAME), filename)
+    for base in (_STATIC_GAME, _STATIC_WEB):
+        if (base / filename).exists():
+            return send_from_directory(str(base), filename)
     return send_from_directory(str(_STATIC_WEB), filename)
+
+
+@app.route("/assets/<path:filename>")
+def asset_files(filename):
+    return send_from_directory(str(_ASSETS_DIR), filename)
 
 
 @app.route("/screens/<path:filename>")
