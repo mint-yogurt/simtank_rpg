@@ -11,19 +11,27 @@ An 8-bit RPG with two lives: a **shippable single-player game** (itch.io) and a 
 *Draft — order and grouping subject to revision.*
 
 ### Input & Core Game Loop
-- [ ] WebSocket game server (replaces SSE; bidirectional; basis for all player input and eventual online)
-- [ ] Keyboard input: arrow keys (move), Z (B button), X (X button), Enter (start/confirm)
+- [x] WebSocket game server (bidirectional; basis for all player input)
+- [x] Keyboard input: arrow keys (move), Z (B button), X (X button), Enter (start/confirm)
+- [ ] Player character entity — proper architecture (position, facing, state machine, interaction radius) done the way a real game engine would do it; not bolted onto the AI party model
 - [ ] Bluetooth / USB controller support (browser Gamepad API)
 - [ ] Title screen
 - [ ] In-game menu system (pause, save, settings)
 - [ ] Save/load through menu
 
+### Debug & Testing Screens
+- [x] `maptest.py hub` — player-controlled Melvin, collision, NPC animation
+- [ ] Debug screen loader — select hub, cave, or town from a list; load hand-authored maps by filename, not just random seeds; hot-reload without restarting server
+- [ ] Debug overlay — toggle tile passability grid, NPC index labels, player coords, FPS
+- [ ] Cave and town debug screens — spawn in any procgen or pre-made interior the same way hub works now
+
 ### Content Authoring Tools
-- [ ] NPC YAML — sprite, spawn coords, dialogue trees, behavior type
+- [ ] Map file format — simple, human-readable (YAML or TOML); defines tile layout, NPC placements, container positions, warp points; engine reads it directly into the DB at load time
+- [ ] Tiler / map creator — in-browser tool: paint tiles from the active tileset, place/move NPCs and containers, set warp destinations, save back to the map file; works for hub, towns, and dungeons
+- [ ] NPC definition file — sprite, default behavior, dialogue tree; referenced by map files by ID
 - [ ] Item YAML — name, description, icon, effects, stack rules
 - [ ] Special abilities YAML — name, MP cost, effect, cooldown, flavor
-- [ ] Visual map editor — place NPCs, containers, and interactive objects on a tile grid
-- [ ] Tileset tooling — import new tilesets, define tile rules visually
+- [ ] Tileset tooling — import new tilesets, tag tiles (passable/impassable/enterable/etc.) visually, export tilerules
 
 ### World & Content
 - [ ] Rethink procgen scope — decide what stays procedural vs. hand-authored for the single-player game (story, scripted towns/dungeons, procgen as supplement not spine)
