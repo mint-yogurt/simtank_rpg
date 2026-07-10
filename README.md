@@ -31,8 +31,9 @@ An 8-bit RPG with two lives: a **shippable single-player game** (itch.io) and a 
 - [x] Warp/exit system designed — runtime warp stack handles nested interiors at arbitrary depth; no YAML needs to know where it was entered from; `"__return__"` target pops back to caller tile (see `engine/map_loader.py` docstring and `data/maps/hub.yaml` comments)
 - [x] `data/maps/hub.yaml` — annotated reference map; all fields documented inline
 - [ ] Tiler / map creator — in-browser tool: paint tiles, place/move NPCs and containers, set warp destinations, export to YAML
-- [ ] NPC definition files (`data/npcs/`) — sprite, behavior, dialogue tree; referenced from map YAML by ID
-- [ ] Item YAML (`data/items/`) — name, description, icon, effects, stack rules
+- [ ] NPC definition YAML (`data/npcs/`) — sprite, behavior, dialogue tree; referenced from map YAML by ID; `ideas` file has character brainstorm
+- [x] Item YAML (`data/items/items.yaml`) — healing, weapons, armour, key items; `ideas` file for brainstorming alongside
+- [ ] Item YAML → engine integration — loader, inventory system, pickup, equip slots, stat effects
 - [ ] Special abilities YAML (`data/abilities/`) — name, MP cost, effect, cooldown, flavor
 - [ ] Tileset tooling — import tilesets, tag tiles visually (passable/impassable/enterable), export tilerules
 
@@ -209,7 +210,9 @@ simtank_rpg/
 │   ├── sprites/            # party_sprites.png + layout text
 │   └── tiles/              # tileset PNGs, tilerules TXT, hub map CSV
 ├── data/
+│   ├── items/              # items.yaml (definitions) + ideas (brainstorm notes)
 │   ├── maps/               # YAML map files (hub.yaml + future authored maps)
+│   ├── npcs/               # future NPC definition YAMLs + ideas (brainstorm notes)
 │   └── party/              # character sheet JSONs
 ├── web/                    # AI-mode SSE viewer (shelved — not primary build target)
 │   ├── server.py           # SSE server + screen/sprite render pipeline

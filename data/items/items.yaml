@@ -1,0 +1,132 @@
+# items.yaml — item definitions for Front House Gaiden
+#
+# Fields:
+#   id:          unique snake_case key referenced by inventory/loot tables
+#   name:        display name
+#   category:    healing | weapon | armour | key
+#   description: one-line flavour text
+#   effect:      for healing — {hp: N} or {mp: N} or both; omit for non-consumables
+#   slot:        for weapon/armour — which equipment slot this fills
+#   stackable:   true for consumables, false for equipment/key items
+#   value:       shop sell price in whatever currency unit we settle on (0 = unsellable)
+
+healing:
+  - id: forgotten_onion
+    name: Forgotten Onion
+    category: healing
+    description: Found it in a coat pocket. Smells like regret.
+    effect: {hp: 30}
+    stackable: true
+    value: 5
+
+  - id: chinese_mana_potion
+    name: Chinese Mana Potion
+    category: healing
+    description: The label is in a language nobody can read.
+    effect: {mp: 20}
+    stackable: true
+    value: 8
+
+  - id: piggled_egg
+    name: Piggled Egg
+    category: healing
+    description: Pickled, probably. Tastes fine.
+    effect: {hp: 15}
+    stackable: true
+    value: 3
+
+  - id: boiled_hotdog
+    name: Boiled Hotdog
+    category: healing
+    description: A classic.
+    effect: {hp: 20}
+    stackable: true
+    value: 4
+
+  - id: goo
+    name: Goo
+    category: healing
+    description: Unidentified but restorative.
+    effect: {hp: 10, mp: 5}
+    stackable: true
+    value: 6
+
+  - id: bag_of_soup
+    name: Bag of Soup
+    category: healing
+    description: Full heal, but you have to eat it out of a bag.
+    effect: {hp: 999}
+    stackable: true
+    value: 50
+
+weapons:
+  - id: broken_q_tip
+    name: Broken Q-Tip
+    category: weapon
+    description: It still has some reach.
+    slot: weapon
+    stackable: false
+    value: 1
+
+  - id: plastic_bat
+    name: Plastic Bat
+    category: weapon
+    description: End-game power. It's hollow but your form is immaculate.
+    slot: weapon
+    stackable: false
+    value: 0
+
+armour:
+  - id: nascar_jacket
+    name: NASCAR Jacket
+    category: armour
+    description: Covered in sponsor patches. Surprisingly protective.
+    slot: armour
+    stackable: false
+    value: 15
+
+  - id: rags
+    name: Rags
+    category: armour
+    description: Used to be a t-shirt.
+    slot: armour
+    stackable: false
+    value: 0
+
+  - id: feline_leggings
+    name: Feline Leggings
+    category: armour
+    description: Cat print. Provides comfort and minor defense.
+    slot: armour
+    stackable: false
+    value: 10
+
+  - id: electric_mammal_medallion
+    name: Electric Mammal Medallion
+    category: armour
+    description: Vibrates faintly.
+    slot: armour
+    stackable: false
+    value: 20
+
+key:
+  - id: shopping_cart
+    name: Shopping Cart
+    category: key
+    description: First faster-travel item. Fits everyone if you squeeze.
+    stackable: false
+    value: 0
+
+  - id: car_keys
+    name: Car Keys
+    category: key
+    description: For the car. Faster travel.
+    stackable: false
+    value: 0
+
+  - id: left_arm_of_the_rasmir
+    name: Left Arm of the Rasmir
+    category: key
+    description: You should probably find the rest of him.
+    stackable: false
+    value: 0
