@@ -1,21 +1,34 @@
-"""WebSocket game server for Front House Gaiden.
+"""WebSocket game server — transport only.
 
-Each connection gets its own independent game state (single player).
-Client sends:  {"type": "key", "key": "ArrowUp"|"ArrowDown"|"ArrowLeft"|"ArrowRight"|...}
-Server sends:  hub_init, hub_move, int_enemies events (same schema as SSE layer).
+Receives key events from the browser, calls the engine, sends events back.
+No game logic lives here; everything goes through engine/.
 
-Run via run_game.py.
+Client → server:  {"type": "key", "key": "ArrowUp"|"ArrowDown"|"ArrowLeft"|"ArrowRight"|...}
+Server → client:  hub_init, hub_move, int_enemies  (same schema the SSE layer uses)
 """
 
 import json
+import random
 from pathlib import Path
 
 from flask import Flask, send_from_directory
 from flask_sock import Sock
 
-from game.hub_player import HubPlayerState
+from engine.config import cfg
+from engine.enemy_state import update_town_npcs
+from engine.player import Player
+from engine.scenes.hub import (
+    _hub_str_grid, _place_hub_npcs, _spawn_positions, load_hub_grid,
+)
 
-_REPO_ROOT  = Path(__file__).parent.parent
+_KEY_TO_DIR = {
+    "ArrowUp":    "N",
+    "ArrowDown":  "S",
+    "ArrowLeft":  "W",
+    "ArrowRight": "E",
+}
+
+_REPO_ROOT   = Path(__file__).parent.parent
 _STATIC_GAME = Path(__file__).parent / "static"
 _STATIC_WEB  = _REPO_ROOT / "web" / "static"
 _SCREENS_DIR = _STATIC_WEB / "screens"
@@ -31,8 +44,6 @@ def index():
 
 @app.route("/static/<path:filename>")
 def static_files(filename):
-    # Game-specific overrides first, then fall back to shared web/static assets
-    # (tilesets, sprites, tilemaps all live there).
     game_path = _STATIC_GAME / filename
     if game_path.exists():
         return send_from_directory(str(_STATIC_GAME), filename)
@@ -47,13 +58,55 @@ def screen_files(filename):
 
 @sock.route("/ws")
 def game_ws(ws):
-    from web.server import get_hub_tile_payload   # reuse existing tileset renderer
-    payload = get_hub_tile_payload()
+    from web.server import get_hub_tile_payload   # reuses existing tileset renderer
 
-    state = HubPlayerState()
-    for event in state.init_events(payload["tileset_url"], payload["tile_grid"]):
+    # ── Load map via engine ───────────────────────────────────────────────────
+    grid     = load_hub_grid()
+    str_grid = _hub_str_grid(grid)
+    rows     = len(grid)
+    cols     = len(grid[0]) if grid else 0
+
+    spawns = _spawn_positions(grid)
+    player = Player(name="MELVIN", row=spawns[0][0], col=spawns[0][1])
+
+    npcs    = _place_hub_npcs(grid)[0]
+    npc_rng = random.Random(0x4875624E5043)
+    tick    = 0
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _send(event: dict):
         ws.send(json.dumps(event))
 
+    def _npc_event() -> dict:
+        return {
+            "type": "int_enemies",
+            "enemies": [
+                {
+                    "index":      n.index + 1000,
+                    "row":        n.row,
+                    "col":        n.col,
+                    "npc_sprite": n.npc_sprite,
+                    "name":       "NPC",
+                    "anim_ms":    500,
+                }
+                for n in npcs
+            ],
+        }
+
+    # ── Initial state ─────────────────────────────────────────────────────────
+    payload = get_hub_tile_payload()
+    _send({
+        "type":        "hub_init",
+        "rows":        rows,
+        "cols":        cols,
+        "tileset_url": payload["tileset_url"],
+        "tile_grid":   payload["tile_grid"],
+        "party":       [{"name": player.name, "row": player.row, "col": player.col}],
+        "config":      {"player_move_ms": cfg.player_move_ms},
+    })
+    _send(_npc_event())
+
+    # ── Input loop ────────────────────────────────────────────────────────────
     while True:
         msg = ws.receive()
         if msg is None:
@@ -63,6 +116,22 @@ def game_ws(ws):
         except (json.JSONDecodeError, TypeError):
             continue
 
-        if data.get("type") == "key":
-            for event in state.handle_key(data.get("key", "")):
-                ws.send(json.dumps(event))
+        if data.get("type") != "key":
+            continue
+
+        direction = _KEY_TO_DIR.get(data.get("key", ""))
+        if not direction or not player.can_move():
+            continue
+
+        if player.try_move(direction, str_grid):
+            tick += 1
+            npcs = update_town_npcs(npcs, str_grid, npc_rng)
+            _send({
+                "type":      "hub_move",
+                "name":      player.name,
+                "row":       player.row,
+                "col":       player.col,
+                "direction": direction,
+                "tick":      tick,
+            })
+            _send(_npc_event())

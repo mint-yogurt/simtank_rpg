@@ -11,27 +11,30 @@ An 8-bit RPG with two lives: a **shippable single-player game** (itch.io) and a 
 *Draft — order and grouping subject to revision.*
 
 ### Input & Core Game Loop
-- [x] WebSocket game server (bidirectional; basis for all player input)
+- [x] WebSocket game server (`game/server.py`) — transport only; all game logic in engine
 - [x] Keyboard input: arrow keys (move), Z (B button), X (X button), Enter (start/confirm)
-- [ ] Player character entity — proper architecture (position, facing, state machine, interaction radius) done the way a real game engine would do it; not bolted onto the AI party model
+- [x] Player character entity (`engine/player.py`) — `Player` with `PlayerState` machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()`, `adjacent_interactable()`, serialise/deserialise; wired to config and used directly by the WebSocket server
+- [x] Config-driven movement speed — `player_move_ms` in `config.json`; stamped into `hub_init` event so client timing matches server config with no JS constants
 - [ ] Bluetooth / USB controller support (browser Gamepad API)
 - [ ] Title screen
 - [ ] In-game menu system (pause, save, settings)
 - [ ] Save/load through menu
 
 ### Debug & Testing Screens
-- [x] `maptest.py hub` — player-controlled Melvin, collision, NPC animation
-- [ ] Debug screen loader — select hub, cave, or town from a list; load hand-authored maps by filename, not just random seeds; hot-reload without restarting server
-- [ ] Debug overlay — toggle tile passability grid, NPC index labels, player coords, FPS
-- [ ] Cave and town debug screens — spawn in any procgen or pre-made interior the same way hub works now
+- [x] `maptest.py hub` — loads hub via engine directly (`engine/player.py`, `engine/scenes/hub.py`); player-controlled Melvin, passability collision, NPC animation; `game/server.py` is transport only, no duplicate game logic
+- [ ] Debug screen loader — pick any map file by name, load it into the running server without restart; works for hub, procgen cave/town, and hand-authored YAML maps
+- [ ] Debug overlay — toggle tile passability grid, NPC index/behavior labels, player tile coords, FPS counter
+- [ ] Cave and town debug screens — same pattern as hub; spawn player in any interior
 
 ### Content Authoring Tools
-- [ ] Map file format — simple, human-readable (YAML or TOML); defines tile layout, NPC placements, container positions, warp points; engine reads it directly into the DB at load time
-- [ ] Tiler / map creator — in-browser tool: paint tiles from the active tileset, place/move NPCs and containers, set warp destinations, save back to the map file; works for hub, towns, and dungeons
-- [ ] NPC definition file — sprite, default behavior, dialogue tree; referenced by map files by ID
-- [ ] Item YAML — name, description, icon, effects, stack rules
-- [ ] Special abilities YAML — name, MP cost, effect, cooldown, flavor
-- [ ] Tileset tooling — import new tilesets, tag tiles (passable/impassable/enterable/etc.) visually, export tilerules
+- [x] Map file format — YAML (`data/maps/`); tileset, palette, NPC placements, warp points, spawn; engine reads directly via `engine/map_loader.py`; DB stores only mutable runtime state (flags, opened chests), never the tile layout
+- [x] Warp/exit system designed — runtime warp stack handles nested interiors at arbitrary depth; no YAML needs to know where it was entered from; `"__return__"` target pops back to caller tile (see `engine/map_loader.py` docstring and `data/maps/hub.yaml` comments)
+- [x] `data/maps/hub.yaml` — annotated reference map; all fields documented inline
+- [ ] Tiler / map creator — in-browser tool: paint tiles, place/move NPCs and containers, set warp destinations, export to YAML
+- [ ] NPC definition files (`data/npcs/`) — sprite, behavior, dialogue tree; referenced from map YAML by ID
+- [ ] Item YAML (`data/items/`) — name, description, icon, effects, stack rules
+- [ ] Special abilities YAML (`data/abilities/`) — name, MP cost, effect, cooldown, flavor
+- [ ] Tileset tooling — import tilesets, tag tiles visually (passable/impassable/enterable), export tilerules
 
 ### World & Content
 - [ ] Rethink procgen scope — decide what stays procedural vs. hand-authored for the single-player game (story, scripted towns/dungeons, procgen as supplement not spine)
