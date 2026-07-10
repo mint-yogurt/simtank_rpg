@@ -35,6 +35,7 @@ def _load() -> SimpleNamespace:
         # Display geometry
         tile_px                  = display["tile_px"],
         scale                    = display["scale"],
+        pygame_scale             = display["pygame_scale"],
         view_cols                = display["view_cols"],
         view_rows                = display["view_rows"],
 

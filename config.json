@@ -17,6 +17,7 @@
   "display": {
     "tile_px": 16,
     "scale": 3,
+    "pygame_scale": 3,
     "view_cols": 16,
     "view_rows": 14
   },
