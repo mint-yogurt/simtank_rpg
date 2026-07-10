@@ -1,0 +1,122 @@
+# Front House — hub map
+# Authoritative source for static layout.  Edit here, reload to see changes.
+# Runtime state (NPC flags, opened chests) lives in the DB, not here.
+
+name: "Front House"
+
+# Which tileset the renderer uses for this map.
+# Must match a key the canvas renderer knows: "town" | "cave" | "overworld"
+tileset: town
+
+# Palette override: list of [r, g, b] triples, one per swap slot the tileset
+# supports.  null = use the tileset's default colours.
+palette: null
+
+# Where the player spawns when entering this map without a warp override.
+# Used when loading the map fresh (e.g. game start, or returning from overworld).
+# Row, col — zero-indexed from top-left.
+spawn: [9, 6]
+
+# ── Tile grid ─────────────────────────────────────────────────────────────────
+# 2-D array of tile name strings.  Names must exist in the tileset's tilerules.
+# Two-element arrays [ground, overlay] composite a transparent overlay tile
+# on top of a ground tile (same as how town interiors already work).
+#
+# This map currently delegates to the engine's existing CSV loader for the hub
+# layout (hub_map_coords_bracketed.csv).  When the map editor is built, this
+# section will be the generated output.
+#
+# TODO: replace with a real inline grid once the map editor can write it.
+tiles: []
+tiles_source: "web/static/tiles/hub_map_coords_bracketed.csv"   # legacy bridge
+
+# ── NPCs ─────────────────────────────────────────────────────────────────────
+# Each entry spawns one NPC instance on this map.
+# npc_id: references a future data/npcs/<id>.yaml definition file.
+#         For now it also doubles as the sprite key (npc01–npc08).
+# behavior: static | wander | pace
+# dialogue: ID of a dialogue tree (future); null = no interaction yet
+npcs:
+  - npc_id: npc02
+    row: 3
+    col: 12
+    behavior: static
+    facing: S
+    dialogue: null    # healer — dialogue to be defined
+
+  - npc_id: npc01
+    row: 6
+    col: 4
+    behavior: wander
+    facing: S
+    dialogue: null
+
+  - npc_id: npc05
+    row: 8
+    col: 10
+    behavior: pace
+    facing: E
+    dialogue: null
+
+  - npc_id: npc08
+    row: 2
+    col: 7
+    behavior: static
+    facing: S
+    dialogue: null
+
+# ── Warps ─────────────────────────────────────────────────────────────────────
+# A warp tile transitions the player to another map when stepped on.
+#
+# target values:
+#   "__return__"       — pop the engine's warp stack (standard exit tile)
+#   "maps/foo.yaml"    — push current position and load foo.yaml at its spawn
+#
+# target_row / target_col (optional): override the spawn point in the target
+# map.  Omit to use the target map's default spawn.
+#
+# The warp stack handles nested interiors automatically:
+#   overworld → [enter town]   push (overworld, tile)
+#   town      → [enter house]  push (town, tile)
+#   house     → [exit]         pop  → back to the town tile they came from
+#   town      → [exit]         pop  → back to the overworld tile they came from
+#
+# NOTE: the entry tile coming IN from the overworld and the exit tile going
+# BACK to the overworld are different concepts:
+#   - The overworld's warp tile points to this map ("maps/hub.yaml").
+#   - This map's exit warp uses "__return__" so it pops back to wherever
+#     the player was on the overworld — no hardcoded coordinate needed here.
+#
+# OPEN QUESTION: interiors within maps (e.g. a house inside this town).
+#   When the player enters house_a from the hub:
+#     - Push (hub, door_tile) onto the stack.
+#     - Load house_a.yaml at house_a's spawn.
+#   When the player exits house_a:
+#     - The exit warp is "__return__".
+#     - Pop → land back on the door_tile in the hub.
+#   This is transparent to both YAML files; neither needs to know about the
+#   other's coordinates.  The engine warp stack is the only thing that
+#   remembers the return address.
+#   Still to design: how the engine stores and serialises the warp stack
+#   for save/load, and how it handles edge cases (warp into a warp tile,
+#   party-wipe mid-interior, etc.).
+warps:
+  # Bottom edge — exit to overworld
+  - row: 13
+    col: 8
+    target: "__return__"
+    label: "Hub south exit"
+
+  # Example interior warp (placeholder — house_a.yaml does not exist yet)
+  # - row: 4
+  #   col: 7
+  #   target: "maps/house_a.yaml"
+  #   label: "House A door"
+
+# ── Meta ──────────────────────────────────────────────────────────────────────
+# Freeform key/value pairs the engine or editor can read.
+# Not interpreted by the loader — just passed through in MapData.meta.
+meta:
+  music: null
+  outdoor: true
+  lighting: full
