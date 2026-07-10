@@ -118,19 +118,42 @@ All three generators have a data/render split: `generate_*_data(seed)` returns a
 
 **Cave/dungeon (`procgen/cavegen.py`)** — Up to 8 rooms, two flavours (cave: cobble/cave walls; dungeon: brick/dungfloor). Rooms connected by L-shaped/zig-zag hallways. Water pools, waterfalls, scatter. 3-colour NES palette.
 
-### Web Renderer
+### Game Client (`game/`)
 
-Canvas-based tile renderer in `web/static/app.js`. Draws scenes from a live tile-ID grid. Viewport: 16×14 tiles at 16px × 3× scale (48px drawn). Camera lerps to follow the party. Sprite movement interpolated over `move_ms` with a 2-frame walk cycle.
+WebSocket server + minimal browser client for player-controlled debug and testing. This is a **temporary bridge** — the plan is to replace the browser canvas with a pygame renderer that runs locally.
 
-Sprites: party sheet (4 members × 8 directions × 2 frames), NPC/enemy sheet, per-enemy recolored palette strips. Follow-the-leader formation: leader at current pos, followers trail 1 tile each.
+- `game/server.py` — transport only; receives key events from the browser, calls engine, sends events back. No game logic.
+- `game/static/` — throwaway HTML/JS canvas renderer for browser testing; will be replaced by pygame.
 
-Currently driven by SSE (one-directional, engine → browser). **Replacing with WebSocket** is the first infrastructure item on the roadmap — required for player input.
-
-**Running the current web viewer:**
+**Running the player-controlled game:**
 ```
 source .venv/bin/activate
-python run_web.py       # starts SSE server + AI loop; open localhost:5000
-python run_cli.py       # text output only, no browser needed
+python maptest.py       # → pick "hub"; opens player-controlled Melvin at localhost:8765
+```
+
+### Asset Layout
+
+Binary game assets live under `assets/` — shared by both the pygame renderer (planned) and the browser debug frontend. The web layer does not own these files.
+
+```
+assets/
+├── fonts/    — ModernDOS8x8.ttf
+├── sprites/  — party_sprites.png + layout text
+└── tiles/    — tileset PNGs, tilerules TXT files, hub map CSV
+```
+
+`web/static/` holds only web-specific generated JSON (tilemap indices) and the AI-mode SSE viewer. It is shelved pending pygame.
+
+### SSE Web Viewer (AI mode — shelved)
+
+Canvas-based tile renderer in `web/static/app.js`. Draws scenes from a live tile-ID grid. Viewport: 16×14 tiles at 16px × 3× scale (48px drawn). Sprite movement interpolated over `move_ms` with a 2-frame walk cycle. Sprites: party sheet (4 members × 8 directions × 2 frames), NPC/enemy sheet, per-enemy recolored palette strips.
+
+One-directional: engine → browser via Server-Sent Events. No game logic in JS. Not the primary build target; kept for the AI-mode stream.
+
+```
+source .venv/bin/activate
+python run_web.py       # AI mode: SSE server + autonomous party loop; localhost:5000
+python run_cli.py       # AI mode: text output only, no browser
 ```
 
 ### Viewscan (`engine/viewscan.py`)
@@ -148,6 +171,8 @@ One global seeded RNG, seed logged at run start. All randomness is engine-side. 
 ```
 simtank_rpg/
 ├── engine/
+│   ├── player.py           # Player entity; PlayerState machine; try_move, serialise
+│   ├── map_loader.py       # YAML map loader → MapData, WarpPoint, NpcPlacement
 │   ├── battle.py           # battle loop; run_battle() — emit= hooks for renderer
 │   ├── combat.py           # stat math, hit/crit/parry/damage resolution
 │   ├── config.py           # config singleton (config.json)
@@ -165,7 +190,10 @@ simtank_rpg/
 │   └── scenes/
 │       ├── hub.py          # Front House scene
 │       └── interior.py     # cave + town interior scene class
-├── llm/
+├── game/                   # WebSocket server + browser debug client (temporary)
+│   ├── server.py           # transport only — keys in, events out; no game logic
+│   └── static/             # throwaway browser canvas; will be replaced by pygame
+├── llm/                    # LLM mode only — not used by single-player path
 │   ├── client.py           # provider-agnostic LLM call; ask_with_retry
 │   ├── schema.py           # response parsers; action validation
 │   ├── prompts.py          # all prompt builders
@@ -176,18 +204,21 @@ simtank_rpg/
 │   ├── worldgen.py         # overworld screen generator
 │   ├── cavegen.py          # cave/dungeon interior generator
 │   └── towngen.py          # town interior generator
+├── assets/                 # binary game assets — shared across all renderers
+│   ├── fonts/              # ModernDOS8x8.ttf
+│   ├── sprites/            # party_sprites.png + layout text
+│   └── tiles/              # tileset PNGs, tilerules TXT, hub map CSV
 ├── data/
+│   ├── maps/               # YAML map files (hub.yaml + future authored maps)
 │   └── party/              # character sheet JSONs
-├── web/
+├── web/                    # AI-mode SSE viewer (shelved — not primary build target)
 │   ├── server.py           # SSE server + screen/sprite render pipeline
-│   └── static/
-│       ├── app.js          # canvas renderer, sprite animation, SSE event handlers
-│       ├── index.html
-│       └── tiles/          # tilesets + tilerules files
+│   ├── gen_tilemaps.py     # generate tilemap JSONs from tilerules (run once)
+│   └── static/             # app.js SSE renderer, generated tilemap JSONs
 ├── overworld_loop.py       # AI mode: goal-driven navigation loop (LLM)
-├── run_cli.py              # dev runner (text output)
+├── run_cli.py              # AI mode runner (text output)
 ├── run_web.py              # AI mode runner (SSE web server)
-├── maptest.py              # map debug tool (no party, no LLM)
+├── maptest.py              # debug entry point — hub/cave/town screens, player-controlled
 ├── secrets.py              # API keys (gitignored)
 └── config.json             # pacing, display geometry, tunable params
 ```
@@ -198,12 +229,17 @@ simtank_rpg/
 
 ```bash
 source .venv/bin/activate
-python run_cli.py       # AI mode, text output
-python run_web.py       # AI mode, browser at localhost:5000
-python run_cli.py hub   # force fresh start at Front House
+
+# Single-player debug (primary)
+python maptest.py           # pick hub → player-controlled Melvin; localhost:8765
+
+# AI mode (shelved — needs API keys in secrets.py)
+python run_cli.py           # text output, no browser
+python run_web.py           # SSE web viewer; localhost:5000
+python run_cli.py hub       # force fresh start at Front House
 ```
 
-All dependencies (including Pillow) are in `.venv/`. `secrets.py` holds API keys and is gitignored — it shadows Python's stdlib `secrets` module intentionally.
+All dependencies (including Pillow and flask-sock) are in `.venv/`. `secrets.py` holds API keys and is gitignored — it shadows Python's stdlib `secrets` module intentionally.
 
 ---
 
