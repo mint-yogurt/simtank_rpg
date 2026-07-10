@@ -59,8 +59,8 @@ let npcs   = [];   // [{index, row, col, npc_sprite, anim_ms}]
 let camRow = 0;
 let camCol = 0;
 
-// ── Animation ─────────────────────────────────────────────────────────────────
-const ANIM_MS = 120;   // ms per tile step (matches key-repeat rate)
+// ── Timing (overwritten by hub_init config payload) ───────────────────────────
+let ANIM_MS = 220;   // ms per tile — replaced at runtime from server config
 
 // Per-character animation state
 const anims = new Map();  // name → {srcRow, srcCol, dstRow, dstCol, facing, t0}
@@ -237,6 +237,12 @@ function redraw() { redrawAt(performance.now()); }
 
 // ── Event handlers ────────────────────────────────────────────────────────────
 function onHubInit(e) {
+    // Apply server-side config before anything else
+    if (e.config) {
+        ANIM_MS = e.config.player_move_ms ?? ANIM_MS;
+        REPEAT_INTERVAL_MS = ANIM_MS;   // key repeat in lock-step with animation
+    }
+
     mapRows = e.rows;
     mapCols = e.cols;
     tileGrid = e.tile_grid || null;
@@ -255,7 +261,7 @@ function onHubInit(e) {
         img.src = e.tileset_url;
     }
     statusEl.textContent = "Front House — use arrow keys to move";
-    log("event", `hub_init ${e.rows}×${e.cols}`);
+    log("event", `hub_init ${e.rows}×${e.cols}  move_ms=${ANIM_MS}`);
 }
 
 function onHubMove(e) {
@@ -330,7 +336,9 @@ const ACTION_KEYS = new Set(["z", "Z", "x", "X", "Enter"]);
 
 const heldKeys = new Set();
 let repeatTimer = null;
-const REPEAT_INTERVAL_MS = 130;   // ~7.7 tiles/sec while held
+// Repeat interval is driven by ANIM_MS so held-key speed matches animation.
+// Recalculated in onHubInit once server config arrives.
+let REPEAT_INTERVAL_MS = 220;
 
 function startRepeat() {
     if (repeatTimer !== null) return;

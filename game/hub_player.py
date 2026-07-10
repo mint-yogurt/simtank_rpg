@@ -6,6 +6,7 @@ No LLM, no voting — pure input → state → event.
 
 import random
 
+from engine.config import cfg
 from engine.enemy_state import update_town_npcs
 from engine.scenes.hub import (
     load_hub_grid, _hub_str_grid, _spawn_positions, _place_hub_npcs,
@@ -45,6 +46,9 @@ class HubPlayerState:
                 "tileset_url": tileset_url,
                 "tile_grid": tile_grid,
                 "party": [{"name": "MELVIN", "row": self.row, "col": self.col}],
+                "config": {
+                    "player_move_ms": cfg.player_move_ms,
+                },
             },
             self._npc_event(),
         ]
