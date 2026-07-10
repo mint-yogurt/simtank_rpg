@@ -3,19 +3,29 @@
     python maptest.py
 
 Prompts for: cave / town / hub
-Generates the chosen map and displays it in the normal web viewer at
-http://localhost:8765/ with no party members and no LLM calls.
+
+cave / town — SSE viewer, no party, no LLM.
+hub         — WebSocket game server with player-controlled Melvin.
+              Arrow keys move, collision works, NPCs animate.
+              Open http://localhost:8765/ in your browser.
 """
 
 import random
 import sys
 import threading
 
-from web.server import app, broadcast
-
 
 def main():
     choice = input("cave / town / hub? ").strip().lower()
+
+    if choice == "hub":
+        from game.server import app as game_app
+        print("Starting hub (player mode) → http://localhost:8765/", flush=True)
+        print("Arrow keys: move  |  Z: confirm  |  X: cancel", flush=True)
+        game_app.run(host="0.0.0.0", port=8765, threaded=True, use_reloader=False)
+        return
+
+    from web.server import app, broadcast
 
     seed = random.randint(0, 2 ** 32 - 1)
 
@@ -27,10 +37,6 @@ def main():
         from tests.test_town import run_town_test
         target = lambda: run_town_test(seed, broadcast)
         label = f"town  seed={seed}"
-    elif choice == "hub":
-        from tests.test_hub import run_hub_test
-        target = lambda: run_hub_test(broadcast)
-        label = "hub (static)"
     else:
         print(f"Unknown choice {choice!r}. Use: cave, town, or hub")
         sys.exit(1)
