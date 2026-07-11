@@ -12,11 +12,10 @@ from pathlib import Path
 import pygame
 
 from engine.config import cfg
-from engine.enemy_state import update_town_npcs
+from engine.enemy_state import place_hub_npcs, update_town_npcs
+from engine.input import HeldDirectionInput
+from engine.map_loader import hub_spawn_point, hub_str_grid, load_hub_grid
 from engine.player import Player
-from engine.scenes.hub import (
-    _hub_str_grid, _place_hub_npcs, _spawn_positions, load_hub_grid,
-)
 from pygame_viewer.sprites import get_npc_frame, get_party_frame, load_sprites
 from pygame_viewer.tileset import get_tile, load_tileset
 
@@ -87,10 +86,10 @@ def run_hub_pygame(scale: int | None = None) -> None:
     pygame.display.set_caption(_TITLE)
     screen = pygame.Surface((_VIEW_W, _VIEW_H))  # native-res render target
 
-    # No OS key repeat — held-key repeat is driven ourselves below so that only
-    # one cardinal direction is ever stepped per tick (see held_dirs), never two
-    # at once. Two independent per-key OS repeats firing in the same frame is
-    # what produced diagonal-looking moves before.
+    # No OS key repeat — held-key repeat is driven by engine.input.HeldDirectionInput
+    # so that only one cardinal direction is ever stepped per tick, never two at
+    # once. Two independent per-key OS repeats firing in the same frame is what
+    # produced diagonal-looking moves before.
 
     # ── load assets ───────────────────────────────────────────────────────────
     print('Loading tileset...', flush=True)
@@ -100,13 +99,12 @@ def run_hub_pygame(scale: int | None = None) -> None:
 
     # ── load hub state ────────────────────────────────────────────────────────
     grid     = load_hub_grid()
-    str_grid = _hub_str_grid(grid)
-    npcs, _  = _place_hub_npcs(grid)
+    str_grid = hub_str_grid(grid)
+    npcs, _  = place_hub_npcs(grid)
     npc_rng  = random.Random(0x4875624E5043)
 
-    spawns = _spawn_positions(grid)
     player = Player.default()
-    player.row, player.col = spawns[0]   # MELVIN at first spawn slot
+    player.row, player.col = hub_spawn_point(grid)
 
     print(f'Hub: {len(grid)}r × {len(grid[0])}c  |  '
           f'player spawn ({player.row},{player.col})  |  '
@@ -127,11 +125,9 @@ def run_hub_pygame(scale: int | None = None) -> None:
     player_tween_elapsed = _PLAYER_MOVE_MS
     player_vis_row, player_vis_col = player_tween_src
 
-    # Held movement keys, in press order (most recent last). Only held_dirs[-1]
-    # is ever stepped — "last pressed wins" — so N/S/E/W never combine into a
-    # diagonal, matching the browser viewer's input model (game/static/game.js).
-    held_dirs: list[str] = []
-    move_repeat_ms       = 0   # ms accumulator for auto-repeat while a key is held
+    # Held-key resolution ("last pressed wins", never a diagonal) lives in
+    # engine/input.py — this is a pure decision, not a rendering concern.
+    input_state = HeldDirectionInput(repeat_ms=_PLAYER_MOVE_MS)
 
     def _step_player(direction: str) -> None:
         nonlocal player_tween_src, player_tween_dst, player_tween_elapsed
@@ -169,20 +165,12 @@ def run_hub_pygame(scale: int | None = None) -> None:
                     running = False
                     continue
                 direction = _DIR_KEY.get(event.key)
-                if direction and direction not in held_dirs:
-                    held_dirs.append(direction)
-                    # Force the repeat block below to fire this same frame (an
-                    # "immediate step" on press) without calling _step_player here
-                    # directly — if two new direction keys land in the same frame,
-                    # only one step must happen this tick, or their two rebases
-                    # would combine into a diagonal glide (row and col both
-                    # changing in one tween). Routing through the single repeat
-                    # block keeps it to exactly one step, choosing held_dirs[-1].
-                    move_repeat_ms = _PLAYER_MOVE_MS
+                if direction:
+                    input_state.press(direction)
             elif event.type == pygame.KEYUP:
                 direction = _DIR_KEY.get(event.key)
-                if direction and direction in held_dirs:
-                    held_dirs.remove(direction)
+                if direction:
+                    input_state.release(direction)
 
         # ── NPC animation flip ────────────────────────────────────────────────
         anim_timer += dt
@@ -208,13 +196,9 @@ def run_hub_pygame(scale: int | None = None) -> None:
             npc_move_timer -= _NPC_MOVE_MS
 
         # ── held-key auto-repeat ─────────────────────────────────────────────
-        if held_dirs:
-            move_repeat_ms += dt
-            if move_repeat_ms >= _PLAYER_MOVE_MS:
-                move_repeat_ms -= _PLAYER_MOVE_MS
-                _step_player(held_dirs[-1])   # most recently pressed direction wins
-        else:
-            move_repeat_ms = 0
+        direction = input_state.tick(dt)
+        if direction:
+            _step_player(direction)
 
         # ── advance in-flight tweens ─────────────────────────────────────────
         player_tween_elapsed = min(player_tween_elapsed + dt, _PLAYER_MOVE_MS)

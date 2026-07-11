@@ -40,6 +40,7 @@ map editor workflow.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -180,3 +181,111 @@ def load_map(path: str | Path) -> MapData:
         warps     = warps,
         meta      = raw.get("meta", {}),
     )
+
+
+# ── CSV + tilerules loader (current hub map format) ────────────────────────────
+#
+# The hub map isn't authored as YAML yet — it's a raw CSV of tileset-sheet
+# coordinates plus a tilerules text file mapping those coordinates to tile
+# names. This is the format actually in use today; the YAML loader above is
+# for future authored maps and isn't wired into any scene yet.
+
+_HUB_CSV    = _REPO_ROOT / 'assets' / 'tiles' / 'hub_map_coords_bracketed.csv'
+_TOWN_RULES = _REPO_ROOT / 'assets' / 'tiles' / 'tiles_town_rules.txt'
+
+
+def _parse_coord_to_name(rules_path: Path) -> dict:
+    """Build {(tileset_col, tileset_row): (tilename, is_transparentbg)} from town tilerules."""
+    result = {}
+    with open(rules_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+            eq = line.index('=')
+            key = line[:eq].strip()
+            rest = line[eq + 1:]
+            if '#' in rest:
+                rest = rest[:rest.index('#')]
+            try:
+                col_str, row_str = key.split(',')
+                tc, tr = int(col_str.strip()), int(row_str.strip())
+            except ValueError:
+                continue
+            parts = [p.strip().rstrip('_').replace(' ', '') for p in rest.split(',')]
+            name = parts[0]
+            if name:
+                transparent = 'transparentbg' in parts
+                result[(tc, tr)] = (name, transparent)
+    return result
+
+
+def load_hub_coords() -> list[list[tuple[int, int]]]:
+    """Return raw tile-sheet coords: grid[row][col] = (tileset_col, tileset_row)."""
+    coords: list[list[tuple[int, int]]] = []
+    with open(_HUB_CSV) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row: list[tuple[int, int]] = []
+            for m in re.finditer(r'\[(\d+),(\d+)\]', line):
+                row.append((int(m.group(1)), int(m.group(2))))
+            if row:
+                coords.append(row)
+    return coords
+
+
+def load_hub_grid() -> list[list]:
+    """Parse hub CSV into grid[row][col] of tile name strings.
+
+    Transparentbg tiles are returned as [ground, overlay] so the renderer
+    composites them over grass. Unknown coords are skipped (render nothing)
+    rather than replaced with grass.
+    """
+    coord_to_name = _parse_coord_to_name(_TOWN_RULES)
+    coords = load_hub_coords()
+    grid: list[list] = []
+    unknowns: list[tuple[int, int]] = []
+    for coord_row in coords:
+        row: list = []
+        for (tc, tr) in coord_row:
+            entry = coord_to_name.get((tc, tr))
+            if entry:
+                name, transparent = entry
+                row.append(['grass1', name] if transparent else name)
+            else:
+                row.append('grass1')
+                unknowns.append((tc, tr))
+        grid.append(row)
+    if unknowns:
+        unique = sorted(set(unknowns))
+        print(f"  [map_loader] unknown hub tile coords (no label in rules): {unique}", flush=True)
+    return grid
+
+
+def hub_str_grid(grid: list) -> list[list[str]]:
+    """Return a string-only grid suitable for passability checks.
+
+    Hub cells can be lists ['grass1', 'overlay_name'] for transparent tiles.
+    The overlay (last element) determines passability, not the ground beneath.
+    """
+    result = []
+    for row in grid:
+        r = []
+        for cell in row:
+            r.append(cell[-1] if isinstance(cell, list) else cell)
+        result.append(r)
+    return result
+
+
+def hub_spawn_point(grid: list) -> tuple[int, int]:
+    """Player spawn tile: a few rows up from the bottom edge, centered.
+
+    Keeping the spawn off the bottom edge avoids an immediate map-edge
+    collision on the very first step if the player moves south.
+    """
+    bottom_row = len(grid) - 1
+    spawn_row = max(bottom_row - 4, 0)
+    cols = len(grid[0]) if grid else 16
+    return (spawn_row, cols // 2)

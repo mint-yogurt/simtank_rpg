@@ -1,5 +1,5 @@
 {
-  "_comment": "Master game config. LLM provider lives in secrets.py, not here.",
+  "_comment": "Master game config.",
 
   "pacing": {
     "move_ms": 400,

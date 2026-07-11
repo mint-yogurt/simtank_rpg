@@ -14,6 +14,7 @@ import json
 import random
 from dataclasses import dataclass, field
 
+from engine.map_loader import hub_str_grid
 from engine.tiles import is_passable
 
 _DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # N S W E as (drow, dcol)
@@ -180,6 +181,72 @@ def place_enemies(db_rows, grid, seed):
         ))
 
     return agents
+
+
+# =============================================================================
+# HUB NPC PLACEMENT
+# =============================================================================
+#
+# Fixed hub NPC definitions — indices are stable (healer always 0).
+# No palette swap: these are drawn straight from the base sprite sheet.
+_HUB_NPC_DEFS = [
+    {"npc_sprite": "npc02", "behavior_type": 3, "behavior_axis": None},  # healer, static
+    {"npc_sprite": "npc01", "behavior_type": 1, "behavior_axis": None},  # wanderer
+    {"npc_sprite": "npc05", "behavior_type": 2, "behavior_axis": "H"},   # pacer
+    {"npc_sprite": "npc08", "behavior_type": 3, "behavior_axis": None},  # static
+]
+
+
+def _find_hub_healer_spawn(grid: list) -> tuple[int, int] | None:
+    """Scan hub grid for the healerHutwallMid tile; return (row, col) or None."""
+    for r, row in enumerate(grid):
+        for c, cell in enumerate(row):
+            name = cell[-1] if isinstance(cell, list) else cell
+            if name == 'healerHutwallMid':
+                return (r, c)
+    return None
+
+
+def place_hub_npcs(grid: list) -> tuple[list[EnemyAgent], list[list[str]]]:
+    """Place hub NPCs deterministically. Returns (agents, str_grid).
+
+    Healer (npc02) always goes to healerHutwallMid (impassable tile — player
+    can never step there). Others are placed on walkable tiles using a fixed
+    seed so positions are the same every run.
+    """
+    str_grid = hub_str_grid(grid)
+    healer_pos = _find_hub_healer_spawn(grid)
+
+    walkable = [
+        (r, c)
+        for r in range(len(str_grid))
+        for c in range(len(str_grid[0]))
+        if is_passable(str_grid[r][c])
+    ]
+
+    rng = random.Random(0x4875624E5043)  # stable seed: "HubNPC" in hex
+    rng.shuffle(walkable)
+    spare = list(walkable)
+
+    agents = []
+    spare_idx = 0
+    for i, defn in enumerate(_HUB_NPC_DEFS):
+        if defn["npc_sprite"] == "npc02" and healer_pos:
+            row, col = healer_pos
+        else:
+            row, col = spare[spare_idx]
+            spare_idx += 1
+        agents.append(EnemyAgent(
+            index=i,
+            row=row, col=col,
+            behavior_type=defn["behavior_type"],
+            behavior_axis=defn["behavior_axis"],
+            pace_dir=1,
+            activated=False,
+            npc_sprite=defn["npc_sprite"],
+            name="NPC",
+        ))
+    return agents, str_grid
 
 
 # =============================================================================

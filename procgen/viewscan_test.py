@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.tiles import is_enterable, is_passable
 from engine.viewscan import _DIRS, scan
-from llm.ascii_map import render_map_overlay
 from procgen.worldgen import generate_screen_data
 
 WORLD_SEED = 77777
@@ -172,8 +171,6 @@ def test_real_screen(sx=0, sy=0):
         vs = scan(grid, party_col=pc, party_row=pr, feature_cells=data.feature_cells)
 
         print(f"\n  [{tag}]  party col={pc} row={pr}  tile={tile_name!r}")
-        print(render_map_overlay(grid, rows, cols, vs))
-        print()
 
         for label in ('N', 'S', 'E', 'W'):
             ds = getattr(vs, label)
