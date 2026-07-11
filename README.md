@@ -4,9 +4,97 @@ An 8-bit RPG, developed entirely locally through a pygame renderer. Single-playe
 
 ---
 
+## Content Pipeline
+
+Two tools produce all game content. The engine's job is to **interpret** what they produce — maps and data files contain references, not gameplay logic.
+
+| Content | Authored in | Format | Consumed by |
+|---|---|---|---|
+| Maps (tile layers, collision, object placement) | **Tiled** | JSON export | `engine/renderer.py` |
+| Items, NPCs, dialogue, event flags, abilities | Hand-edited | **YAML** | `engine/` data loaders |
+
+We are **not** building our own tile/map editor — Tiled is the map tool, full stop. Map loading and rendering are **one consolidated file**, `engine/renderer.py` — not split across multiple modules. This was a deliberate call, twice over: don't recreate an `engine/map_loader.py`, and don't recreate a separate `pygame_viewer/` package either (that split existed briefly and was removed).
+
+### Maps (Tiled → JSON)
+
+A map authored in Tiled and exported to JSON contains:
+
+- Tile layer(s) — graphics
+- Collision layer(s)
+- Object layer — spawn points, NPCs, triggers, warps
+
+Object layer entries are references only, e.g.:
+
+```
+NPC     id: old_man        sprite: old_man        logic: old_man_logic
+Trigger script: castle_gate
+Warp    destination_map: castle_entrance   spawn: south_gate
+```
+
+The engine loads the map, walks the object layer, and instantiates the right Python object per `type`. No gameplay logic is ever embedded in the map file itself.
+
+**Current state:** the hub (`data/maps/hub_fronthouse.json`) is the first map built this way and the only one that exists — `engine/renderer.py` reads its tile layers plus the sibling tileset property export (`assets/tiles/tiles_town.json`, matched by basename) to resolve per-tile passability from a `walkable` bool property, and renders it with a camera that follows the player, clamped to map edges. The old hand-rolled CSV+tilerules loader and the draft YAML `MapData` loader are gone entirely — there is no `engine/map_loader.py` anymore. What's still missing: the map's **object layer** (`NPC`/`Trigger`/`Warp`/spawn points) — `hub_fronthouse.json` doesn't have one yet, so the hub currently has no NPCs or warps.
+
+### Items, NPCs, Dialogue, Events (YAML)
+
+Everything that isn't map geometry is YAML under `data/`, keyed by ID and referenced from maps/other YAML — never embedded as inline logic.
+
+**NPCs** — sprite, logic ID:
+
+```yaml
+old_man:
+  sprite: old_man
+  logic: old_man_logic
+```
+
+**Dialogue** — plain pages, keyed by ID, never inline in code:
+
+```yaml
+old_man_intro:
+  pages:
+    - "Welcome to the village."
+    - "Stay away from the forest."
+```
+
+**NPC logic / event flags** — conditions over a flat flag dict (`{"met_king": True, "boss1_dead": True, ...}`), resolved by the Event System to a dialogue ID or action list:
+
+```yaml
+old_man_logic:
+  - if: boss1_dead
+    dialogue: old_man_after_boss
+  - else:
+    dialogue: old_man_intro
+```
+
+**Triggers** — doors, chests, signs, switches, map transitions — reference a script ID; the script (also YAML) says what happens:
+
+```yaml
+castle_gate:
+  if: has_castle_key
+  then:
+    - open_gate
+    - set_flag: gate_open
+  else:
+    - dialogue: gate_locked
+```
+
+An NPC interaction resolves as: `Player → NPC.interact() → Event System resolves "old_man_logic" → Dialogue System renders the returned page(s)`.
+
+---
+
 ## Roadmap
 
 *Draft — order and grouping subject to revision.*
+
+### Content Pipeline (Tiled + YAML)
+- [x] Tiled JSON importer (`engine/renderer.py`) — tile layers + tileset `walkable` property → passability grid, GID-based rendering, player-centered clamped camera
+- [ ] Object layer (`NPC`/`Trigger`/`Warp`/spawn points) → instantiation — `hub_fronthouse.json` has no object layer yet
+- [x] Retired the CSV+tilerules hub loader and the draft YAML `MapData` loader — `engine/map_loader.py` no longer exists
+- [ ] Event System — flag dict + condition evaluation (`if`/`else` chains) → dialogue ID or action list
+- [ ] Dialogue System — renders paged dialogue YAML, keyed by ID
+- [ ] Trigger System — executes a referenced script YAML on activation (doors, chests, switches, warps)
+- [ ] NPC logic YAML (`data/npcs/`) — sprite + logic ID + dialogue tree, replacing the current placeholder `dialogue`/`ideas` notes files
+- [ ] Warp/exit objects wired from the Tiled object layer once it exists
 
 ### Input & Core Game Loop
 - [x] Keyboard input: arrow keys move the player, held-key resolution ("last pressed wins", never diagonal) lives in `engine/input.py`'s `HeldDirectionInput`
@@ -19,27 +107,21 @@ An 8-bit RPG, developed entirely locally through a pygame renderer. Single-playe
 - [ ] Save/load through menu
 
 ### Debug & Testing Screens
-- [x] `maptest.py` — loads the hub scene via the engine directly (`engine/player.py`, `engine/map_loader.py`, `engine/enemy_state.py`) and renders it with `pygame_viewer/hub.py`; player-controlled Melvin, passability collision, NPC animation
-- [ ] Debug screen loader — pick any map file by name, load it into the running window without restart; works for hub, procgen cave/town, and hand-authored YAML maps
+- [x] `maptest.py` — boots the real game loop (`engine/renderer.py`'s `run()`) with the current `OverworldScene` (also `engine/renderer.py`); not a special reduced path — same input/update/render code the real game runs, just picking which scene loads. Player-controlled Melvin, passability collision, camera
+- [ ] Debug screen loader — pick any Tiled JSON map by name and swap `maptest.py` to it without restart; works for the overworld, procgen cave/town, and hand-authored maps
 - [ ] Debug overlay — toggle tile passability grid, NPC index/behavior labels, player tile coords, FPS counter
-- [ ] Cave and town debug screens — same pattern as hub; spawn player in any interior
+- [ ] Cave and town debug screens — same `handle_event`/`update`/`draw` scene pattern as the overworld; spawn player in any interior
 
-### Content Authoring Tools
-- [ ] Map file format — YAML. `engine/map_loader.py` has a working `load_map()`/`MapData` loader for it, but nothing wired it into a scene yet — the hub still loads from a hardcoded CSV (`assets/tiles/hub_map_coords_bracketed.csv`) + tilerules text file via the same module's CSV loader (`load_hub_grid`, etc). Next step: point the hub scene at `data/maps/hub.yaml` instead.
-- [ ] Warp/exit system designed — runtime warp stack handles nested interiors at arbitrary depth; no YAML needs to know where it was entered from; `"__return__"` target pops back to caller tile (see `engine/map_loader.py` docstring)
-- [x] `data/maps/hub.yaml` — annotated reference map; not yet consumed by any scene (see above)
-- [ ] Tiler / map creator — paint tiles, place/move NPCs and containers, set warp destinations, export to YAML
-- [ ] NPC definition YAML (`data/npcs/`) — sprite, behavior, dialogue tree; referenced from map YAML by ID; `ideas` file has character brainstorm
+### Items & Abilities
 - [x] Item YAML (`data/items/items.yaml`) — healing, weapons, armour, key items; `ideas` file for brainstorming alongside
 - [ ] Item YAML → engine integration — loader, inventory system, pickup, equip slots, stat effects
 - [ ] Special abilities YAML (`data/abilities/`) — name, MP cost, effect, cooldown, flavor
-- [ ] Tileset tooling — import tilesets, tag tiles visually (passable/impassable/enterable), export tilerules
 
 ### World & Content
-- [ ] Rethink procgen scope — decide what stays procedural vs. hand-authored (story, scripted towns/dungeons, procgen as supplement not spine)
+- [ ] Rethink procgen scope — decide what stays procedural vs. hand-authored in Tiled (story, scripted towns/dungeons, procgen as supplement not spine)
+- [ ] Procgen output → Tiled-compatible JSON, so generated and hand-authored maps share one loader
 - [ ] Updated and expanded tilesets
 - [ ] Inventory + equipment system (items in world, pickup, equip slots, stat effects)
-- [ ] NPC dialogue system (face-to-face trigger, branching, per-NPC state)
 - [ ] Named locations — towns, dungeons, overworld landmarks
 
 ### Visuals & UI
@@ -55,21 +137,13 @@ An 8-bit RPG, developed entirely locally through a pygame renderer. Single-playe
 
 ### Engine
 
-The engine is headless and deterministic. No display logic lives here.
+Most of `engine/` is headless and deterministic. The one exception is `engine/renderer.py` — see Scenes below.
 
-**Player (`engine/player.py`)** — `Player` dataclass with a `PlayerState` state machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()` (cardinal step + passability check), `adjacent_interactable()`, `on_warp_tile()`, serialise/deserialise.
+**Player (`engine/player.py`)** — `Player` dataclass with a `PlayerState` state machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()` (cardinal step + passability check), `adjacent_interactable()`, serialise/deserialise.
 
 **Input (`engine/input.py`)** — `HeldDirectionInput` resolves which cardinal direction (if any) should be stepped each frame from a set of currently-held directions, "last pressed wins," so held keys never combine into a diagonal. Pure logic, no pygame dependency — the renderer owns raw key→direction mapping and feeds abstract direction strings in.
 
-**Map loading (`engine/map_loader.py`)** — Two loaders live here. The CSV+tilerules loader (`load_hub_grid`, `hub_str_grid`, `hub_spawn_point`, etc.) is what the hub actually uses today. The YAML loader (`load_map()` → `MapData`, with `NpcPlacement` and `WarpPoint`) is a complete design for future authored maps but isn't wired into any scene yet.
-
-**Pathfinding (`engine/pathfinding.py`)** — `bfs_to_exit()` finds the shortest intra-screen path to an exit edge. `bfs_to_tile()` routes to a specific tile (allows enterables). `path_to_segments()` compresses a BFS path into `(direction, steps)` pairs.
-
-**Tile rules (`engine/tiles.py`)** — `is_passable()`, `is_enterable()`, `tile_quality()`. Handles `:rot` rotation suffixes. Parses tilerules files once at startup.
-
 **Config (`engine/config.py`)** — `config.json` singleton. Pacing (move_ms, screen crossing, interior entry/exit), battle limits, display geometry, interior exploration distance.
-
-**World database (`engine/worlddb.py`)** — SQLite. Four tables: screens (grid cached on first visit, exits pre-computed), features (interactable state: entered/cleared/npc_flags), interiors (cached on first entry by feature_id), enemies (stats, sprite, behavior, palette per scope). `get_or_create_screen()` / `get_or_create_interior()` generate once and cache — all subsequent calls are read-only. Replay guarantee: same seed → identical world. Not yet wired into the pygame hub path (hub is a static single screen today).
 
 **Journal (`engine/journal.py`)** — `Journal`: a generic milestone log + ALL-CAPS narrative renderer (e.g. "PARTY DEFEATED LVL 2 GOBLIN"), used by `engine/battle.py`.
 
@@ -98,36 +172,23 @@ Status effects don't stack. MP restored only by the healer. XP awarded on win; l
 
 **Behavior types:** 1 — Wanderer/chaser (65% toward party, 35% random); 2 — Pacer (walks axis, reverses at obstacles); 3 — Sentinel (frozen until 8-tile cardinal LOS, then chases).
 
-**Placement & movement (`engine/enemy_state.py`)** — `place_enemies()` places deterministically on walkable tiles. `update_enemies()` advances all enemies one tile per party step. `place_hub_npcs()` places the hub's four fixed NPCs (healer always on the healer-hut tile). `update_town_npcs()` animates non-combat town/hub NPCs — no chasing, no combat.
+**Placement & movement (`engine/enemy_state.py`)** — Owns all NPC/agent placement. `place_enemies()` places deterministically on walkable tiles. `update_enemies()` advances all enemies one tile per party step. `place_hub_npcs()` places the hub's four fixed NPCs (healer always on the healer-hut tile). `update_town_npcs()` animates non-combat town/hub NPCs — no chasing, no combat.
 
 ### Scenes
 
-**Hub — Front House** — Hand-authored 14×16 town map, loaded via `engine/map_loader.py`'s CSV+tilerules path and rendered by `pygame_viewer/hub.py`. Starting area.
+**`engine/renderer.py`** — THE graphical renderer, one file, full stop. It owns: the generic pygame app loop (`run(scene_factory, ...)` — window, clock, event dispatch; constructs the scene *after* opening the window so asset loading like `.convert_alpha()` is safe); Tiled map + tileset JSON loading (parses `hub_fronthouse.json` and the sibling `tiles_town.json`, matched by basename, into GIDs and a `walkable`-derived passability grid); sprite-sheet slicing (`partysprites.txt` → named party/NPC surfaces); and `OverworldScene` itself (player movement, tile-to-tile tweening, the player-centered clamped camera, drawing). This used to be split across a separate `pygame_viewer/` package (`app.py` + `renderer.py` + `sprites.py`, plus dead code in `tileset.py`) — that split was rejected and the package was deleted; see the architecture note in CLAUDE.md. NPC placement isn't wired up (no object layer on the map yet).
 
 **Interior scenes (`engine/scenes/interior.py`)** — Generic class for cave/dungeon and town interiors. Key properties: `spawn`, `entry_tile`, `combined_grid()`, `healer_spawn` (towns), `is_exit()`. Not yet wired into the pygame path — no pygame interior renderer exists yet (see roadmap: cave/town debug screens).
 
 ### Procedural Generation
 
-All three generators have a data/render split: `generate_*_data(seed)` returns a pure dataclass (no PIL), `render_*_data(data, raw_tiles)` returns a PIL image. `worlddb.py` consumes only the data layer.
+All three generators have a data/render split: `generate_*_data(seed)` returns a pure dataclass (no PIL), `render_*_data(data, raw_tiles)` returns a PIL image.
 
 **Overworld (`procgen/worldgen.py`)** — Infinite tiled world (one screen per coordinate pair). Base grass → blob placement (lakes, forests, mountains) → dirt patches → feature placement (towns, caves, castles) → jittered A* paths → scatter. Per-screen NES palette. Stable deterministic seed per `(world_seed, sx, sy)`.
 
 **Town (`procgen/towngen.py`)** — Canvas sized to building count, cropped to bounding box + margin. Healer hut always present (fixed 3×2). 1–9 additional buildings, 92% in-cluster / 8% outlier. Ground blobs, cobble MST paths, vegetation, scatter. 8-colour NES palette.
 
 **Cave/dungeon (`procgen/cavegen.py`)** — Up to 8 rooms, two flavours (cave: cobble/cave walls; dungeon: brick/dungfloor). Rooms connected by L-shaped/zig-zag hallways. Water pools, waterfalls, scatter. 3-colour NES palette.
-
-### Asset Layout
-
-Binary game assets live under `assets/`.
-
-```
-assets/
-├── fonts/    — ModernDOS8x8.ttf
-├── menus/    — menu art (startmenu, menuicons)
-├── sprites/  — party_sprites.png + layout text
-├── tiles/    — tileset PNGs, tilerules TXT files, hub map CSV
-└── titlescreen/ — titlescreen art
-```
 
 ### Viewscan (`engine/viewscan.py`)
 
@@ -144,44 +205,56 @@ One global seeded RNG, seed logged at run start. All randomness is engine-side. 
 ```
 simtank_rpg/
 ├── engine/
-│   ├── player.py           # Player entity; PlayerState machine; try_move, serialise
+│   ├── player.py           # Player entity; PlayerState machine; try_move(passable_grid), serialise
 │   ├── input.py            # HeldDirectionInput — held-key/last-pressed-wins resolver
-│   ├── map_loader.py       # CSV+tilerules loader (hub, in use) + YAML MapData loader (future maps)
+│   ├── renderer.py         # THE renderer: app loop, Tiled map+tileset JSON loading, GID tile
+│   │                       #   slicing, sprite-sheet slicing, camera, OverworldScene draw/update
 │   ├── battle.py           # battle loop; run_battle() — currently broken, see roadmap
 │   ├── combat.py           # stat math, hit/crit/parry/damage resolution
 │   ├── config.py           # config singleton (config.json)
-│   ├── enemy_state.py      # EnemyAgent; place_enemies(); place_hub_npcs(); update_enemies()
+│   ├── enemy_state.py      # NPC/agent placement — stale, still imports a deleted module;
+│   │                       #   unused by anything currently running
 │   ├── journal.py          # Journal — generic milestone log, used by battle.py
-│   ├── pathfinding.py      # bfs_to_exit, bfs_to_tile, path_to_segments
-│   ├── tiles.py            # passability/enterable/quality lookup
 │   ├── viewscan.py         # line-of-sight scan → ViewScan dataclass
-│   ├── worlddb.py          # SQLite world/session persistence
 │   └── scenes/
 │       └── interior.py     # cave + town interior scene class
-├── pygame_viewer/          # the renderer — sole display layer
-│   ├── hub.py               # player-controlled hub window: input, tweening, drawing
-│   ├── sprites.py           # party/NPC sprite sheet slicing
-│   └── tileset.py           # tileset PNG slicing, rotation variants
 ├── procgen/
 │   ├── enemygen.py         # enemy generation (stats, sprite, behavior, NES palette)
 │   ├── npcgen.py           # town NPC generation
 │   ├── worldgen.py         # overworld screen generator
 │   ├── cavegen.py          # cave/dungeon interior generator
 │   └── towngen.py          # town interior generator
-├── assets/                 # binary game assets
-│   ├── fonts/              # ModernDOS8x8.ttf
-│   ├── menus/               # menu art
+├── assets/
+│   ├── dialogue/           # (reserved — dialogue currently lives under data/npcs/, see below)
+│   ├── events/             # (reserved — event/trigger scripts, see roadmap)
 │   ├── sprites/            # party_sprites.png + layout text
-│   ├── tiles/               # tileset PNGs, tilerules TXT, hub map CSV
+│   ├── fonts/              # ModernDOS8x8.ttf
+│   ├── menus/               # menu art (startmenu, menuicons)
+│   ├── tiles/               # tiles_town.png (tileset image) + tiles_town.json (Tiled tileset
+│   │                       #   export — per-tile `walkable` property, read by engine/renderer.py)
+│   │                       #   + the old tilerules TXT / hub CSV, now unused
 │   └── titlescreen/         # titlescreen art
 ├── data/
 │   ├── items/              # items.yaml (definitions) + ideas (brainstorm notes)
-│   ├── maps/               # YAML map files (hub.yaml — not yet wired in, see roadmap)
-│   ├── npcs/                # future NPC definition YAMLs + ideas (brainstorm notes)
+│   ├── npcs/                # NPC + logic + dialogue YAML (placeholder `dialogue`/`ideas`
+│   │                       #   notes files today; see roadmap for the real schema)
+│   ├── maps/               # hub_fronthouse.json — the live Tiled map export, read by
+│   │                       #   engine/renderer.py. (Also has a stale draft YAML
+│   │                       #   MapData, npcs_hub_fronthouse.yaml, predating the Tiled
+│   │                       #   decision and still pointing at a deleted web/ CSV path — unused.)
 │   └── party/               # character sheet JSONs
-├── maptest.py               # debug entry point — hub screen, player-controlled
+├── story/                   # narrative/world notes
+├── tests/                   # test suite
+├── maptest.py               # debug entry point — boots the real game loop, picks the scene
 └── config.json               # pacing, display geometry, tunable params
 ```
+
+**Where new content goes:**
+- New/edited maps → author in Tiled, export JSON to `data/maps/`.
+- New tilesets → image + property export in `assets/tiles/`.
+- New items → `data/items/items.yaml`.
+- New NPCs, dialogue, event/trigger logic → `data/npcs/` (schema not finalized — see roadmap).
+- New abilities → `data/abilities/` (not created yet — see roadmap).
 
 ---
 
@@ -189,7 +262,7 @@ simtank_rpg/
 
 ```bash
 source .venv/bin/activate
-python maptest.py           # opens the pygame window, player-controlled hub
+python maptest.py           # opens the pygame window, runs the real game loop
 ```
 
 All dependencies (pygame, Pillow, PyYAML) are in `.venv/`.

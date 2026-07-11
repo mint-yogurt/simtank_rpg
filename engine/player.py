@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 
-from engine.tiles import is_passable, is_enterable
-
 
 class PlayerState(Enum):
     """What the player is doing right now.
@@ -54,8 +52,12 @@ class Player:
 
     # ── movement ──────────────────────────────────────────────────────────────
 
-    def try_move(self, direction: str, str_grid: list[list[str]]) -> bool:
+    def try_move(self, direction: str, passable: list[list[bool]]) -> bool:
         """Attempt to step one tile in `direction`.
+
+        `passable[row][col]` is True if that tile can be walked onto — see
+        engine.map_loader.tiled_passable_grid for how this is built from a
+        Tiled map's per-tile `walkable` property.
 
         Updates row/col and facing on success.  Always updates facing so the
         player turns to face a wall they walked into (standard RPG feel).
@@ -66,13 +68,13 @@ class Player:
         new_row = self.row + dr
         new_col = self.col + dc
 
-        rows = len(str_grid)
-        cols = len(str_grid[0]) if rows else 0
+        rows = len(passable)
+        cols = len(passable[0]) if rows else 0
 
         if not (0 <= new_row < rows and 0 <= new_col < cols):
             return False   # map edge
 
-        if not is_passable(str_grid[new_row][new_col]):
+        if not passable[new_row][new_col]:
             return False   # wall / water / etc.
 
         self.row = new_row
@@ -101,14 +103,6 @@ class Player:
             if obj.row == tr and obj.col == tc:
                 return obj
         return None
-
-    def on_warp_tile(self, str_grid: list[list[str]]) -> bool:
-        """True if the player is standing on an enterable / warp tile."""
-        rows = len(str_grid)
-        cols = len(str_grid[0]) if rows else 0
-        if not (0 <= self.row < rows and 0 <= self.col < cols):
-            return False
-        return is_enterable(str_grid[self.row][self.col])
 
     # ── state helpers ─────────────────────────────────────────────────────────
 
