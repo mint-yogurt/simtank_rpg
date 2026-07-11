@@ -17,7 +17,10 @@ NPCs are not wired up yet: hub_fronthouse.json has no object layer, so there's
 nothing to place. That comes back once NPC/Trigger/Warp object layers exist.
 
 Controls:
-  Arrow keys  — move player (MELVIN)
+  Arrow keys  — move player (MELVIN) / move start-menu cursor
+  Enter       — START: open/close the start menu
+  X           — A: confirm start-menu selection (stubbed — no sub-screens yet)
+  Z           — B: close the start menu
   Escape / Q  — quit
 """
 import json
@@ -28,14 +31,22 @@ from pathlib import Path
 import pygame
 
 from engine.config import cfg
-from engine.input import HeldDirectionInput
-from engine.player import Player
+from engine.input import (
+    HeldDirectionInput,
+    handle_a_button,
+    handle_b_button,
+    handle_menu_direction,
+    handle_start_button,
+)
+from engine.menu import StartMenu
+from engine.player import Player, PlayerState
 
 _REPO_ROOT   = Path(__file__).parent.parent
 _ASSETS      = _REPO_ROOT / 'assets'
 _HUB_MAP     = _REPO_ROOT / 'data' / 'maps' / 'hub_fronthouse.json'
 _SPRITES_PNG = _ASSETS / 'sprites' / 'party_sprites.png'
 _SPRITES_TXT = _ASSETS / 'sprites' / 'partysprites.txt'
+_MENU_DIR    = _ASSETS / 'menus'
 
 _NPC_ANIM_MS = 500   # ms per NPC animation frame flip
 _NPC_MOVE_MS = 800   # ms between NPC AI position updates; also NPC tween duration
@@ -46,6 +57,24 @@ _DIR_KEY = {
     pygame.K_LEFT:  'W',
     pygame.K_RIGHT: 'E',
 }
+
+_BUTTON_KEY = {
+    pygame.K_RETURN: 'START',
+    pygame.K_z:      'B',
+    pygame.K_x:      'A',
+}
+
+# Start-menu layout: top-left pixel of each option row, and the cursor's
+# resting spot (same coordinate as the row it's highlighting). The
+# highlighted row's own image shifts right by this many pixels to make room.
+_MENU_X = 160
+_MENU_ROW_Y = {
+    'inventory': 21,
+    'party':     37,
+    'settings':  53,
+    'save':      69,
+}
+_MENU_SELECT_SHIFT_PX = 7
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -191,6 +220,18 @@ def get_npc_frame(sprites: dict[str, pygame.Surface],
     if not pair:
         return None
     return sprites.get(pair[anim_frame % 2])
+
+
+# ── Start menu assets ────────────────────────────────────────────────────────
+
+def load_menu_assets(menu_dir: Path) -> dict[str, pygame.Surface]:
+    """Load the start menu's PNGs, keyed by the names used in _MENU_ROW_Y plus
+    'bg' and 'cursor'. Call after pygame.display.set_mode()."""
+    names = ('bg', 'cursor', 'inventory', 'party', 'settings', 'save')
+    return {
+        name: pygame.image.load(str(menu_dir / f'startmenu_{name}.png')).convert_alpha()
+        for name in names
+    }
 
 
 # ── Tiled JSON map + tileset loading ────────────────────────────────────────
@@ -355,7 +396,10 @@ class OverworldScene:
         )
         self.passable = tiled_passable_grid(self.tmap)
         self.sprites = load_sprites(_SPRITES_PNG, _SPRITES_TXT, self.tile_px)
+        self.menu_assets = load_menu_assets(_MENU_DIR)
         print(f'  {len(self.tile_surfaces)} tiles  |  {len(self.sprites)} sprites', flush=True)
+
+        self.menu = StartMenu()
 
         # No object layer in hub_fronthouse.json yet, so no NPCs to place.
         self.npcs = []
@@ -404,7 +448,18 @@ class OverworldScene:
         if event.type == pygame.KEYDOWN:
             direction = _DIR_KEY.get(event.key)
             if direction:
-                self._input.press(direction)
+                if self.player.state == PlayerState.IN_MENU:
+                    handle_menu_direction(direction, self.menu)
+                else:
+                    self._input.press(direction)
+
+            button = _BUTTON_KEY.get(event.key)
+            if button == 'START':
+                handle_start_button(self.player, self.menu)
+            elif button == 'B':
+                handle_b_button(self.player, self.menu)
+            elif button == 'A':
+                handle_a_button(self.menu)   # stub — sub-screens not built yet
         elif event.type == pygame.KEYUP:
             direction = _DIR_KEY.get(event.key)
             if direction:
@@ -413,6 +468,9 @@ class OverworldScene:
     # ── update ───────────────────────────────────────────────────────────────
 
     def update(self, dt_ms: int) -> None:
+        if self.menu.is_open:
+            return   # start menu is a full pause — no gameplay ticks while open
+
         self._anim_timer += dt_ms
         if self._anim_timer >= _NPC_ANIM_MS:
             self._anim_frame ^= 1
@@ -488,6 +546,21 @@ class OverworldScene:
         if player_surf:
             vr, vc = self._player_vis
             surface.blit(player_surf, (round(vc * self.tile_px) - cam_x, round(vr * self.tile_px) - cam_y))
+
+        if self.menu.is_open:
+            self._draw_start_menu(surface)
+
+    def _draw_start_menu(self, surface: pygame.Surface) -> None:
+        """Overlay: bg, each option row (highlighted one shifted right), cursor."""
+        surface.blit(self.menu_assets['bg'], (0, 0))
+
+        selected_label = self.menu.selected_option().lower()
+        for label, y in _MENU_ROW_Y.items():
+            x = _MENU_X + (_MENU_SELECT_SHIFT_PX if label == selected_label else 0)
+            surface.blit(self.menu_assets[label], (x, y))
+
+        cursor_y = _MENU_ROW_Y[selected_label]
+        surface.blit(self.menu_assets['cursor'], (_MENU_X, cursor_y))
 
     def _draw_map(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
         """Blit every tile layer, bottom to top, offset by the camera."""

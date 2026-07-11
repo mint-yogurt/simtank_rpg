@@ -98,12 +98,13 @@ An NPC interaction resolves as: `Player → NPC.interact() → Event System reso
 
 ### Input & Core Game Loop
 - [x] Keyboard input: arrow keys move the player, held-key resolution ("last pressed wins", never diagonal) lives in `engine/input.py`'s `HeldDirectionInput`
-- [ ] Z (B button), X (X button), Enter (start/confirm) — not wired yet; there's no dialogue or menu system for them to drive
+- [x] Z (B button), X (A button), Enter (START) — wired to the start menu: START opens/closes it, B closes it, A confirms the highlighted option (stub — see below)
 - [x] Player character entity (`engine/player.py`) — `Player` with `PlayerState` machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()`, `adjacent_interactable()`, serialise/deserialise
 - [x] Config-driven movement speed — `player_move_ms` in `config.json`, read via the `engine.config.cfg` singleton
 - [ ] Bluetooth / USB controller support (pygame joystick API)
 - [ ] Title screen
-- [ ] In-game menu system (pause, save, settings)
+- [x] Start menu shell (`engine/menu.py`) — START pauses gameplay and opens a 4-option vertical cursor menu (INVENTORY/PARTY/SETTINGS/SAVE), wraps top-to-bottom, closes on B or START; drawn by `engine/renderer.py` from `assets/menus/`
+- [ ] Start menu sub-screens — INVENTORY/PARTY/SETTINGS/SAVE each currently just highlight; A-confirm is stubbed with no screen behind it yet
 - [ ] Save/load through menu
 
 ### Debug & Testing Screens
@@ -141,7 +142,9 @@ Most of `engine/` is headless and deterministic. The one exception is `engine/re
 
 **Player (`engine/player.py`)** — `Player` dataclass with a `PlayerState` state machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()` (cardinal step + passability check), `adjacent_interactable()`, serialise/deserialise.
 
-**Input (`engine/input.py`)** — `HeldDirectionInput` resolves which cardinal direction (if any) should be stepped each frame from a set of currently-held directions, "last pressed wins," so held keys never combine into a diagonal. Pure logic, no pygame dependency — the renderer owns raw key→direction mapping and feeds abstract direction strings in.
+**Input (`engine/input.py`)** — `HeldDirectionInput` resolves which cardinal direction (if any) should be stepped each frame from a set of currently-held directions, "last pressed wins," so held keys never combine into a diagonal. Also owns discrete button routing: `handle_start_button`/`handle_b_button`/`handle_a_button`/`handle_menu_direction` decide what a START/B/A press or a direction press means given the player's current state (e.g. arrow keys drive the menu cursor instead of movement while `PlayerState.IN_MENU`), and call into `engine/menu.py`'s `StartMenu` accordingly. Pure logic, no pygame dependency — the renderer owns raw key→direction/button mapping and feeds abstract strings in.
+
+**Menu (`engine/menu.py`)** — `StartMenu`: cursor state for the pause-menu (`is_open`, `selected`, four options — INVENTORY/PARTY/SETTINGS/SAVE). Vertical list, wraps top-to-bottom. Never reads input itself, only exposes `open()`/`close()`/`move_cursor()`/`confirm()` — `engine/input.py` decides when to call them, `engine/renderer.py` decides how it looks. `confirm()` is a stub — sub-screens per option aren't built yet.
 
 **Config (`engine/config.py`)** — `config.json` singleton. Pacing (move_ms, screen crossing, interior entry/exit), battle limits, display geometry, interior exploration distance.
 
@@ -176,7 +179,9 @@ Status effects don't stack. MP restored only by the healer. XP awarded on win; l
 
 ### Scenes
 
-**`engine/renderer.py`** — THE graphical renderer, one file, full stop. It owns: the generic pygame app loop (`run(scene_factory, ...)` — window, clock, event dispatch; constructs the scene *after* opening the window so asset loading like `.convert_alpha()` is safe); Tiled map + tileset JSON loading (parses `hub_fronthouse.json` and the sibling `tiles_town.json`, matched by basename, into GIDs and a `walkable`-derived passability grid); sprite-sheet slicing (`partysprites.txt` → named party/NPC surfaces); and `OverworldScene` itself (player movement, tile-to-tile tweening, the player-centered clamped camera, drawing). This used to be split across a separate `pygame_viewer/` package (`app.py` + `renderer.py` + `sprites.py`, plus dead code in `tileset.py`) — that split was rejected and the package was deleted; see the architecture note in CLAUDE.md. NPC placement isn't wired up (no object layer on the map yet).
+**`engine/renderer.py`** — THE graphical renderer, one file, full stop. It owns: the generic pygame app loop (`run(scene_factory, ...)` — window, clock, event dispatch; constructs the scene *after* opening the window so asset loading like `.convert_alpha()` is safe); Tiled map + tileset JSON loading (parses `hub_fronthouse.json` and the sibling `tiles_town.json`, matched by basename, into GIDs and a `walkable`-derived passability grid); sprite-sheet slicing (`partysprites.txt` → named party/NPC surfaces); menu asset loading (`load_menu_assets()` — `assets/menus/startmenu_*.png`); and `OverworldScene` itself (player movement, tile-to-tile tweening, the player-centered clamped camera, drawing, and the start-menu overlay). This used to be split across a separate `pygame_viewer/` package (`app.py` + `renderer.py` + `sprites.py`, plus dead code in `tileset.py`) — that split was rejected and the package was deleted; see the architecture note in CLAUDE.md. NPC placement isn't wired up (no object layer on the map yet).
+
+The start-menu overlay is drawn last, on top of everything, only while `scene.menu.is_open`: `startmenu_bg.png` (fills the camera, mostly transparent), then each option row (`startmenu_inventory/party/settings/save.png`, fixed pixel coordinates, the highlighted row shifted +7px right), then `startmenu_cursor.png` at the highlighted row's unshifted coordinate. `OverworldScene.update()` returns immediately while the menu is open — the menu is a full gameplay pause, not just an input redirect.
 
 **Interior scenes (`engine/scenes/interior.py`)** — Generic class for cave/dungeon and town interiors. Key properties: `spawn`, `entry_tile`, `combined_grid()`, `healer_spawn` (towns), `is_exit()`. Not yet wired into the pygame path — no pygame interior renderer exists yet (see roadmap: cave/town debug screens).
 
@@ -206,9 +211,11 @@ One global seeded RNG, seed logged at run start. All randomness is engine-side. 
 simtank_rpg/
 ├── engine/
 │   ├── player.py           # Player entity; PlayerState machine; try_move(passable_grid), serialise
-│   ├── input.py            # HeldDirectionInput — held-key/last-pressed-wins resolver
+│   ├── input.py            # HeldDirectionInput + START/B/A button routing → engine/menu.py
+│   ├── menu.py             # StartMenu — pause-menu cursor state (open/close/move_cursor/confirm)
 │   ├── renderer.py         # THE renderer: app loop, Tiled map+tileset JSON loading, GID tile
-│   │                       #   slicing, sprite-sheet slicing, camera, OverworldScene draw/update
+│   │                       #   slicing, sprite-sheet slicing, camera, OverworldScene draw/update,
+│   │                       #   start-menu overlay draw
 │   ├── battle.py           # battle loop; run_battle() — currently broken, see roadmap
 │   ├── combat.py           # stat math, hit/crit/parry/damage resolution
 │   ├── config.py           # config singleton (config.json)
@@ -229,7 +236,8 @@ simtank_rpg/
 │   ├── events/             # (reserved — event/trigger scripts, see roadmap)
 │   ├── sprites/            # party_sprites.png + layout text
 │   ├── fonts/              # ModernDOS8x8.ttf
-│   ├── menus/               # menu art (startmenu, menuicons)
+│   ├── menus/               # start menu art: startmenu_bg/cursor/inventory/party/settings/save.png
+│   │                       #   (consumed by engine/renderer.py's load_menu_assets()), + menuicons.pxo
 │   ├── tiles/               # tiles_town.png (tileset image) + tiles_town.json (Tiled tileset
 │   │                       #   export — per-tile `walkable` property, read by engine/renderer.py)
 │   │                       #   + the old tilerules TXT / hub CSV, now unused
