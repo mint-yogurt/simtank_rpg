@@ -2,8 +2,7 @@
 
 An 8-bit RPG with two lives: a **shippable single-player game** (itch.io) and a **watchable 24/7 stream** where an LLM party plays autonomously. Both run on the same engine. The single-player game is the primary build target going forward; the AI mode is a companion project built on top of it.
 
-**Current state:** Engine is solid — movement, combat, procgen, tile rendering, enemy AI, battle loop all work. The player-control layer (keyboard/controller input, menus, WebSocket game server) is next.
-
+Current focus is single-player, locally ran game, through Pygame.
 ---
 
 ## Roadmap
@@ -11,7 +10,6 @@ An 8-bit RPG with two lives: a **shippable single-player game** (itch.io) and a 
 *Draft — order and grouping subject to revision.*
 
 ### Input & Core Game Loop
-- [x] WebSocket game server (`game/server.py`) — transport only; all game logic in engine
 - [x] Keyboard input: arrow keys (move), Z (B button), X (X button), Enter (start/confirm)
 - [x] Player character entity (`engine/player.py`) — `Player` with `PlayerState` machine (IDLE/WALKING/INTERACTING/IN_DIALOGUE/IN_MENU/IN_BATTLE), `try_move()`, `adjacent_interactable()`, serialise/deserialise; wired to config and used directly by the WebSocket server
 - [x] Config-driven movement speed — `player_move_ms` in `config.json`; stamped into `hub_init` event so client timing matches server config with no JS constants

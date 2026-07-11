@@ -7,7 +7,7 @@
     "interior_entry_ms": 600,
     "interior_exit_prepare_ms": 400,
     "interior_exit_complete_ms": 200,
-    "player_move_ms": 220
+    "player_move_ms": 440
   },
 
   "battle": {

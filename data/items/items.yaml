@@ -2,11 +2,12 @@
 #
 # Fields:
 #   id:          unique snake_case key referenced by inventory/loot tables
+#   icon:        icon name ## worry about this later
 #   name:        display name
 #   category:    healing | weapon | armour | key
-#   description: one-line flavour text
+#   description: flavour text for the item screen
 #   effect:      for healing — {hp: N} or {mp: N} or both; omit for non-consumables
-#   slot:        for weapon/armour — which equipment slot this fills
+#   slot:        for weapon/armour — which equipment slot this fills 
 #   stackable:   true for consumables, false for equipment/key items
 #   value:       shop sell price in whatever currency unit we settle on (0 = unsellable)
 
@@ -14,8 +15,8 @@ healing:
   - id: forgotten_onion
     name: Forgotten Onion
     category: healing
-    description: Found it in a coat pocket. Smells like regret.
-    effect: {hp: 30}
+    description: A source of much crying. Restores 15 HP.
+    effect: {hp: 15}
     stackable: true
     value: 5
 
@@ -30,10 +31,10 @@ healing:
   - id: piggled_egg
     name: Piggled Egg
     category: healing
-    description: Pickled, probably. Tastes fine.
-    effect: {hp: 15}
+    description: Curiously spicy pickled egg.
+    effect: {hp: 25}
     stackable: true
-    value: 3
+    value: 8
 
   - id: boiled_hotdog
     name: Boiled Hotdog

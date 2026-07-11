@@ -1,0 +1,8 @@
+IT IS THE YEAR 20XX. TWO HOUSES LOCKED IN ETERNAL WARFARE OVER THE SAME PATCH OF GRASS BROUGHT TO A HALT NOT BY VICTORY, BUT BY MYSTERIOUS CIRCUMSTANCES. ALL THAT REMAINS OF THE SIDE HOUSE IS A PATCH OF ACCURSED DIRT. WHO OR WHAT COULD HAVE CAUSED THIS IS A MYSTERY
+
+
+
+key items - shovel to dig in side house dirt (and in the yard in general)
+
+
+MGS3 ladder but its a stairwell and has that damn piece of cheese lady

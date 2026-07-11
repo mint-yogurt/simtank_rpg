@@ -1,0 +1,11 @@
+propose a coding solution for the menu system. it will pause all gameplay when activated by pressing ENTER (using keyboard, or START when using a contorller) - the menu system begins with the Menu_Start - brought up by pressing start during normal gameplay. gameplay is paused - the player is unable to move (arrow keys/d-pad now select menu items) - the currently selected option has a cursor next to it ( i will detail all of the graphical stuff afterwards) in the startmenu there are 4 options:
+1. INVENTORY 2. PARTY 3. SETTINGS 4. SAVE
+each of these will go to a different menu screen. SMenu_Inventory SMenu_Party SMenu_Settings SMenu_Save (for naming purposes in the scripting). The A button selects one of the options.
+Graphically we have a few layers: the window itself that the start menu options appear on, each option's text graphically rendered, 1-4, and the cursor itself.
+When a cursor is on an option (defaults to INVENTORY), the text graphics shift over to the right by 7 pixels to allow room for the cursor.
+
+all menu related coding will be in one script file, we will add on to as we add more menus/the save function.
+
+questions for you:
+a) graphically, would it be better to have full-screen sized images, transparent except for the graphics themselves, in order to make positioning easy? otherwise i would have to define exact pixel coordinates, right?
+b) further questions will depend on your answer

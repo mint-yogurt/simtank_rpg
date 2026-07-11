@@ -31,7 +31,8 @@ _TILE_PX      = cfg.tile_px    # 16
 _VIEW_W       = cfg.view_cols * _TILE_PX   # 256
 _VIEW_H       = cfg.view_rows * _TILE_PX   # 224
 _NPC_ANIM_MS  = 500    # ms per NPC animation frame flip
-_NPC_MOVE_MS  = 800    # ms between NPC AI position updates
+_NPC_MOVE_MS  = 800    # ms between NPC AI position updates; also NPC tween duration
+_PLAYER_MOVE_MS = cfg.player_move_ms   # tween duration for a player step; matches key-repeat rate
 _TITLE        = 'simtank — hub (maptest)'
 
 _DIR_KEY = {
@@ -40,6 +41,19 @@ _DIR_KEY = {
     pygame.K_LEFT:  'W',
     pygame.K_RIGHT: 'E',
 }
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _npc_visual_pos(npc, tweens: dict) -> tuple[float, float]:
+    """Interpolated (row, col) for an NPC given its in-flight tween, if any."""
+    tw = tweens.get(npc.index)
+    if tw is None:
+        return float(npc.row), float(npc.col)
+    t = min(tw['elapsed'] / _NPC_MOVE_MS, 1.0)
+    return _lerp(tw['src'][0], tw['dst'][0], t), _lerp(tw['src'][1], tw['dst'][1], t)
 
 
 def _draw_map(surface: pygame.Surface, tile_grid: list,
@@ -73,8 +87,10 @@ def run_hub_pygame(scale: int | None = None) -> None:
     pygame.display.set_caption(_TITLE)
     screen = pygame.Surface((_VIEW_W, _VIEW_H))  # native-res render target
 
-    # Key repeat: first-press fires immediately, then repeats at player_move_ms
-    pygame.key.set_repeat(cfg.player_move_ms, cfg.player_move_ms)
+    # No OS key repeat — held-key repeat is driven ourselves below so that only
+    # one cardinal direction is ever stepped per tick (see held_dirs), never two
+    # at once. Two independent per-key OS repeats firing in the same frame is
+    # what produced diagonal-looking moves before.
 
     # ── load assets ───────────────────────────────────────────────────────────
     print('Loading tileset...', flush=True)
@@ -101,7 +117,41 @@ def run_hub_pygame(scale: int | None = None) -> None:
     anim_frame     = 0       # 0 or 1, shared NPC animation tick
     anim_timer     = 0       # ms accumulator for NPC anim flip
     npc_move_timer = 0       # ms accumulator for NPC position update
-    player_anim    = 0       # 0 or 1, flips on each successful player step
+    player_anim    = 0       # 0 or 1, walk-cycle frame, driven by tween progress
+
+    # Visual (sub-tile) position tracking — engine stays tile-discrete; only the
+    # renderer interpolates, so movement flows smoothly between tiles instead of
+    # snapping. player_tween_elapsed >= _PLAYER_MOVE_MS means "at rest".
+    player_tween_src     = (float(player.row), float(player.col))
+    player_tween_dst     = player_tween_src
+    player_tween_elapsed = _PLAYER_MOVE_MS
+    player_vis_row, player_vis_col = player_tween_src
+
+    # Held movement keys, in press order (most recent last). Only held_dirs[-1]
+    # is ever stepped — "last pressed wins" — so N/S/E/W never combine into a
+    # diagonal, matching the browser viewer's input model (game/static/game.js).
+    held_dirs: list[str] = []
+    move_repeat_ms       = 0   # ms accumulator for auto-repeat while a key is held
+
+    def _step_player(direction: str) -> None:
+        nonlocal player_tween_src, player_tween_dst, player_tween_elapsed
+        if player.try_move(direction, str_grid):
+            # Rebase off wherever the sprite visually is right now (may be
+            # mid-glide from the previous step) so repeated steps flow
+            # continuously instead of stuttering.
+            player_tween_src = (player_vis_row, player_vis_col)
+            player_tween_dst = (float(player.row), float(player.col))
+            player_tween_elapsed = 0
+
+    # Same idea for NPCs, keyed by their stable `index`.
+    npc_tweens = {
+        npc.index: {
+            'src':     (float(npc.row), float(npc.col)),
+            'dst':     (float(npc.row), float(npc.col)),
+            'elapsed': _NPC_MOVE_MS,
+        }
+        for npc in npcs
+    }
 
     print(f'Window {win_w}×{win_h}  (render {_VIEW_W}×{_VIEW_H} × {scale}x)', flush=True)
     print('Controls: Arrow keys = move  |  Esc/Q = quit', flush=True)
@@ -119,10 +169,20 @@ def run_hub_pygame(scale: int | None = None) -> None:
                     running = False
                     continue
                 direction = _DIR_KEY.get(event.key)
-                if direction:
-                    moved = player.try_move(direction, str_grid)
-                    if moved:
-                        player_anim ^= 1   # toggle walk frame on each step
+                if direction and direction not in held_dirs:
+                    held_dirs.append(direction)
+                    # Force the repeat block below to fire this same frame (an
+                    # "immediate step" on press) without calling _step_player here
+                    # directly — if two new direction keys land in the same frame,
+                    # only one step must happen this tick, or their two rebases
+                    # would combine into a diagonal glide (row and col both
+                    # changing in one tween). Routing through the single repeat
+                    # block keeps it to exactly one step, choosing held_dirs[-1].
+                    move_repeat_ms = _PLAYER_MOVE_MS
+            elif event.type == pygame.KEYUP:
+                direction = _DIR_KEY.get(event.key)
+                if direction and direction in held_dirs:
+                    held_dirs.remove(direction)
 
         # ── NPC animation flip ────────────────────────────────────────────────
         anim_timer += dt
@@ -133,8 +193,39 @@ def run_hub_pygame(scale: int | None = None) -> None:
         # ── NPC position update ───────────────────────────────────────────────
         npc_move_timer += dt
         if npc_move_timer >= _NPC_MOVE_MS:
+            before = {npc.index: (npc.row, npc.col) for npc in npcs}
             update_town_npcs(npcs, str_grid, npc_rng)
+            for npc in npcs:
+                old = before[npc.index]
+                if old != (npc.row, npc.col):
+                    npc_tweens[npc.index] = {
+                        'src':     (float(old[0]), float(old[1])),
+                        'dst':     (float(npc.row), float(npc.col)),
+                        'elapsed': 0,
+                    }
+                else:
+                    npc_tweens[npc.index]['elapsed'] = _NPC_MOVE_MS   # stayed put
             npc_move_timer -= _NPC_MOVE_MS
+
+        # ── held-key auto-repeat ─────────────────────────────────────────────
+        if held_dirs:
+            move_repeat_ms += dt
+            if move_repeat_ms >= _PLAYER_MOVE_MS:
+                move_repeat_ms -= _PLAYER_MOVE_MS
+                _step_player(held_dirs[-1])   # most recently pressed direction wins
+        else:
+            move_repeat_ms = 0
+
+        # ── advance in-flight tweens ─────────────────────────────────────────
+        player_tween_elapsed = min(player_tween_elapsed + dt, _PLAYER_MOVE_MS)
+        t = player_tween_elapsed / _PLAYER_MOVE_MS
+        player_vis_row = _lerp(player_tween_src[0], player_tween_dst[0], t)
+        player_vis_col = _lerp(player_tween_src[1], player_tween_dst[1], t)
+        player_anim = 0 if t < 0.5 else 1   # walk-cycle contact frame mid-step
+
+        for tw in npc_tweens.values():
+            if tw['elapsed'] < _NPC_MOVE_MS:
+                tw['elapsed'] = min(tw['elapsed'] + dt, _NPC_MOVE_MS)
 
         # ── render ────────────────────────────────────────────────────────────
         screen.fill((0, 0, 0))
@@ -143,11 +234,13 @@ def run_hub_pygame(scale: int | None = None) -> None:
         for npc in npcs:
             npc_surf = get_npc_frame(sprites, npc.npc_sprite, anim_frame)
             if npc_surf:
-                screen.blit(npc_surf, (npc.col * _TILE_PX, npc.row * _TILE_PX))
+                vr, vc = _npc_visual_pos(npc, npc_tweens)
+                screen.blit(npc_surf, (round(vc * _TILE_PX), round(vr * _TILE_PX)))
 
         player_surf = get_party_frame(sprites, 'melvin', player.facing, player_anim)
         if player_surf:
-            screen.blit(player_surf, (player.col * _TILE_PX, player.row * _TILE_PX))
+            screen.blit(player_surf,
+                         (round(player_vis_col * _TILE_PX), round(player_vis_row * _TILE_PX)))
 
         pygame.transform.scale(screen, (win_w, win_h), window)
         pygame.display.flip()
