@@ -671,8 +671,13 @@ class OverworldScene:
         `tmap`, if given, is a TiledMap the caller already parsed — _swap_map
         has to load the destination map anyway to find the target warp
         object, so this avoids parsing the same JSON twice. `spawn`/`facing`
-        override the map's default spawn point (tiled_spawn_point) — used
-        when arriving via a warp instead of booting into the map fresh.
+        override the map's default spawn point — used when arriving via a
+        warp instead of booting into the map fresh. With no override (a
+        fresh boot, e.g. maptest.py's map picker), a map that has any warp
+        objects spawns the player on a random one (_warp_landing) instead
+        of the arbitrary tiled_spawn_point() fallback, so debugging a map
+        starts you somewhere the map's own content considers an entrance —
+        tiled_spawn_point() only ever fires for maps with no warps at all.
         """
         print(f'Loading map {map_path.stem}...', flush=True)
         self.map_path = map_path
@@ -704,9 +709,22 @@ class OverworldScene:
             for o in npc_map_objects
         ]
 
-        self.player.row, self.player.col = spawn if spawn is not None else tiled_spawn_point(self.tmap)
-        if facing is not None:
-            self.player.facing = facing
+        if spawn is not None:
+            self.player.row, self.player.col = spawn
+            if facing is not None:
+                self.player.facing = facing
+        elif self.warps:
+            # No explicit spawn (i.e. booting straight onto this map, not
+            # arriving via a warp — see maptest.py) but the map has warp
+            # objects: land on a random one, same landing math as a real
+            # warp trip, rather than the arbitrary tiled_spawn_point()
+            # fallback below. Deterministic per scene (self._npc_rng is
+            # freshly seeded every construction), not actually different
+            # run to run — see engine/renderer.py's RNG usage elsewhere.
+            warp = self._npc_rng.choice(self.warps)
+            (self.player.row, self.player.col), self.player.facing = self._warp_landing(warp)
+        else:
+            self.player.row, self.player.col = tiled_spawn_point(self.tmap)
 
         self._anim_frame = 0       # 0 or 1, shared NPC animation tick
         self._anim_timer = 0       # ms accumulator for NPC anim flip
@@ -865,6 +883,19 @@ class OverworldScene:
                 return warp
         return None
 
+    @staticmethod
+    def _warp_landing(warp: 'MapObject') -> tuple[tuple[int, int], str]:
+        """Where the player lands (and faces) when spawning at `warp`: its
+        own row/col, offset `distance` tiles in its own `facing` direction
+        (see the warp fields in data/maps/populate_yamls.py). Shared by
+        _swap_map (warping in from another map) and _load_map's own
+        no-explicit-spawn fallback (booting straight onto a map that has
+        warps, e.g. via maptest.py)."""
+        facing = warp.facing or 'S'
+        dr, dc = _DIR_DELTA[facing]
+        distance = warp.distance or 0
+        return (warp.row + dr * distance, warp.col + dc * distance), facing
+
     def _begin_warp(self, warp: 'MapObject') -> None:
         """Start fading to black; the actual map swap happens once the
         fade-out completes (see _tick_transition/_swap_map) so it's fully
@@ -905,10 +936,7 @@ class OverworldScene:
                 f'Warp {warp.name!r} points to destination_warp={warp.destination_warp!r} '
                 f'in map {warp.destination_map!r}, but no warp with that name exists there'
             )
-        facing = target.facing or 'S'
-        dr, dc = _DIR_DELTA[facing]
-        distance = target.distance or 0
-        spawn = (target.row + dr * distance, target.col + dc * distance)
+        spawn, facing = self._warp_landing(target)
         self._load_map(dest_path, tmap=dest_tmap, spawn=spawn, facing=facing)
 
     def _passable_with_npcs(self) -> list[list[bool]]:

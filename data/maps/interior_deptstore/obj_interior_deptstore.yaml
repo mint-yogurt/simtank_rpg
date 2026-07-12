@@ -11,3 +11,10 @@
   facing: S
   name: warp_wc
   type: warp
+4:
+  destination_map: null
+  destination_warp: null
+  distance: null
+  facing: null
+  name: warp_office
+  type: warp

@@ -26,3 +26,16 @@
   facing: S
   name: wc_warp1
   type: warp
+7:
+  dialogue:
+  - You don't even want to know.
+  name: wc_trashcan
+  type: sign
+12:
+  dialogue: [Lookin real jacked, baby.]
+  name: wc_mirror2
+  type: sign
+17:
+  dialogue: [Interesting.]
+  name: wc_mirror
+  type: sign
