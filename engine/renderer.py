@@ -13,24 +13,30 @@ imported here, not duplicated.
 
 Entry point: engine.renderer.run(OverworldScene, ...) — see maptest.py.
 
-NPCs are not wired up yet: hub_fronthouse.json has no object layer, so there's
-nothing to place. That comes back once NPC/Trigger/Warp object layers exist.
+NPC objects are not placed yet — hub_fronthouse.json's object layer only has
+container/sign objects so far. Sign objects (e.g. sign1) are interactable:
+face one and press A to open its dialogue, read via engine.dialogue.
 
 Controls:
-  Arrow keys  — move player (MELVIN) / move start-menu cursor
-  Enter       — START: open/close the start menu
-  X           — A: confirm start-menu selection (stubbed — no sub-screens yet)
-  Z           — B: close the start menu
+  Arrow keys  — move player (MELVIN) / move start-menu or save-confirm cursor
+  Enter       — START: open/close the start menu (no-op while save-confirm is open)
+  X           — A: confirm start-menu selection (SAVE opens the save-confirm
+                overlay; other options stubbed) / confirm YES-NO on that overlay
+                (YES is stubbed — see engine.menu.SaveMenu.confirm) / advance or
+                close an open dialogue box / open one by facing a sign
+  Z           — B: close whichever menu is on top (save-confirm, then start menu)
   Escape / Q  — quit
 """
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pygame
+import yaml
 
 from engine.config import cfg
+from engine.dialogue import DialogueBox
 from engine.input import (
     HeldDirectionInput,
     handle_a_button,
@@ -38,12 +44,12 @@ from engine.input import (
     handle_menu_direction,
     handle_start_button,
 )
-from engine.menu import StartMenu
+from engine.menu import SaveMenu, StartMenu
 from engine.player import Player, PlayerState
 
 _REPO_ROOT   = Path(__file__).parent.parent
 _ASSETS      = _REPO_ROOT / 'assets'
-_HUB_MAP     = _REPO_ROOT / 'data' / 'maps' / 'hub_fronthouse.json'
+_HUB_MAP     = _REPO_ROOT / 'data' / 'maps' / 'hub_fronthouse' / 'hub_fronthouse.json'
 _SPRITES_PNG = _ASSETS / 'sprites' / 'party_sprites.png'
 _SPRITES_TXT = _ASSETS / 'sprites' / 'partysprites.txt'
 _MENU_DIR    = _ASSETS / 'menus'
@@ -76,9 +82,64 @@ _MENU_ROW_Y = {
 }
 _MENU_SELECT_SHIFT_PX = 7
 
+# Save-confirm overlay layout: fixed cursor spot per option, drawn on top of
+# the start menu. Only the cursor moves — the bg image is one static overlay.
+_SAVE_MENU_CURSOR_Y = 117
+_SAVE_MENU_CURSOR_X = {
+    'YES': 87,
+    'NO':  139,
+}
+
+# Dialogue box layout. dialogue_box.png is 256x240 — 16px taller than the
+# 256x224 game screen (view_cols/view_rows * tile_px) — so it docks to one
+# edge of the screen with the other 16px cropped off, same idea as NES
+# overscan. Free text space within the image's own local coordinates is
+# given as top-left/bottom-right pixel coordinates (10,178)-(245,233),
+# inset by a margin so wrapped text doesn't sit flush against those edges.
+_DIALOGUE_FONT_PATH = _ASSETS / 'fonts' / 'ModernDOS8x8.ttf'
+_DIALOGUE_FONT_PT = 16   # renders at 8px — this font's point size isn't 1:1 with pixels
+_DIALOGUE_MARGIN_PX = 4
+_DIALOGUE_TEXT_LEFT = 10 + _DIALOGUE_MARGIN_PX
+_DIALOGUE_TEXT_TOP = 178 + _DIALOGUE_MARGIN_PX
+_DIALOGUE_TEXT_RIGHT = 245 - _DIALOGUE_MARGIN_PX
+_DIALOGUE_TEXT_BOTTOM = 233 - _DIALOGUE_MARGIN_PX
+_DIALOGUE_TEXT_W = _DIALOGUE_TEXT_RIGHT - _DIALOGUE_TEXT_LEFT
+_DIALOGUE_TEXT_H = _DIALOGUE_TEXT_BOTTOM - _DIALOGUE_TEXT_TOP
+_DIALOGUE_TEXT_COLOR = (255, 255, 255)
+
 
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def _wrap_text_to_screens(font: pygame.font.Font, text: str, rect_w: int, rect_h: int) -> list[str]:
+    """Word-wrap `text` to `rect_w`-px lines, then group those lines into
+    `rect_h`-px screens — one screen per A press, newline-joined for draw.
+
+    A page that fits in one screen returns a single-element list; a longer
+    page returns multiple, so the caller (engine.dialogue.DialogueBox, via
+    the pages list it's opened with) pages through them one A press at a time.
+    """
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if not current or font.size(candidate)[0] <= rect_w:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+
+    line_h = font.get_linesize()
+    lines_per_screen = max(1, rect_h // line_h)
+    screens = [
+        "\n".join(lines[i:i + lines_per_screen])
+        for i in range(0, len(lines), lines_per_screen)
+    ]
+    return screens or [""]
 
 
 # ── Generic app loop ─────────────────────────────────────────────────────────
@@ -225,13 +286,27 @@ def get_npc_frame(sprites: dict[str, pygame.Surface],
 # ── Start menu assets ────────────────────────────────────────────────────────
 
 def load_menu_assets(menu_dir: Path) -> dict[str, pygame.Surface]:
-    """Load the start menu's PNGs, keyed by the names used in _MENU_ROW_Y plus
-    'bg' and 'cursor'. Call after pygame.display.set_mode()."""
-    names = ('bg', 'cursor', 'inventory', 'party', 'settings', 'save')
-    return {
-        name: pygame.image.load(str(menu_dir / f'startmenu_{name}.png')).convert_alpha()
-        for name in names
+    """Load the start menu's and save-confirm overlay's PNGs, keyed by name.
+    Call after pygame.display.set_mode()."""
+    filenames = {
+        'bg':               'startmenu_bg.png',
+        'cursor':           'startmenu_cursor.png',
+        'inventory':        'startmenu_inventory.png',
+        'party':            'startmenu_party.png',
+        'settings':         'startmenu_settings.png',
+        'save':             'startmenu_save.png',
+        'save_confirm_bg':     'save_menu_bg.png',
+        'save_confirm_cursor': 'save_menu_cursor.png',
+        'dialogue_box':        'dialogue_box.png',
     }
+    assets = {
+        key: pygame.image.load(str(menu_dir / filename)).convert_alpha()
+        for key, filename in filenames.items()
+    }
+    # Pre-flipped copy for docking the dialogue box to the top of the screen
+    # instead of the bottom — see OverworldScene._draw_dialogue_box.
+    assets['dialogue_box_flipped'] = pygame.transform.flip(assets['dialogue_box'], False, True)
+    return assets
 
 
 # ── Tiled JSON map + tileset loading ────────────────────────────────────────
@@ -260,6 +335,61 @@ class TiledLayer:
 
 
 @dataclass
+class MapObject:
+    """A container/sign/npc placed on the map's Tiled object layer, merged
+    with its hand-authored content from obj_<map>.yaml / npcs_<map>.yaml
+    (see data/maps/populate_yamls.py). `dialogue` is a list of pages; only
+    `type == "sign"` is actually interactable right now — containers/NPCs
+    are out of scope until the object/event system exists."""
+    id:       int
+    name:     str
+    type:     str
+    row:      int
+    col:      int
+    gid:      int
+    dialogue: list[str] = field(default_factory=list)
+
+
+def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> list[MapObject]:
+    """Parse every objectgroup layer and merge in each object's YAML content.
+
+    Tile objects (the ones with a `gid`, which is all of them here) anchor
+    at their bottom-left corner in Tiled's coordinate system, not top-left
+    like plain rectangles — subtract the object's height before converting
+    to a tile row so placement matches what Tiled itself draws at that tile.
+    """
+    content: dict[int, dict] = {}
+    for filename in (f"obj_{map_name}.yaml", f"npcs_{map_name}.yaml"):
+        path = map_dir / filename
+        if path.exists():
+            content.update(yaml.safe_load(path.read_text()) or {})
+
+    objects: list[MapObject] = []
+    for layer in raw["layers"]:
+        if layer["type"] != "objectgroup":
+            continue
+        for obj in layer["objects"]:
+            row = int((obj["y"] - obj["height"]) / tile_px)
+            col = int(obj["x"] / tile_px)
+            data = content.get(obj["id"], {})
+            objects.append(MapObject(
+                id       = obj["id"],
+                name     = obj["name"],
+                type     = obj["type"],
+                row      = row,
+                col      = col,
+                gid      = obj.get("gid", 0),
+                dialogue = data.get("dialogue", []),
+            ))
+    return objects
+
+
+# Tile layers in this set draw after the player/NPCs, so sprites can pass
+# behind tall map features (roofs, tree canopies, etc.).
+_ABOVE_SPRITE_LAYERS = {"Tile Layer 2"}
+
+
+@dataclass
 class TiledMap:
     width:      int                 # tiles
     height:     int                 # tiles
@@ -268,6 +398,7 @@ class TiledMap:
     firstgid:   int
     tileset:    TiledTileset
     layers:     list[TiledLayer]
+    objects:    list[MapObject]
 
 
 def _load_tiled_tileset(path: Path) -> TiledTileset:
@@ -305,6 +436,8 @@ def load_tiled_map(path: Path) -> TiledMap:
         grid = [flat[r * width:(r + 1) * width] for r in range(height)]
         layers.append(TiledLayer(name=layer["name"], grid=grid))
 
+    objects = load_map_objects(raw, raw["tilewidth"], path.parent, path.stem)
+
     return TiledMap(
         width      = width,
         height     = height,
@@ -313,6 +446,7 @@ def load_tiled_map(path: Path) -> TiledMap:
         firstgid   = firstgid,
         tileset    = tileset,
         layers     = layers,
+        objects    = objects,
     )
 
 
@@ -397,11 +531,15 @@ class OverworldScene:
         self.passable = tiled_passable_grid(self.tmap)
         self.sprites = load_sprites(_SPRITES_PNG, _SPRITES_TXT, self.tile_px)
         self.menu_assets = load_menu_assets(_MENU_DIR)
+        self.dialogue_font = pygame.font.Font(str(_DIALOGUE_FONT_PATH), _DIALOGUE_FONT_PT)
         print(f'  {len(self.tile_surfaces)} tiles  |  {len(self.sprites)} sprites', flush=True)
 
         self.menu = StartMenu()
+        self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
+        self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
 
-        # No object layer in hub_fronthouse.json yet, so no NPCs to place.
+        self.objects = self.tmap.objects   # containers/signs from the object layer
+        # No npc-type objects placed on hub_fronthouse.json yet.
         self.npcs = []
         self._npc_rng = random.Random(0x4875624E5043)
 
@@ -417,6 +555,10 @@ class OverworldScene:
         # once. Two independent per-key OS repeats firing in the same frame is what
         # produced diagonal-looking moves before.
         self._input = HeldDirectionInput(repeat_ms=self.player_move_ms)
+
+        # A/B held state, tracked independently of HeldDirectionInput — used
+        # only to type the dialogue box in faster, not for repeat-stepping.
+        self._held_buttons: set[str] = set()
 
         self._anim_frame = 0       # 0 or 1, shared NPC animation tick
         self._anim_timer = 0       # ms accumulator for NPC anim flip
@@ -449,25 +591,60 @@ class OverworldScene:
             direction = _DIR_KEY.get(event.key)
             if direction:
                 if self.player.state == PlayerState.IN_MENU:
-                    handle_menu_direction(direction, self.menu)
+                    handle_menu_direction(direction, self.menu, self.save_menu)
                 else:
-                    self._input.press(direction)
+                    # Turn-in-place (a tap that doesn't step, just faces the
+                    # new way) only applies from a dead stop. Mid-glide, a
+                    # direction change — including a full reversal — is just
+                    # queued like any other held-direction press: it takes
+                    # over on the *next* step, which lands exactly when the
+                    # current tween finishes (repeat_ms == player_move_ms),
+                    # so there's no added delay and no fractional leftover
+                    # on the old axis to blend into the new one. Applying
+                    # the turn-in-place/freeze treatment mid-glide was the
+                    # bug: freezing at a fractional position on one axis and
+                    # then stepping on the *other* axis interpolated both at
+                    # once, i.e. visible diagonal movement — and the extra
+                    # forced pause before that frozen step could fire read
+                    # as the character slowing down every time it turned.
+                    at_rest = self._player_tween_elapsed >= self.player_move_ms
+                    facing = self.player.facing if at_rest else None
+                    if self._input.press(direction, facing):
+                        self.player.facing = direction
 
             button = _BUTTON_KEY.get(event.key)
+            if button:
+                self._held_buttons.add(button)
             if button == 'START':
-                handle_start_button(self.player, self.menu)
+                handle_start_button(self.player, self.menu, self.save_menu)
             elif button == 'B':
-                handle_b_button(self.player, self.menu)
+                handle_b_button(self.player, self.menu, self.save_menu)
             elif button == 'A':
-                handle_a_button(self.menu)   # stub — sub-screens not built yet
+                # Menu confirm (stub — sub-screens not built yet) / dialogue
+                # advance-close (no-op while still typing in) / open a
+                # dialogue by facing an interactable sign.
+                handle_a_button(self.player, self.menu, self.save_menu,
+                                 self.dialogue, self.npcs, self.objects,
+                                 wrap_pages=self._wrap_dialogue_pages)
         elif event.type == pygame.KEYUP:
             direction = _DIR_KEY.get(event.key)
             if direction:
                 self._input.release(direction)
+            button = _BUTTON_KEY.get(event.key)
+            if button:
+                self._held_buttons.discard(button)
 
     # ── update ───────────────────────────────────────────────────────────────
 
     def update(self, dt_ms: int) -> None:
+        if self.dialogue.is_open:
+            # Holding A or B types the current page in faster; still a full
+            # gameplay pause otherwise — no movement/anim ticks while open.
+            fast = bool(self._held_buttons & {'A', 'B'})
+            ms_per_char = cfg.dialogue_char_fast_ms if fast else cfg.dialogue_char_ms
+            self.dialogue.tick(dt_ms, ms_per_char)
+            return
+
         if self.menu.is_open:
             return   # start menu is a full pause — no gameplay ticks while open
 
@@ -512,6 +689,16 @@ class OverworldScene:
         t = min(tw['elapsed'] / _NPC_MOVE_MS, 1.0)
         return _lerp(tw['src'][0], tw['dst'][0], t), _lerp(tw['src'][1], tw['dst'][1], t)
 
+    def _wrap_dialogue_pages(self, raw_pages: list[str]) -> list[str]:
+        """Expand each hand-authored YAML page into one or more on-screen
+        screens sized to the dialogue box's text area. Passed into
+        engine.input.handle_a_button so it stays pygame-free."""
+        screens: list[str] = []
+        for page in raw_pages:
+            screens.extend(_wrap_text_to_screens(
+                self.dialogue_font, page, _DIALOGUE_TEXT_W, _DIALOGUE_TEXT_H))
+        return screens
+
     # ── camera ───────────────────────────────────────────────────────────────
 
     def _camera_offset_px(self) -> tuple[int, int]:
@@ -534,7 +721,12 @@ class OverworldScene:
         surface.fill((0, 0, 0))
         cam_x, cam_y = self._camera_offset_px()
 
-        self._draw_map(surface, cam_x, cam_y)
+        self._draw_map(surface, cam_x, cam_y, above=False)
+
+        for obj in self.objects:
+            obj_surf = get_tile_by_gid(self.tile_surfaces, self.tmap.firstgid, obj.gid)
+            if obj_surf:
+                surface.blit(obj_surf, (obj.col * self.tile_px - cam_x, obj.row * self.tile_px - cam_y))
 
         for npc in self.npcs:
             npc_surf = get_npc_frame(self.sprites, npc.npc_sprite, self._anim_frame)
@@ -547,8 +739,16 @@ class OverworldScene:
             vr, vc = self._player_vis
             surface.blit(player_surf, (round(vc * self.tile_px) - cam_x, round(vr * self.tile_px) - cam_y))
 
+        self._draw_map(surface, cam_x, cam_y, above=True)
+
         if self.menu.is_open:
             self._draw_start_menu(surface)
+
+        if self.save_menu.is_open:
+            self._draw_save_menu(surface)
+
+        if self.dialogue.is_open:
+            self._draw_dialogue_box(surface)
 
     def _draw_start_menu(self, surface: pygame.Surface) -> None:
         """Overlay: bg, each option row (highlighted one shifted right), cursor."""
@@ -562,9 +762,55 @@ class OverworldScene:
         cursor_y = _MENU_ROW_Y[selected_label]
         surface.blit(self.menu_assets['cursor'], (_MENU_X, cursor_y))
 
-    def _draw_map(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
-        """Blit every tile layer, bottom to top, offset by the camera."""
+    def _draw_save_menu(self, surface: pygame.Surface) -> None:
+        """Save-confirm overlay on top of the start menu: static bg, cursor
+        at a fixed spot per option (YES/NO) — nothing else moves."""
+        surface.blit(self.menu_assets['save_confirm_bg'], (0, 0))
+        cursor_x = _SAVE_MENU_CURSOR_X[self.save_menu.selected_option()]
+        surface.blit(self.menu_assets['save_confirm_cursor'], (cursor_x, _SAVE_MENU_CURSOR_Y))
+
+    def _player_screen_row(self) -> float:
+        """Player sprite's current top-edge y position on screen, in pixels."""
+        _, cam_y = self._camera_offset_px()
+        return self._player_vis[0] * self.tile_px - cam_y
+
+    def _draw_dialogue_box(self, surface: pygame.Surface) -> None:
+        """Bg (docked to the screen's bottom edge, 16px of the taller source
+        image cropped off the top — see _DIALOGUE_TEXT_* comment), then the
+        current screen's typed-in text.
+
+        Docks to the top instead — image vertically flipped, text rect
+        mirrored to match — when the player is in the lower half of the
+        screen. That happens near a map edge, where the camera clamps
+        instead of re-centering and the player can end up low enough that a
+        bottom-docked box would sit right on top of them.
+        """
+        view_h = surface.get_height()
+        mirrored = self._player_screen_row() > view_h / 2
+
+        box = self.menu_assets['dialogue_box_flipped' if mirrored else 'dialogue_box']
+        box_h = box.get_height()
+        blit_y = 0 if mirrored else view_h - box_h
+        surface.blit(box, (0, blit_y))
+
+        text_top_local = (box_h - _DIALOGUE_TEXT_BOTTOM) if mirrored else _DIALOGUE_TEXT_TOP
+        text_y = blit_y + text_top_local
+
+        screen_text = self.dialogue.visible_text()
+        line_h = self.dialogue_font.get_linesize()
+        for i, line in enumerate(screen_text.split("\n")):
+            line_surf = self.dialogue_font.render(line, False, _DIALOGUE_TEXT_COLOR)
+            surface.blit(line_surf, (_DIALOGUE_TEXT_LEFT, text_y + i * line_h))
+
+    def _draw_map(self, surface: pygame.Surface, cam_x: int, cam_y: int, above: bool) -> None:
+        """Blit tile layers, bottom to top, offset by the camera.
+
+        _ABOVE_SPRITE_LAYERS render after the player/NPCs so sprites can pass
+        behind tall map features (e.g. roofs, tree canopies).
+        """
         for layer in self.tmap.layers:
+            if (layer.name in _ABOVE_SPRITE_LAYERS) != above:
+                continue
             for r, row in enumerate(layer.grid):
                 y = r * self.tile_px - cam_y
                 for c, gid in enumerate(row):

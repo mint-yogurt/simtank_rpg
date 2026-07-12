@@ -24,6 +24,8 @@ def _load() -> SimpleNamespace:
         # Pacing (seconds, converted from ms for direct use in time.sleep)
         move_ms                  = pacing["move_ms"],
         player_move_ms           = pacing["player_move_ms"],
+        dialogue_char_ms         = pacing["dialogue_char_ms"],
+        dialogue_char_fast_ms    = pacing["dialogue_char_fast_ms"],
         screen_cross_ms          = pacing["screen_cross_ms"],
         interior_entry_ms        = pacing["interior_entry_ms"],
         interior_exit_prepare_ms = pacing["interior_exit_prepare_ms"],

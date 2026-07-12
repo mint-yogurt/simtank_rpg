@@ -1,0 +1,24 @@
+# Auto-synced from hub_fronthouse.json by populate_yamls.py.
+# id/name/type are overwritten on every sync; missing stub fields
+# (dialogue, contents, event) are seeded per type but never
+# overwritten once filled in -- see STUB_FIELDS in the script.
+
+3:
+  contents: []
+  dialogue: []
+  name: container3
+  type: container
+4:
+  dialogue: ["Where the FUCK did the Side House go?"]
+  name: sign1
+  type: sign
+5:
+  contents: []
+  dialogue: []
+  name: can1
+  type: container
+8:
+  contents: []
+  dialogue: []
+  name: can2
+  type: container

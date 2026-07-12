@@ -41,3 +41,41 @@ class StartMenu:
     def confirm(self) -> str:
         """Return the highlighted option. Sub-screens aren't wired up yet."""
         return OPTIONS[self.selected]
+
+
+SAVE_OPTIONS: tuple[str, ...] = ("YES", "NO")
+
+
+@dataclass
+class SaveMenu:
+    """Save-confirmation overlay, opened from SAVE on the start menu and
+    drawn on top of it. A horizontal pair: only E/W move the cursor.
+    """
+    is_open:  bool = False
+    selected: int  = field(default=1)   # defaults to NO
+
+    def open(self) -> None:
+        self.is_open = True
+        self.selected = 1   # always opens on NO
+
+    def close(self) -> None:
+        self.is_open = False
+
+    def move_cursor(self, direction: str) -> None:
+        """Move the highlight left/right. N/S are no-ops. Only two options,
+        so any E/W press just toggles between them."""
+        if direction in ("E", "W"):
+            self.selected = 1 - self.selected
+
+    def selected_option(self) -> str:
+        return SAVE_OPTIONS[self.selected]
+
+    def confirm(self) -> str:
+        """Return the highlighted option.
+
+        TODO: the actual save (writing game state to disk) isn't scoped yet.
+        Once it exists, YES should perform the save and then close this
+        overlay back to the start menu, same as NO does today. For now YES
+        does nothing — only NO/B close the overlay.
+        """
+        return SAVE_OPTIONS[self.selected]

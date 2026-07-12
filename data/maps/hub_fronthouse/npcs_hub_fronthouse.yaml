@@ -1,0 +1,6 @@
+# Auto-synced from hub_fronthouse.json by populate_yamls.py.
+# id/name/type are overwritten on every sync; missing stub fields
+# (dialogue, contents, event) are seeded per type but never
+# overwritten once filled in -- see STUB_FIELDS in the script.
+
+{}
