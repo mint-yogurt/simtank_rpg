@@ -360,8 +360,13 @@ class MapObject:
     OverworldScene.__init__) which is interactable the same way. Containers
     are out of scope until the object/event system exists. `sprite`/
     `behavior` are only ever set for `type == "npc"` entries;
-    `destination_map`/`destination_warp`/`facing` are only ever set for
-    `type == "warp"` entries — see OverworldScene._step_player/_swap_map.
+    `destination_map`/`destination_warp`/`facing`/`distance` are only ever
+    set for `type == "warp"` entries — see
+    OverworldScene._step_player/_swap_map. `facing`/`distance` do double
+    duty: they're this warp's own landing spot when something else's
+    destination_warp points here (`distance` tiles from this warp's row/col,
+    offset in the `facing` direction; distance 0 or unset lands exactly on
+    it) *and* the direction the player faces once they land.
 
     `row`/`col` are the tile this object's top-left pixel floors into —
     used for gameplay (facing/interaction checks, and for NPCs, wander
@@ -386,6 +391,7 @@ class MapObject:
     destination_map:  str | None = None
     destination_warp: str | None = None
     facing:   str | None = None
+    distance: int | None = None
 
 
 def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> list[MapObject]:
@@ -429,6 +435,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 destination_map  = data.get("destination_map"),
                 destination_warp = data.get("destination_warp"),
                 facing    = data.get("facing"),
+                distance  = data.get("distance"),
             ))
     return objects
 
@@ -576,7 +583,12 @@ def get_tile_by_gid(surfaces: list[pygame.Surface], firstgid: int, gid: int) -> 
 
 _NPC_WANDER_MOVE_CHANCE = 0.5   # per _NPC_MOVE_MS tick, chance a "wander" NPC steps
 _NPC_WANDER_DIRECTIONS = ('N', 'S', 'E', 'W')
-_NPC_WANDER_DIR_DELTA = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+
+# Cardinal direction -> (row, col) delta. Shared by NPC wander stepping and
+# warp landing-spot offset (see _swap_map) — same mapping engine.player uses
+# internally (engine.player._DIR_DELTA), just not imported since that one's
+# private to its module.
+_DIR_DELTA = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
 
 
 @dataclass
@@ -893,8 +905,11 @@ class OverworldScene:
                 f'Warp {warp.name!r} points to destination_warp={warp.destination_warp!r} '
                 f'in map {warp.destination_map!r}, but no warp with that name exists there'
             )
-        self._load_map(dest_path, tmap=dest_tmap,
-                        spawn=(target.row, target.col), facing=target.facing or 'S')
+        facing = target.facing or 'S'
+        dr, dc = _DIR_DELTA[facing]
+        distance = target.distance or 0
+        spawn = (target.row + dr * distance, target.col + dc * distance)
+        self._load_map(dest_path, tmap=dest_tmap, spawn=spawn, facing=facing)
 
     def _passable_with_npcs(self) -> list[list[bool]]:
         """The static walkable grid with every NPC's current tile marked
@@ -928,7 +943,7 @@ class OverworldScene:
             if self._npc_rng.random() >= _NPC_WANDER_MOVE_CHANCE:
                 continue
             direction = self._npc_rng.choice(_NPC_WANDER_DIRECTIONS)
-            dr, dc = _NPC_WANDER_DIR_DELTA[direction]
+            dr, dc = _DIR_DELTA[direction]
             new_row, new_col = npc.row + dr, npc.col + dc
             if not (0 <= new_row < self.tmap.height and 0 <= new_col < self.tmap.width):
                 continue
@@ -965,17 +980,23 @@ class OverworldScene:
 
     def _camera_offset_px(self) -> tuple[int, int]:
         """Top-left camera position in pixels: centered on the player's visual
-        (tweened) position, clamped so the view never scrolls past a map edge."""
+        (tweened) position, clamped so the view never scrolls past a map edge.
+        When the map is smaller than the viewport along an axis, there's no
+        room to scroll at all, so that axis centers the map instead (a
+        negative offset that letterboxes the excess viewport)."""
         view_cols, view_rows = cfg.view_cols, cfg.view_rows
         player_row, player_col = self._player_vis
 
-        max_cam_col = max(self.tmap.width - view_cols, 0)
-        max_cam_row = max(self.tmap.height - view_rows, 0)
-
-        cam_col = min(max(player_col - view_cols / 2, 0), max_cam_col)
-        cam_row = min(max(player_row - view_rows / 2, 0), max_cam_row)
+        cam_col = self._camera_axis(player_col, self.tmap.width, view_cols)
+        cam_row = self._camera_axis(player_row, self.tmap.height, view_rows)
 
         return round(cam_col * self.tile_px), round(cam_row * self.tile_px)
+
+    @staticmethod
+    def _camera_axis(player_pos: float, map_len: int, view_len: int) -> float:
+        if map_len <= view_len:
+            return (map_len - view_len) / 2
+        return min(max(player_pos - view_len / 2, 0), map_len - view_len)
 
     # ── draw ─────────────────────────────────────────────────────────────────
 

@@ -15,9 +15,9 @@ everything else (containers, signs, warps, ...) -> obj_<map>.yaml.
 id/name/type are synced from the map on every run. New entries also get
 stub fields seeded by type (container: contents/dialogue, sign: dialogue,
 npc: dialogue/event/sprite/behavior, warp: destination_map/destination_warp/
-facing) so there's a place to hand-fill them. Once you've filled in a field,
-it's yours -- re-running never overwrites or removes it, as long as that
-object's id still exists in the map's object layer.
+facing/distance) so there's a place to hand-fill them. Once you've filled in
+a field, it's yours -- re-running never overwrites or removes it, as long as
+that object's id still exists in the map's object layer.
 
 Warps are one-way and hand-paired by you: place a `warp`-type object on each
 side of a door/exit, then fill in `destination_map` (the other map's folder/
@@ -26,7 +26,11 @@ other map to land on). Names only need to be unique within a single map's
 object layer, not globally -- lookup is always scoped to destination_map
 first. `facing` is which way the player faces after spawning at this warp
 (used when something else's destination_warp points here); leave it blank
-to default to south.
+to default to south. `distance` offsets the landing spot that many tiles
+from this warp's own tile, in the `facing` direction -- e.g. facing: S,
+distance: 1 lands one tile south of this warp, so the player visibly steps
+out of a doorway instead of standing on it. Leave it blank (or 0) to land
+exactly on this warp's tile.
 
 Usage:
     python data/maps/populate_yamls.py data/maps/hub_fronthouse/hub_fronthouse.json
@@ -79,7 +83,7 @@ STUB_FIELDS = {
     "container": {"contents": [], "dialogue": []},
     "sign": {"dialogue": []},
     "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None},
-    "warp": {"destination_map": None, "destination_warp": None, "facing": None},
+    "warp": {"destination_map": None, "destination_warp": None, "facing": None, "distance": None},
 }
 
 
@@ -104,8 +108,8 @@ def _sync_file(path: Path, objects: list, map_name: str) -> None:
         f"# Auto-synced from {map_name}.json by populate_yamls.py.\n"
         f"# id/name/type are overwritten on every sync; missing stub fields\n"
         f"# (dialogue, contents, event, sprite, behavior, destination_map,\n"
-        f"# destination_warp, facing) are seeded per type but never overwritten\n"
-        f"# once filled in -- see STUB_FIELDS in the script.\n\n"
+        f"# destination_warp, facing, distance) are seeded per type but never\n"
+        f"# overwritten once filled in -- see STUB_FIELDS in the script.\n\n"
     )
     write_yaml(path, existing, header)
     print(f"wrote {path} ({len(objects)} objects)")
