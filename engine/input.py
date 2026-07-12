@@ -135,9 +135,9 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     options are stubbed — no sub-screens exist yet.
 
     Dialogue takes over once open: each press turns the page, and closes the
-    box (returning the player to IDLE) on the last one. Only signs open a
-    dialogue box right now — containers/NPCs are out of scope until the
-    object/event system exists.
+    box (returning the player to IDLE) on the last one. Signs and NPCs both
+    open a dialogue box this way (facing one and pressing A); containers are
+    out of scope until the object/event system exists.
 
     `wrap_pages(raw_pages: list[str]) -> list[str]` turns each hand-authored
     YAML page into one or more screens sized to fit the dialogue box, since a
@@ -164,7 +164,7 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
 
     if player.can_interact():
         target = player.adjacent_interactable(npcs, objects)
-        if target is not None and target.type == "sign":
+        if target is not None and target.type in ("sign", "npc"):
             dialogue.open(wrap_pages(target.dialogue))
             player.set_state(PlayerState.IN_DIALOGUE)
 

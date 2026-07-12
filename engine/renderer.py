@@ -13,9 +13,23 @@ imported here, not duplicated.
 
 Entry point: engine.renderer.run(OverworldScene, ...) — see maptest.py.
 
-NPC objects are not placed yet — hub_fronthouse.json's object layer only has
-container/sign objects so far. Sign objects (e.g. sign1) are interactable:
-face one and press A to open its dialogue, read via engine.dialogue.
+NPC objects (type == "npc" in a map's object layer) render and move per their
+authored `behavior` — "static" idles in place, "wander" roams walkable tiles
+— and are interactable exactly like signs: face one and press A to open its
+`dialogue` (see MapObject/NPC), read via engine.dialogue. No npc-type
+objects are placed on hub_fronthouse.json yet, though — its object layer
+only has container/sign objects so far.
+
+Warp objects (type == "warp") are invisible, one-way, one-tile trigger zones
+— unlike signs/NPCs there's no A-press, stepping onto one is enough. Each
+warp names its destination as a (destination_map, destination_warp) pair —
+the other map's folder/stem name, plus the *name* of the warp object on that
+map to land on — so warp names only need to be unique within one map's
+object layer, never globally (see data/maps/populate_yamls.py). Triggering
+one pauses gameplay and fades to black (cfg.warp_fade_out_ms), swaps the
+loaded map underneath the fully-black frame, then fades back in
+(cfg.warp_fade_in_ms) on the new map — see OverworldScene._step_player,
+_begin_warp, _tick_transition, _swap_map, _load_map.
 
 Controls:
   Arrow keys  — move player (MELVIN) / move start-menu or save-confirm cursor
@@ -23,7 +37,7 @@ Controls:
   X           — A: confirm start-menu selection (SAVE opens the save-confirm
                 overlay; other options stubbed) / confirm YES-NO on that overlay
                 (YES is stubbed — see engine.menu.SaveMenu.confirm) / advance or
-                close an open dialogue box / open one by facing a sign
+                close an open dialogue box / open one by facing a sign or NPC
   Z           — B: close whichever menu is on top (save-confirm, then start menu)
   Escape / Q  — quit
 """
@@ -49,7 +63,8 @@ from engine.player import Player, PlayerState
 
 _REPO_ROOT   = Path(__file__).parent.parent
 _ASSETS      = _REPO_ROOT / 'assets'
-_HUB_MAP     = _REPO_ROOT / 'data' / 'maps' / 'hub_fronthouse' / 'hub_fronthouse.json'
+_MAPS_DIR    = _REPO_ROOT / 'data' / 'maps'
+_HUB_MAP     = _MAPS_DIR / 'hub_fronthouse' / 'hub_fronthouse.json'
 _SPRITES_PNG = _ASSETS / 'sprites' / 'party_sprites.png'
 _SPRITES_TXT = _ASSETS / 'sprites' / 'partysprites.txt'
 _MENU_DIR    = _ASSETS / 'menus'
@@ -330,33 +345,59 @@ class TiledTileset:
 
 @dataclass
 class TiledLayer:
-    name: str
-    grid: list[list[int]]           # GIDs, row-major [row][col]
+    name:  str
+    grid:  list[list[int]]          # GIDs, row-major [row][col]
+    above: bool                     # True for every tile layer but the first — see load_tiled_map
 
 
 @dataclass
 class MapObject:
-    """A container/sign/npc placed on the map's Tiled object layer, merged
-    with its hand-authored content from obj_<map>.yaml / npcs_<map>.yaml
-    (see data/maps/populate_yamls.py). `dialogue` is a list of pages; only
-    `type == "sign"` is actually interactable right now — containers/NPCs
-    are out of scope until the object/event system exists."""
+    """A container/sign/npc/warp placed on the map's Tiled object layer,
+    merged with its hand-authored content from obj_<map>.yaml /
+    npcs_<map>.yaml (see data/maps/populate_yamls.py). `dialogue` is a list
+    of pages; `type == "sign"` opens it directly, and `type == "npc"`
+    entries hand theirs off to NPC (see below, built from these in
+    OverworldScene.__init__) which is interactable the same way. Containers
+    are out of scope until the object/event system exists. `sprite`/
+    `behavior` are only ever set for `type == "npc"` entries;
+    `destination_map`/`destination_warp`/`facing` are only ever set for
+    `type == "warp"` entries — see OverworldScene._step_player/_swap_map.
+
+    `row`/`col` are the tile this object's top-left pixel floors into —
+    used for gameplay (facing/interaction checks, and for NPCs, wander
+    stepping/collision). `row_exact`/`col_exact` are the same position
+    un-floored, i.e. Tiled's authored pixel placement in tile units; only
+    NPC's *initial* render position (see OverworldScene.__init__'s
+    _npc_tweens seed) ever reads these, so a static or freshly-placed NPC
+    draws exactly where it was put in Tiled instead of snapping to the
+    grid. Containers/signs always draw tile-snapped (row/col * tile_px) —
+    this field exists on them too but nothing reads it."""
     id:       int
     name:     str
     type:     str
     row:      int
     col:      int
     gid:      int
+    row_exact: float = 0.0
+    col_exact: float = 0.0
     dialogue: list[str] = field(default_factory=list)
+    sprite:   str | None = None
+    behavior: str | None = None
+    destination_map:  str | None = None
+    destination_warp: str | None = None
+    facing:   str | None = None
 
 
 def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> list[MapObject]:
     """Parse every objectgroup layer and merge in each object's YAML content.
 
-    Tile objects (the ones with a `gid`, which is all of them here) anchor
-    at their bottom-left corner in Tiled's coordinate system, not top-left
-    like plain rectangles — subtract the object's height before converting
-    to a tile row so placement matches what Tiled itself draws at that tile.
+    Tile objects (the ones with a `gid` — containers/signs, stamped with
+    Tiled's tile-stamp tool) anchor at their bottom-left corner in Tiled's
+    coordinate system, not top-left like plain rectangles, so their height
+    has to be subtracted before converting to a tile row. Objects placed
+    with the rectangle tool instead (no `gid` — e.g. NPCs, which don't need
+    a tileset graphic) anchor top-left like any rectangle and must NOT get
+    that correction, or they land one tile north of where Tiled shows them.
     """
     content: dict[int, dict] = {}
     for filename in (f"obj_{map_name}.yaml", f"npcs_{map_name}.yaml"):
@@ -369,24 +410,27 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
         if layer["type"] != "objectgroup":
             continue
         for obj in layer["objects"]:
-            row = int((obj["y"] - obj["height"]) / tile_px)
-            col = int(obj["x"] / tile_px)
+            y = (obj["y"] - obj["height"]) if "gid" in obj else obj["y"]
+            row_exact = y / tile_px
+            col_exact = obj["x"] / tile_px
             data = content.get(obj["id"], {})
             objects.append(MapObject(
-                id       = obj["id"],
-                name     = obj["name"],
-                type     = obj["type"],
-                row      = row,
-                col      = col,
-                gid      = obj.get("gid", 0),
-                dialogue = data.get("dialogue", []),
+                id        = obj["id"],
+                name      = obj["name"],
+                type      = obj["type"],
+                row       = int(row_exact),
+                col       = int(col_exact),
+                gid       = obj.get("gid", 0),
+                row_exact = row_exact,
+                col_exact = col_exact,
+                dialogue  = data.get("dialogue", []),
+                sprite    = data.get("sprite"),
+                behavior  = data.get("behavior"),
+                destination_map  = data.get("destination_map"),
+                destination_warp = data.get("destination_warp"),
+                facing    = data.get("facing"),
             ))
     return objects
-
-
-# Tile layers in this set draw after the player/NPCs, so sprites can pass
-# behind tall map features (roofs, tree canopies, etc.).
-_ABOVE_SPRITE_LAYERS = {"Tile Layer 2"}
 
 
 @dataclass
@@ -434,7 +478,11 @@ def load_tiled_map(path: Path) -> TiledMap:
             continue
         flat = layer["data"]
         grid = [flat[r * width:(r + 1) * width] for r in range(height)]
-        layers.append(TiledLayer(name=layer["name"], grid=grid))
+        # The first tile layer is the ground and draws below the player/NPCs/
+        # objects; every tile layer after it draws above them, stacked in the
+        # same order Tiled lists them in, so any number of overlay layers
+        # (roofs, canopies, ...) composite correctly.
+        layers.append(TiledLayer(name=layer["name"], grid=grid, above=len(layers) > 0))
 
     objects = load_map_objects(raw, raw["tilewidth"], path.parent, path.stem)
 
@@ -507,6 +555,49 @@ def get_tile_by_gid(surfaces: list[pygame.Surface], firstgid: int, gid: int) -> 
     return None
 
 
+# ── NPC behaviors ────────────────────────────────────────────────────────────
+#
+# Two behaviors, authored per-NPC via the `behavior` field in npcs_<map>.yaml
+# (see data/maps/populate_yamls.py):
+#   "static" — never moves, just plays its 2-frame idle animation in place.
+#   "wander" — every _NPC_MOVE_MS tick, a coin flip decides whether it takes
+#              one step in a random cardinal direction, same as the player:
+#              onto a walkable tile that isn't already occupied.
+# Any other/missing value (an un-authored NPC) defaults to "static" — the
+# safe choice, since an unconfigured NPC standing still is harmless and an
+# unconfigured one wandering unexpectedly would look like a bug.
+#
+# Unlike MapObject (which is immutable map content), NPC.row/col mutate at
+# runtime as wander NPCs move around — this is live gameplay state, not
+# authored content. NPC sprites reuse the party sheet's NPC frames (see
+# get_npc_frame/_NPC_FRAME_NAMES above) exactly like the player does with its
+# own frames; there's no per-direction facing since almost all NPC frame
+# pairs are facing-less idle/animation pairs, not a real walk cycle.
+
+_NPC_WANDER_MOVE_CHANCE = 0.5   # per _NPC_MOVE_MS tick, chance a "wander" NPC steps
+_NPC_WANDER_DIRECTIONS = ('N', 'S', 'E', 'W')
+_NPC_WANDER_DIR_DELTA = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
+
+
+@dataclass
+class NPC:
+    """A roaming/static character built from a map's `type == "npc"` objects
+    merged with npcs_<map>.yaml (see MapObject, which this is built from in
+    OverworldScene.__init__). `type` is always "npc" — it exists only so
+    Player.adjacent_interactable()/handle_a_button can branch on it the same
+    way they do for MapObject, without needing to know NPC is a distinct
+    class. `dialogue` works exactly like a sign's: face the NPC and press A
+    to open it — see handle_a_button."""
+    index:      int                 # stable identity (Tiled object id) for tweens
+    name:       str
+    row:        int
+    col:        int
+    npc_sprite: str | None          # e.g. "npc01" -- key into _NPC_FRAME_NAMES
+    behavior:   str = "static"      # "static" | "wander"
+    type:       str = "npc"
+    dialogue:   list[str] = field(default_factory=list)
+
+
 # ── Scene ────────────────────────────────────────────────────────────────────
 
 class OverworldScene:
@@ -517,38 +608,21 @@ class OverworldScene:
     so tileset/sprite loading can call .convert_alpha().
     """
 
-    def __init__(self):
+    def __init__(self, map_path: Path = _HUB_MAP):
         self.tile_px = cfg.tile_px
         self.player_move_ms = cfg.player_move_ms
 
-        print('Loading map...', flush=True)
-        self.tmap = load_tiled_map(_HUB_MAP)
-        self.tile_surfaces = load_tileset_by_gid(
-            _ASSETS / 'tiles' / self.tmap.tileset.image,
-            self.tmap.tileset.columns,
-            self.tile_px,
-        )
-        self.passable = tiled_passable_grid(self.tmap)
         self.sprites = load_sprites(_SPRITES_PNG, _SPRITES_TXT, self.tile_px)
         self.menu_assets = load_menu_assets(_MENU_DIR)
         self.dialogue_font = pygame.font.Font(str(_DIALOGUE_FONT_PATH), _DIALOGUE_FONT_PT)
-        print(f'  {len(self.tile_surfaces)} tiles  |  {len(self.sprites)} sprites', flush=True)
+        print(f'  {len(self.sprites)} sprites', flush=True)
 
         self.menu = StartMenu()
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
         self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
 
-        self.objects = self.tmap.objects   # containers/signs from the object layer
-        # No npc-type objects placed on hub_fronthouse.json yet.
-        self.npcs = []
         self._npc_rng = random.Random(0x4875624E5043)
-
         self.player = Player.default()
-        self.player.row, self.player.col = tiled_spawn_point(self.tmap)
-
-        print(f'Overworld: {self.tmap.height}r × {self.tmap.width}c  |  '
-              f'player spawn ({self.player.row},{self.player.col})  |  '
-              f'{len(self.npcs)} NPCs', flush=True)
 
         # No OS key repeat — held-key repeat is driven by engine.input.HeldDirectionInput
         # so that only one cardinal direction is ever stepped per tick, never two at
@@ -559,6 +633,68 @@ class OverworldScene:
         # A/B held state, tracked independently of HeldDirectionInput — used
         # only to type the dialogue box in faster, not for repeat-stepping.
         self._held_buttons: set[str] = set()
+
+        # Warp transition state — see _begin_warp/_tick_transition/_swap_map.
+        # None means no warp is in progress; "out" while fading to black,
+        # "in" while fading back in on the destination map (the swap itself
+        # happens the instant fade-out completes, fully hidden behind solid
+        # black). The overlay surface is allocated once and reused every
+        # frame — its size (the native render target) never changes.
+        self._transition_phase: str | None = None
+        self._transition_elapsed = 0
+        self._pending_warp: 'MapObject | None' = None
+        self._fade_overlay = pygame.Surface((cfg.view_cols * self.tile_px, cfg.view_rows * self.tile_px))
+        self._fade_overlay.fill((0, 0, 0))
+
+        self._load_map(map_path)
+
+    def _load_map(self, map_path: Path, tmap: 'TiledMap | None' = None,
+                   spawn: tuple[int, int] | None = None, facing: str | None = None) -> None:
+        """Load (or, mid-game via a warp, reload) everything specific to one
+        map: the Tiled map + tileset, passability, objects/warps/NPCs, and
+        the player's spawn tile. Pygame resources that don't vary by map
+        (sprites, menu/dialogue assets) are loaded once in __init__ instead
+        and untouched here.
+
+        `tmap`, if given, is a TiledMap the caller already parsed — _swap_map
+        has to load the destination map anyway to find the target warp
+        object, so this avoids parsing the same JSON twice. `spawn`/`facing`
+        override the map's default spawn point (tiled_spawn_point) — used
+        when arriving via a warp instead of booting into the map fresh.
+        """
+        print(f'Loading map {map_path.stem}...', flush=True)
+        self.map_path = map_path
+        self.tmap = tmap if tmap is not None else load_tiled_map(map_path)
+        self.tile_surfaces = load_tileset_by_gid(
+            _ASSETS / 'tiles' / self.tmap.tileset.image,
+            self.tmap.tileset.columns,
+            self.tile_px,
+        )
+        self.passable = tiled_passable_grid(self.tmap)
+        print(f'  {len(self.tile_surfaces)} tiles', flush=True)
+
+        self.objects = [o for o in self.tmap.objects if o.type not in ("npc", "warp")]   # containers/signs
+        self.warps = [o for o in self.tmap.objects if o.type == "warp"]
+        npc_map_objects = [o for o in self.tmap.objects if o.type == "npc"]
+        self.npcs = [
+            # NPC.row/col is the tile the NPC's sprite mostly covers, not
+            # the tile its top-left corner floors into (o.row/o.col) — a
+            # sub-tile nudge (see row_exact/col_exact) can leave the
+            # floored tile holding only a sliver of the sprite while the
+            # tile next to it holds nearly all of it. Rounding instead of
+            # flooring picks whichever tile has the majority, which is what
+            # passability (_passable_with_npcs) and interaction
+            # (Player.adjacent_interactable) both key off of, so both line
+            # up with where the NPC visually stands.
+            NPC(index=o.id, name=o.name, row=round(o.row_exact), col=round(o.col_exact),
+                npc_sprite=o.sprite, behavior=o.behavior or "static",
+                dialogue=o.dialogue)
+            for o in npc_map_objects
+        ]
+
+        self.player.row, self.player.col = spawn if spawn is not None else tiled_spawn_point(self.tmap)
+        if facing is not None:
+            self.player.facing = facing
 
         self._anim_frame = 0       # 0 or 1, shared NPC animation tick
         self._anim_timer = 0       # ms accumulator for NPC anim flip
@@ -574,15 +710,28 @@ class OverworldScene:
         self._player_tween_elapsed = self.player_move_ms
         self._player_vis = start
 
-        # Same idea for NPCs, keyed by their stable `index`.
+        # Same idea for NPCs, keyed by their stable `index` — except the
+        # *initial* rest position is seeded from the object's exact
+        # (un-floored) placement rather than its floored row/col, so an NPC
+        # renders exactly where it was placed in Tiled instead of snapping
+        # to the tile grid. NPC.row/col (tile-discrete ints) still drive
+        # every gameplay concern — wander stepping, player/NPC collision —
+        # unaffected by this; it's purely where the sprite starts drawing.
+        # A static NPC never moves, so it stays at this exact spot forever.
+        # A wander NPC's first step tweens it from here onto the tile grid
+        # (dst is always a plain int tile from then on), same as any step.
         self._npc_tweens = {
             npc.index: {
-                'src':     (float(npc.row), float(npc.col)),
-                'dst':     (float(npc.row), float(npc.col)),
+                'src':     (o.row_exact, o.col_exact),
+                'dst':     (o.row_exact, o.col_exact),
                 'elapsed': _NPC_MOVE_MS,
             }
-            for npc in self.npcs
+            for npc, o in zip(self.npcs, npc_map_objects)
         }
+
+        print(f'Overworld: {self.tmap.height}r × {self.tmap.width}c  |  '
+              f'player spawn ({self.player.row},{self.player.col})  |  '
+              f'{len(self.npcs)} NPCs  |  {len(self.warps)} warps', flush=True)
 
     # ── input ────────────────────────────────────────────────────────────────
 
@@ -637,6 +786,13 @@ class OverworldScene:
     # ── update ───────────────────────────────────────────────────────────────
 
     def update(self, dt_ms: int) -> None:
+        if self._transition_phase is not None:
+            # A warp is fading out/holding/fading in — full gameplay pause,
+            # same idea as dialogue/menu below, just driven by elapsed time
+            # instead of input.
+            self._tick_transition(dt_ms)
+            return
+
         if self.dialogue.is_open:
             # Holding A or B types the current page in faster; still a full
             # gameplay pause otherwise — no movement/anim ticks while open.
@@ -656,6 +812,7 @@ class OverworldScene:
         self._npc_move_timer += dt_ms
         if self._npc_move_timer >= _NPC_MOVE_MS:
             self._npc_move_timer -= _NPC_MOVE_MS
+            self._update_npc_wander()
 
         direction = self._input.tick(dt_ms)
         if direction:
@@ -674,13 +831,118 @@ class OverworldScene:
                 tw['elapsed'] = min(tw['elapsed'] + dt_ms, _NPC_MOVE_MS)
 
     def _step_player(self, direction: str) -> None:
-        if self.player.try_move(direction, self.passable):
+        if self.player.try_move(direction, self._passable_with_npcs()):
             # Rebase off wherever the sprite visually is right now (may be
             # mid-glide from the previous step) so repeated steps flow
             # continuously instead of stuttering.
             self._player_tween_src = self._player_vis
             self._player_tween_dst = (float(self.player.row), float(self.player.col))
             self._player_tween_elapsed = 0
+
+            # Warps auto-trigger the instant a step lands on their tile —
+            # no A press. Spawning onto a tile (see _load_map's spawn
+            # param) never goes through try_move, so landing on the paired
+            # warp on the other side can't immediately bounce back here.
+            warp = self._warp_at(self.player.row, self.player.col)
+            if warp is not None:
+                self._begin_warp(warp)
+
+    def _warp_at(self, row: int, col: int) -> 'MapObject | None':
+        for warp in self.warps:
+            if warp.row == row and warp.col == col:
+                return warp
+        return None
+
+    def _begin_warp(self, warp: 'MapObject') -> None:
+        """Start fading to black; the actual map swap happens once the
+        fade-out completes (see _tick_transition/_swap_map) so it's fully
+        hidden behind solid black instead of popping mid-screen."""
+        if not warp.destination_map or not warp.destination_warp:
+            print(f'Warp {warp.name!r} (id {warp.id}) has no destination configured '
+                  f'-- ignoring', flush=True)
+            return
+        self._transition_phase = 'out'
+        self._transition_elapsed = 0
+        self._pending_warp = warp
+
+    def _tick_transition(self, dt_ms: int) -> None:
+        self._transition_elapsed += dt_ms
+        if self._transition_phase == 'out':
+            if self._transition_elapsed >= cfg.warp_fade_out_ms:
+                self._swap_map(self._pending_warp)
+                self._pending_warp = None
+                self._transition_phase = 'in'
+                self._transition_elapsed = 0
+        elif self._transition_phase == 'in':
+            if self._transition_elapsed >= cfg.warp_fade_in_ms:
+                self._transition_phase = None
+
+    def _swap_map(self, warp: 'MapObject') -> None:
+        """Load warp.destination_map and land the player on whichever of
+        its warp objects is named warp.destination_warp. The name lookup is
+        scoped to that one destination map's object layer only — see the
+        warp docs in data/maps/populate_yamls.py for why that's enough."""
+        dest_path = _MAPS_DIR / warp.destination_map / f'{warp.destination_map}.json'
+        dest_tmap = load_tiled_map(dest_path)
+        target = next(
+            (o for o in dest_tmap.objects if o.type == "warp" and o.name == warp.destination_warp),
+            None,
+        )
+        if target is None:
+            raise ValueError(
+                f'Warp {warp.name!r} points to destination_warp={warp.destination_warp!r} '
+                f'in map {warp.destination_map!r}, but no warp with that name exists there'
+            )
+        self._load_map(dest_path, tmap=dest_tmap,
+                        spawn=(target.row, target.col), facing=target.facing or 'S')
+
+    def _passable_with_npcs(self) -> list[list[bool]]:
+        """The static walkable grid with every NPC's current tile marked
+        impassable, so the player can't walk through them. Rebuilt fresh on
+        each attempted step since NPCs move — engine.player stays headless
+        and ignorant of NPCs entirely; it just sees a plain grid."""
+        grid = [row[:] for row in self.passable]
+        for npc in self.npcs:
+            grid[npc.row][npc.col] = False
+        return grid
+
+    def _tile_occupied(self, row: int, col: int, exclude_npc: 'NPC | None' = None) -> bool:
+        """True if the player or another NPC currently stands on (row, col).
+        Used to keep wander NPCs from stepping onto the player or stacking
+        on each other."""
+        if self.player.row == row and self.player.col == col:
+            return True
+        for other in self.npcs:
+            if other is not exclude_npc and other.row == row and other.col == col:
+                return True
+        return False
+
+    def _update_npc_wander(self) -> None:
+        """One decision tick for every "wander" NPC: a coin flip decides
+        whether it steps this tick, then a random cardinal direction is
+        tried against the walkable grid and current occupancy — same rules
+        as the player, just without input driving it."""
+        for npc in self.npcs:
+            if npc.behavior != 'wander':
+                continue
+            if self._npc_rng.random() >= _NPC_WANDER_MOVE_CHANCE:
+                continue
+            direction = self._npc_rng.choice(_NPC_WANDER_DIRECTIONS)
+            dr, dc = _NPC_WANDER_DIR_DELTA[direction]
+            new_row, new_col = npc.row + dr, npc.col + dc
+            if not (0 <= new_row < self.tmap.height and 0 <= new_col < self.tmap.width):
+                continue
+            if not self.passable[new_row][new_col]:
+                continue
+            if self._tile_occupied(new_row, new_col, exclude_npc=npc):
+                continue
+
+            vis = self._npc_visual_pos(npc)
+            npc.row, npc.col = new_row, new_col
+            tw = self._npc_tweens[npc.index]
+            tw['src'] = vis
+            tw['dst'] = (float(new_row), float(new_col))
+            tw['elapsed'] = 0
 
     def _npc_visual_pos(self, npc) -> tuple[float, float]:
         tw = self._npc_tweens.get(npc.index)
@@ -750,6 +1012,25 @@ class OverworldScene:
         if self.dialogue.is_open:
             self._draw_dialogue_box(surface)
 
+        if self._transition_phase is not None:
+            self._draw_transition(surface)
+
+    def _draw_transition(self, surface: pygame.Surface) -> None:
+        """Solid black overlay on top of everything else, alpha ramping
+        0->255 during fade-out and 255->0 during fade-in (see
+        _tick_transition). The scene underneath is already the destination
+        map by the time fade-in starts — the swap happens the instant
+        fade-out completes — so this is the only piece that needs to know
+        which phase is active."""
+        if self._transition_phase == 'out':
+            t = min(self._transition_elapsed / cfg.warp_fade_out_ms, 1.0)
+            alpha = round(255 * t)
+        else:
+            t = min(self._transition_elapsed / cfg.warp_fade_in_ms, 1.0)
+            alpha = round(255 * (1 - t))
+        self._fade_overlay.set_alpha(alpha)
+        surface.blit(self._fade_overlay, (0, 0))
+
     def _draw_start_menu(self, surface: pygame.Surface) -> None:
         """Overlay: bg, each option row (highlighted one shifted right), cursor."""
         surface.blit(self.menu_assets['bg'], (0, 0))
@@ -805,11 +1086,14 @@ class OverworldScene:
     def _draw_map(self, surface: pygame.Surface, cam_x: int, cam_y: int, above: bool) -> None:
         """Blit tile layers, bottom to top, offset by the camera.
 
-        _ABOVE_SPRITE_LAYERS render after the player/NPCs so sprites can pass
-        behind tall map features (e.g. roofs, tree canopies).
+        The first tile layer (the ground) draws below the player/NPCs/objects;
+        every tile layer after it draws above them, in the same order Tiled
+        lists them, so sprites can pass behind tall map features (roofs, tree
+        canopies, ...) no matter how many overlay layers there are. See
+        TiledLayer.above / load_tiled_map.
         """
         for layer in self.tmap.layers:
-            if (layer.name in _ABOVE_SPRITE_LAYERS) != above:
+            if layer.above != above:
                 continue
             for r, row in enumerate(layer.grid):
                 y = r * self.tile_px - cam_y

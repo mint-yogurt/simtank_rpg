@@ -1,7 +1,12 @@
-# Auto-synced from hub_fronthouse.json by populate_yamls.py.
+# Auto-synced from interior_deptstore.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, destination_map,
 # destination_warp, facing) are seeded per type but never overwritten
 # once filled in -- see STUB_FIELDS in the script.
 
-{}
+3:
+  destination_map: interior_wc_deptstore
+  destination_warp: wc_warp1
+  facing: S
+  name: warp_wc
+  type: warp
