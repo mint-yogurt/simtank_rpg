@@ -32,13 +32,23 @@ loaded map underneath the fully-black frame, then fades back in
 _begin_warp, _tick_transition, _swap_map, _load_map.
 
 Controls:
-  Arrow keys  — move player (MELVIN) / move start-menu or save-confirm cursor
-  Enter       — START: open/close the start menu (no-op while save-confirm is open)
+  Arrow keys  — move player (MELVIN) / move start-menu cursor / move
+                save-confirm cursor / on the inventory screen: E-W switches
+                category (wraps), N-S scrolls the list (clamps) / on the
+                settings screen: N-S switches row (wraps), E-W changes the
+                highlighted row's value (wraps)
+  Enter       — START: open/close the start menu (no-op while save-confirm,
+                inventory, or settings screen is open)
   X           — A: confirm start-menu selection (SAVE opens the save-confirm
-                overlay; other options stubbed) / confirm YES-NO on that overlay
-                (YES is stubbed — see engine.menu.SaveMenu.confirm) / advance or
-                close an open dialogue box / open one by facing a sign or NPC
-  Z           — B: close whichever menu is on top (save-confirm, then start menu)
+                overlay, INVENTORY opens the inventory screen, SETTINGS
+                opens the settings screen; PARTY still stubbed) / confirm
+                YES-NO on the save-confirm overlay (YES is stubbed — see
+                engine.menu.SaveMenu.confirm) / no-op on the inventory and
+                settings screens (inventory is view-only; settings applies
+                changes immediately off E/W) / advance or close an open
+                dialogue box / open one by facing a sign or NPC
+  Z           — B: close whichever menu is on top (save-confirm, inventory,
+                or settings, then the start menu)
   Escape / Q  — quit
 """
 import json
@@ -58,7 +68,9 @@ from engine.input import (
     handle_menu_direction,
     handle_start_button,
 )
-from engine.menu import SaveMenu, StartMenu
+from engine.game_state import GameState
+from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
+from engine.menu import InventoryMenu, SaveMenu, SettingsMenu, StartMenu
 from engine.player import Player, PlayerState
 
 _REPO_ROOT   = Path(__file__).parent.parent
@@ -104,6 +116,33 @@ _SAVE_MENU_CURSOR_X = {
     'YES': 87,
     'NO':  139,
 }
+
+# Inventory-screen layout. No art assets exist yet for this alpha pass — the
+# whole screen is drawn from dialogue_font + plain shapes, not menu_assets
+# images like the start/save overlays above. Native render target is
+# view_cols*tile_px x view_rows*tile_px (256x224 at the default config).
+_INV_MARGIN       = 8
+_INV_HEADER_Y     = _INV_MARGIN
+_INV_LIST_TOP_Y   = 24
+_INV_LIST_LEFT_X  = _INV_MARGIN
+_INV_DIVIDER_X    = 124   # column of "|" glyphs separating list from detail pane
+_INV_DETAIL_LEFT_X = _INV_DIVIDER_X + 12
+_INV_ICON_SIZE    = 32    # placeholder box — no icon art yet
+_INV_TEXT_COLOR   = (255, 255, 255)
+_INV_DIM_COLOR    = (110, 110, 110)   # unselected list rows / divider / empty-category text
+
+# Settings-screen layout. Same "no art yet, plain dialogue_font on black"
+# approach as the inventory screen above — two rows (SCALE, DISPLAY MODE),
+# each drawn as a "< value >" pair same as the inventory header's category
+# picker (_draw_inventory_menu's `header`).
+_SET_MARGIN     = 8
+_SET_TITLE_Y    = _SET_MARGIN
+_SET_ROWS_TOP_Y = 24
+_SET_LABEL_X    = _SET_MARGIN
+_SET_VALUE_X    = 120
+_SET_ROW_LABELS = ("SCALE", "DISPLAY MODE")
+_SET_TEXT_COLOR = (255, 255, 255)
+_SET_DIM_COLOR  = (110, 110, 110)   # unselected row label
 
 # Dialogue box layout. dialogue_box.png is 256x240 — 16px taller than the
 # 256x224 game screen (view_cols/view_rows * tile_px) — so it docks to one
@@ -157,12 +196,40 @@ def _wrap_text_to_screens(font: pygame.font.Font, text: str, rect_w: int, rect_h
     return screens or [""]
 
 
+def _fit_text(font: pygame.font.Font, text: str, max_w: int) -> str:
+    """Truncate `text` with a trailing "..." if it's wider than max_w px —
+    used for the inventory list column, where item names are free-authored
+    text with no length limit and the column is a fixed pixel width."""
+    if font.size(text)[0] <= max_w:
+        return text
+    ellipsis = "..."
+    while text and font.size(text + ellipsis)[0] > max_w:
+        text = text[:-1]
+    return (text + ellipsis) if text else ellipsis
+
+
 # ── Generic app loop ─────────────────────────────────────────────────────────
 #
 # Owns the window, the clock, and event dispatch. Knows nothing about maps,
 # tiles, or NPCs — any scene that implements handle_event/update/draw can run
 # here. Title screens, the overworld, and battle all drive through this same
 # loop; nothing about it is specific to any one scene.
+
+def _set_display_mode(view_w: int, view_h: int, scale: int, fullscreen: bool) -> tuple[pygame.Surface, int, int]:
+    """(Re)open the OS window at `scale`x, windowed or fullscreen.
+
+    Fullscreen adds pygame.SCALED on top of pygame.FULLSCREEN: SDL then
+    letterbox-scales the requested (view*scale) resolution up to whatever
+    the actual display supports instead of trying to *set* the display to
+    that exact (likely unsupported) mode, which is what plain
+    pygame.FULLSCREEN would attempt. Windowed mode skips SCALED so the
+    window is exactly view*scale px, matching the 1x/2x/3x choice exactly.
+    """
+    win_w, win_h = view_w * scale, view_h * scale
+    flags = (pygame.FULLSCREEN | pygame.SCALED) if fullscreen else 0
+    window = pygame.display.set_mode((win_w, win_h), flags)
+    return window, win_w, win_h
+
 
 def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> None:
     """Open the window, build the scene, then run it until closed or Escape/Q.
@@ -175,11 +242,20 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
         handle_event(event: pygame.event.Event) -> None
         update(dt_ms: int) -> None
         draw(surface: pygame.Surface) -> None
+
+    A scene may also expose `display_scale: int` / `fullscreen: bool`
+    attributes (OverworldScene proxies these off its SettingsMenu) — after
+    every update() this loop compares them against the window's current
+    scale/fullscreen and, on a change (made via the in-game settings
+    screen), reopens the window at the new mode. Scenes that don't expose
+    them just never trigger a change, so this stays optional/generic rather
+    than specific to any one scene.
     """
     pygame.init()
     view_w, view_h = view_size
-    win_w, win_h = view_w * scale, view_h * scale
-    window = pygame.display.set_mode((win_w, win_h))
+    current_scale = scale
+    current_fullscreen = False
+    window, win_w, win_h = _set_display_mode(view_w, view_h, current_scale, current_fullscreen)
     pygame.display.set_caption(title)
     screen = pygame.Surface((view_w, view_h))  # native-res render target
 
@@ -199,6 +275,12 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
                 scene.handle_event(event)
 
         scene.update(dt)
+
+        new_scale = getattr(scene, 'display_scale', current_scale)
+        new_fullscreen = getattr(scene, 'fullscreen', current_fullscreen)
+        if new_scale != current_scale or new_fullscreen != current_fullscreen:
+            current_scale, current_fullscreen = new_scale, new_fullscreen
+            window, win_w, win_h = _set_display_mode(view_w, view_h, current_scale, current_fullscreen)
 
         scene.draw(screen)
         pygame.transform.scale(screen, (win_w, win_h), window)
@@ -355,10 +437,11 @@ class MapObject:
     """A container/sign/npc/warp placed on the map's Tiled object layer,
     merged with its hand-authored content from obj_<map>.yaml /
     npcs_<map>.yaml (see data/maps/populate_yamls.py). `dialogue` is a list
-    of pages; `type == "sign"` opens it directly, and `type == "npc"`
-    entries hand theirs off to NPC (see below, built from these in
-    OverworldScene.__init__) which is interactable the same way. Containers
-    are out of scope until the object/event system exists. `sprite`/
+    of pages; `type == "sign"` opens it directly, `type == "container"`
+    opens it via engine.input's container handling (dialogue plus an item
+    grant — see `contents` below), and `type == "npc"` entries hand theirs
+    off to NPC (see below, built from these in OverworldScene.__init__)
+    which is interactable the same way. `sprite`/
     `behavior` are only ever set for `type == "npc"` entries;
     `destination_map`/`destination_warp`/`facing`/`distance` are only ever
     set for `type == "warp"` entries — see
@@ -376,7 +459,13 @@ class MapObject:
     _npc_tweens seed) ever reads these, so a static or freshly-placed NPC
     draws exactly where it was put in Tiled instead of snapping to the
     grid. Containers/signs always draw tile-snapped (row/col * tile_px) —
-    this field exists on them too but nothing reads it."""
+    this field exists on them too but nothing reads it.
+
+    `contents` is only ever set for `type == "container"` entries: a single
+    item id from data/items/items.yaml, or None for a container that's pure
+    flavor (dialogue only, no loot). See engine.input's container handling
+    for how opening one grants the item and gates it behind a flag keyed by
+    engine.game_state.persistent_id(map_name, this object's name)."""
     id:       int
     name:     str
     type:     str
@@ -386,6 +475,7 @@ class MapObject:
     row_exact: float = 0.0
     col_exact: float = 0.0
     dialogue: list[str] = field(default_factory=list)
+    contents: str | None = None
     sprite:   str | None = None
     behavior: str | None = None
     destination_map:  str | None = None
@@ -430,6 +520,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 row_exact = row_exact,
                 col_exact = col_exact,
                 dialogue  = data.get("dialogue", []),
+                contents  = data.get("contents"),
                 sprite    = data.get("sprite"),
                 behavior  = data.get("behavior"),
                 destination_map  = data.get("destination_map"),
@@ -620,7 +711,19 @@ class OverworldScene:
     so tileset/sprite loading can call .convert_alpha().
     """
 
-    def __init__(self, map_path: Path = _HUB_MAP):
+    def __init__(self, map_path: Path = _HUB_MAP, player: Player | None = None,
+                 inventory: Inventory | None = None, game_state: GameState | None = None,
+                 active_slot: int = 1):
+        """`player`/`inventory`/`game_state`, if given, are what a save slot
+        restores (see engine.save / maptest.py's save-slot picker) — omit
+        all three for a fresh boot with no save (maptest.py's map-picker
+        flow: default Player, empty Inventory, empty GameState). `spawn` is
+        only overridden from the loaded player's own row/col when a save
+        was actually passed in; a fresh boot keeps the existing debug
+        convenience of landing on a random warp (see _load_map) rather than
+        Player.default()'s meaningless (0, 0) placeholder. `active_slot` is
+        only used by SAVE on the start menu, to know which slot to write.
+        """
         self.tile_px = cfg.tile_px
         self.player_move_ms = cfg.player_move_ms
 
@@ -631,10 +734,23 @@ class OverworldScene:
 
         self.menu = StartMenu()
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
+        self.inventory_menu = InventoryMenu()   # opened from INVENTORY on self.menu
+        self.settings_menu = SettingsMenu(scale=cfg.pygame_scale)   # opened from SETTINGS on self.menu
         self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
+        self.active_slot = active_slot
+
+        # Item defs are static hand-authored data (data/items/items.yaml),
+        # loaded once here same as sprites/menu assets. self.inventory and
+        # self.game_state are what SAVE (start menu) writes to disk and what
+        # a loaded save restores — empty/fresh unless maptest.py loaded a
+        # save slot and passed them in.
+        self.item_defs = load_item_defs()
+        self.inventory = inventory if inventory is not None else Inventory()
+        self.game_state = game_state if game_state is not None else GameState()
 
         self._npc_rng = random.Random(0x4875624E5043)
-        self.player = Player.default()
+        self._loaded_save = player is not None
+        self.player = player if player is not None else Player.default()
 
         # No OS key repeat — held-key repeat is driven by engine.input.HeldDirectionInput
         # so that only one cardinal direction is ever stepped per tick, never two at
@@ -658,7 +774,9 @@ class OverworldScene:
         self._fade_overlay = pygame.Surface((cfg.view_cols * self.tile_px, cfg.view_rows * self.tile_px))
         self._fade_overlay.fill((0, 0, 0))
 
-        self._load_map(map_path)
+        spawn = (self.player.row, self.player.col) if self._loaded_save else None
+        facing = self.player.facing if self._loaded_save else None
+        self._load_map(map_path, spawn=spawn, facing=facing)
 
     def _load_map(self, map_path: Path, tmap: 'TiledMap | None' = None,
                    spawn: tuple[int, int] | None = None, facing: str | None = None) -> None:
@@ -763,6 +881,21 @@ class OverworldScene:
               f'player spawn ({self.player.row},{self.player.col})  |  '
               f'{len(self.npcs)} NPCs  |  {len(self.warps)} warps', flush=True)
 
+    # ── display settings ────────────────────────────────────────────────────
+    #
+    # Proxies onto self.settings_menu (the actual owner of these values —
+    # see engine.menu.SettingsMenu) so engine.renderer.run()'s generic app
+    # loop can poll a plain scene attribute rather than reaching into a
+    # scene-specific menu object.
+
+    @property
+    def display_scale(self) -> int:
+        return self.settings_menu.scale
+
+    @property
+    def fullscreen(self) -> bool:
+        return self.settings_menu.fullscreen
+
     # ── input ────────────────────────────────────────────────────────────────
 
     def handle_event(self, event: pygame.event.Event) -> None:
@@ -770,7 +903,11 @@ class OverworldScene:
             direction = _DIR_KEY.get(event.key)
             if direction:
                 if self.player.state == PlayerState.IN_MENU:
-                    handle_menu_direction(direction, self.menu, self.save_menu)
+                    category_item_count = len(self.inventory.items_in(
+                        self.inventory_menu.selected_category(), self.item_defs))
+                    handle_menu_direction(direction, self.menu, self.save_menu,
+                                           self.inventory_menu, self.settings_menu,
+                                           category_item_count)
                 else:
                     # Turn-in-place (a tap that doesn't step, just faces the
                     # new way) only applies from a dead stop. Mid-glide, a
@@ -795,16 +932,26 @@ class OverworldScene:
             if button:
                 self._held_buttons.add(button)
             if button == 'START':
-                handle_start_button(self.player, self.menu, self.save_menu)
+                handle_start_button(self.player, self.menu, self.save_menu,
+                                     self.inventory_menu, self.settings_menu)
             elif button == 'B':
-                handle_b_button(self.player, self.menu, self.save_menu)
+                handle_b_button(self.player, self.menu, self.save_menu,
+                                 self.inventory_menu, self.settings_menu)
             elif button == 'A':
-                # Menu confirm (stub — sub-screens not built yet) / dialogue
+                # Menu confirm (SAVE writes self.active_slot to disk and
+                # closes back to the start menu; INVENTORY/SETTINGS open
+                # their overlays; PARTY still stubbed) / dialogue
                 # advance-close (no-op while still typing in) / open a
-                # dialogue by facing an interactable sign.
-                handle_a_button(self.player, self.menu, self.save_menu,
+                # dialogue by facing an interactable sign or NPC, or a
+                # container (grants its `contents` item + sets its flag the
+                # first time, inert after that — see engine.input).
+                handle_a_button(self.player, self.menu, self.save_menu, self.inventory_menu,
+                                 self.settings_menu,
                                  self.dialogue, self.npcs, self.objects,
-                                 wrap_pages=self._wrap_dialogue_pages)
+                                 wrap_pages=self._wrap_dialogue_pages,
+                                 game_state=self.game_state, inventory=self.inventory,
+                                 item_defs=self.item_defs, map_name=self.map_path.stem,
+                                 active_slot=self.active_slot)
         elif event.type == pygame.KEYUP:
             direction = _DIR_KEY.get(event.key)
             if direction:
@@ -1058,6 +1205,12 @@ class OverworldScene:
         if self.save_menu.is_open:
             self._draw_save_menu(surface)
 
+        if self.inventory_menu.is_open:
+            self._draw_inventory_menu(surface)
+
+        if self.settings_menu.is_open:
+            self._draw_settings_menu(surface)
+
         if self.dialogue.is_open:
             self._draw_dialogue_box(surface)
 
@@ -1098,6 +1251,107 @@ class OverworldScene:
         surface.blit(self.menu_assets['save_confirm_bg'], (0, 0))
         cursor_x = _SAVE_MENU_CURSOR_X[self.save_menu.selected_option()]
         surface.blit(self.menu_assets['save_confirm_cursor'], (cursor_x, _SAVE_MENU_CURSOR_Y))
+
+    def _draw_inventory_menu(self, surface: pygame.Surface) -> None:
+        """Alpha placeholder inventory screen: solid black, dialogue_font +
+        ASCII only — no icon/background art yet. Left half: category header
+        (E/W cycles, wraps) over a scrollable item list (N/S, clamped).
+        Right half: the highlighted item's icon placeholder, name,
+        description, and effect — blank if the category has nothing in it.
+        """
+        surface.fill((0, 0, 0))
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+
+        category = self.inventory_menu.selected_category()
+        header = f"< {CATEGORY_LABELS[category]} >"
+        surface.blit(font.render(header, False, _INV_TEXT_COLOR), (_INV_LIST_LEFT_X, _INV_HEADER_Y))
+
+        view_h = cfg.view_rows * self.tile_px
+        for row in range((view_h - _INV_LIST_TOP_Y) // line_h):
+            surface.blit(font.render("|", False, _INV_DIM_COLOR),
+                         (_INV_DIVIDER_X, _INV_LIST_TOP_Y + row * line_h))
+
+        item_ids = self.inventory.items_in(category, self.item_defs)
+        if not item_ids:
+            surface.blit(font.render("(nothing here)", False, _INV_DIM_COLOR),
+                         (_INV_LIST_LEFT_X, _INV_LIST_TOP_Y))
+            return
+
+        list_w = _INV_DIVIDER_X - _INV_LIST_LEFT_X - 4   # keep clear of the divider column
+        selected = self.inventory_menu.selected
+        for i, item_id in enumerate(item_ids):
+            item_def = self.item_defs[item_id]
+            qty = self.inventory.counts.get(item_id, 0)
+            suffix = f" x{qty}" if item_def.stackable and qty > 1 else ""
+            cursor = "> " if i == selected else "  "
+            color = _INV_TEXT_COLOR if i == selected else _INV_DIM_COLOR
+            line = _fit_text(font, f"{cursor}{item_def.name}{suffix}", list_w)
+            surface.blit(font.render(line, False, color),
+                         (_INV_LIST_LEFT_X, _INV_LIST_TOP_Y + i * line_h))
+
+        self._draw_inventory_detail(surface, self.item_defs[item_ids[selected]])
+
+    def _draw_inventory_detail(self, surface: pygame.Surface, item_def: 'ItemDef') -> None:
+        """Right-half detail pane for whichever item is currently
+        highlighted on the inventory screen."""
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+        x, y = _INV_DETAIL_LEFT_X, _INV_LIST_TOP_Y
+
+        icon_rect = pygame.Rect(x, y, _INV_ICON_SIZE, _INV_ICON_SIZE)
+        pygame.draw.rect(surface, _INV_TEXT_COLOR, icon_rect, width=1)   # icon placeholder — no art yet
+        y += _INV_ICON_SIZE + line_h
+
+        surface.blit(font.render(item_def.name, False, _INV_TEXT_COLOR), (x, y))
+        y += line_h * 2
+
+        detail_w = cfg.view_cols * self.tile_px - x - _INV_MARGIN
+        wrapped = _wrap_text_to_screens(font, item_def.description, detail_w, rect_h=10_000)[0]
+        for line in wrapped.split("\n"):
+            surface.blit(font.render(line, False, _INV_TEXT_COLOR), (x, y))
+            y += line_h
+        y += line_h
+
+        effect_line = self._format_item_effect(item_def.effect)
+        if effect_line:
+            surface.blit(font.render(effect_line, False, _INV_TEXT_COLOR), (x, y))
+
+    @staticmethod
+    def _format_item_effect(effect: dict | None) -> str:
+        """'{hp: 15, mp: 5}' -> 'HP +15  MP +20' for the detail pane. Empty
+        string (nothing drawn) for non-consumables, which have no effect."""
+        if not effect:
+            return ""
+        return "  ".join(f"{key.upper()} +{value}" for key, value in effect.items())
+
+    def _draw_settings_menu(self, surface: pygame.Surface) -> None:
+        """Alpha placeholder settings screen: solid black, dialogue_font
+        only — same "no art yet" approach as the inventory screen. Two
+        rows, each a "< value >" pair like the inventory header's category
+        picker; the highlighted row's label is drawn in the bright color,
+        the other dim. Values change immediately off E/W (see
+        engine.menu.SettingsMenu.move_cursor) — there's no separate confirm
+        step, so nothing here needs to know about that, only display the
+        current value.
+        """
+        surface.fill((0, 0, 0))
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+
+        surface.blit(font.render("SETTINGS", False, _SET_TEXT_COLOR), (_SET_LABEL_X, _SET_TITLE_Y))
+
+        scale = self.settings_menu.scale
+        mode = "FULLSCREEN" if self.settings_menu.fullscreen else "WINDOWED"
+        values = (f"{scale}x", mode)
+
+        for i, label in enumerate(_SET_ROW_LABELS):
+            y = _SET_ROWS_TOP_Y + i * line_h
+            selected = i == self.settings_menu.selected
+            color = _SET_TEXT_COLOR if selected else _SET_DIM_COLOR
+            cursor = "> " if selected else "  "
+            surface.blit(font.render(f"{cursor}{label}", False, color), (_SET_LABEL_X, y))
+            surface.blit(font.render(f"< {values[i]} >", False, _SET_TEXT_COLOR), (_SET_VALUE_X, y))
 
     def _player_screen_row(self) -> float:
         """Player sprite's current top-edge y position on screen, in pixels."""

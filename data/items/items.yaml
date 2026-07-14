@@ -4,17 +4,17 @@
 #   id:          unique snake_case key referenced by inventory/loot tables
 #   icon:        icon name ## worry about this later
 #   name:        display name
-#   category:    healing | weapon | armour | key
+#   category:    consumables | weapon | armour | key
 #   description: flavour text for the item screen
-#   effect:      for healing — {hp: N} or {mp: N} or both; omit for non-consumables
-#   slot:        for weapon/armour — which equipment slot this fills 
+#   effect:      {hp: N} and/or {mp: N} and/or other keys as new effect types show up; omit for non-consumables
+#   slot:        for weapon/armour — which equipment slot this fills
 #   stackable:   true for consumables, false for equipment/key items
 #   value:       shop sell price in whatever currency unit we settle on (0 = unsellable)
 
-healing:
+consumables:
   - id: forgotten_onion
     name: Forgotten Onion
-    category: healing
+    category: consumables
     description: A source of much crying. Restores 15 HP.
     effect: {hp: 15}
     stackable: true
@@ -22,7 +22,7 @@ healing:
 
   - id: chinese_mana_potion
     name: Chinese Mana Potion
-    category: healing
+    category: consumables
     description: The label is in a language nobody can read.
     effect: {mp: 20}
     stackable: true
@@ -30,7 +30,7 @@ healing:
 
   - id: piggled_egg
     name: Piggled Egg
-    category: healing
+    category: consumables
     description: Curiously spicy pickled egg.
     effect: {hp: 25}
     stackable: true
@@ -38,7 +38,7 @@ healing:
 
   - id: boiled_hotdog
     name: Boiled Hotdog
-    category: healing
+    category: consumables
     description: A classic.
     effect: {hp: 20}
     stackable: true
@@ -46,7 +46,7 @@ healing:
 
   - id: goo
     name: Goo
-    category: healing
+    category: consumables
     description: Unidentified but restorative.
     effect: {hp: 10, mp: 5}
     stackable: true
@@ -54,7 +54,7 @@ healing:
 
   - id: bag_of_soup
     name: Bag of Soup
-    category: healing
+    category: consumables
     description: Full heal, but you have to eat it out of a bag.
     effect: {hp: 999}
     stackable: true

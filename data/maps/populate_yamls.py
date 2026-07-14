@@ -80,7 +80,7 @@ def sync_map(map_path: Path) -> None:
 # Stub fields seeded onto new entries, keyed by Tiled object type. Only
 # applied when the field is missing -- never overwrites a hand-filled value.
 STUB_FIELDS = {
-    "container": {"contents": [], "dialogue": []},
+    "container": {"contents": None, "dialogue": []},
     "sign": {"dialogue": []},
     "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None},
     "warp": {"destination_map": None, "destination_warp": None, "facing": None, "distance": None},

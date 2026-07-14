@@ -7,14 +7,31 @@
 3:
   destination_map: interior_wc_deptstore
   destination_warp: wc_warp1
-  distance: null
+  distance: 1
   facing: S
   name: warp_wc
   type: warp
 4:
-  destination_map: null
-  destination_warp: null
-  distance: null
-  facing: null
+  destination_map: interior_office_deptstore
+  destination_warp: office_enter
+  distance: 1
+  facing: S
   name: warp_office
+  type: warp
+5:
+  name: ''
+  type: ''
+6:
+  destination_map: town_parkinglot
+  destination_warp: dept_frontdoor_L
+  distance: 1
+  facing: N
+  name: dept_entrance_L
+  type: warp
+7:
+  destination_map: town_parkinglot
+  destination_warp: dept_frontdoor_R
+  distance: 1
+  facing: N
+  name: dept_entrance_R
   type: warp

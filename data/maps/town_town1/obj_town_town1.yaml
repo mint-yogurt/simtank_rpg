@@ -4,4 +4,101 @@
 # destination_warp, facing, distance) are seeded per type but never
 # overwritten once filled in -- see STUB_FIELDS in the script.
 
-{}
+1:
+  destination_map: town_parkinglot
+  destination_warp: prklot_enter_1
+  distance: 1
+  facing: S
+  name: prklot_enter_1
+  type: warp
+2:
+  destination_map: town_parkinglot
+  destination_warp: prklot_enter_2
+  distance: 1
+  facing: S
+  name: prklot_enter_2
+  type: warp
+3:
+  destination_map: town_parkinglot
+  destination_warp: prklot_enter_3
+  distance: 1
+  facing: S
+  name: prklot_enter_3
+  type: warp
+4:
+  destination_map: town_parkinglot
+  destination_warp: prklot_enter_4
+  distance: 1
+  facing: S
+  name: prklot_enter_4
+  type: warp
+5:
+  destination_map: town_parkinglot
+  destination_warp: prklot_enter_5
+  distance: 1
+  facing: S
+  name: prklot_enter_5
+  type: warp
+6:
+  destination_map: hub_fronthouse
+  destination_warp: fhwarp_1
+  distance: 2
+  facing: W
+  name: fhwarp_1
+  type: warp
+7:
+  destination_map: hub_fronthouse
+  destination_warp: fhwarp_2
+  distance: 2
+  facing: W
+  name: fhwarp_2
+  type: warp
+8:
+  destination_map: hub_fronthouse
+  destination_warp: fhwarp_3
+  distance: 2
+  facing: W
+  name: fhwarp_3
+  type: warp
+9:
+  destination_map: hub_fronthouse
+  destination_warp: fhwarp_4
+  distance: 2
+  facing: W
+  name: fhwarp_4
+  type: warp
+10:
+  destination_map: hub_fronthouse
+  destination_warp: fhwarp_5
+  distance: 2
+  facing: W
+  name: fhwarp_5
+  type: warp
+11:
+  destination_map: interior_town1
+  destination_warp: tinyhouse
+  distance: 1
+  facing: S
+  name: tinyhouse
+  type: warp
+12:
+  destination_map: interior_town1
+  destination_warp: 3xhouse
+  distance: 1
+  facing: S
+  name: 3xhouse
+  type: warp
+13:
+  destination_map: interior_town1
+  destination_warp: house_SW
+  distance: 1
+  facing: S
+  name: house_SW
+  type: warp
+14:
+  destination_map: interior_town1
+  destination_warp: house_NW
+  distance: 1
+  facing: S
+  name: house_NW
+  type: warp

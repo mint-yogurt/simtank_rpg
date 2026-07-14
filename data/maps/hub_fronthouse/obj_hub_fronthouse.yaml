@@ -4,23 +4,68 @@
 # destination_warp, facing, distance) are seeded per type but never
 # overwritten once filled in -- see STUB_FIELDS in the script.
 
-3:
-  contents: []
-  dialogue: []
-  name: container3
-  type: container
-4:
+9:
+  destination_map: null
+  destination_warp: null
+  distance: null
+  facing: null
+  name: rearhouse_door
+  type: warp
+10:
+  destination_map: null
+  destination_warp: null
+  distance: null
+  facing: null
+  name: fronthouse_door
+  type: warp
+11:
   dialogue:
-  - Where the FUCK did the Side House go?
-  name: sign1
+  - Here lies Donny's childhood.
+  name: donny_grave
   type: sign
-5:
-  contents: []
-  dialogue: []
-  name: can1
-  type: container
-8:
-  contents: []
-  dialogue: []
-  name: can2
+12:
+  dialogue:
+  - What a wonderful world.
+  name: emptytrash1
+  type: sign
+13:
+  destination_map: town_town1
+  destination_warp: fhwarp_1
+  distance: 2
+  facing: E
+  name: fhwarp_1
+  type: warp
+14:
+  destination_map: town_town1
+  destination_warp: fhwarp_2
+  distance: 2
+  facing: E
+  name: fhwarp_2
+  type: warp
+15:
+  destination_map: town_town1
+  destination_warp: fhwarp_3
+  distance: 2
+  facing: E
+  name: fhwarp_3
+  type: warp
+16:
+  destination_map: town_town1
+  destination_warp: fhwarp_4
+  distance: 2
+  facing: E
+  name: fhwarp_4
+  type: warp
+17:
+  destination_map: town_town1
+  destination_warp: fhwarp_5
+  distance: 2
+  facing: E
+  name: fhwarp_5
+  type: warp
+18:
+  contents: forgotten_onion
+  dialogue:
+  - I knew I left that somewhere...
+  name: rearhouse_trash
   type: container

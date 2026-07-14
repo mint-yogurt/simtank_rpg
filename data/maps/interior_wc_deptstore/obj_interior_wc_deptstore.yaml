@@ -22,7 +22,7 @@
 6:
   destination_map: interior_deptstore
   destination_warp: warp_wc
-  distance: null
+  distance: 1
   facing: S
   name: wc_warp1
   type: warp
@@ -32,10 +32,12 @@
   name: wc_trashcan
   type: sign
 12:
-  dialogue: [Lookin real jacked, baby.]
+  dialogue:
+  - Lookin real jacked, baby.
   name: wc_mirror2
   type: sign
 17:
-  dialogue: [Interesting.]
+  dialogue:
+  - Interesting.
   name: wc_mirror
   type: sign

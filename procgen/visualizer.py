@@ -1,10 +1,11 @@
 """Retro pixel visualizer — standalone pygame demo, not part of the game.
 
 2000s-era music-visualizer / Jeff Minter "Virtual Light Machine" homage: a
-handful of effects (plasma, ripple interference, particle swarm, tunnel warp)
-rendered onto a 256x240 buffer and scaled up. Each effect is driven purely by
-a continuous time value, so nothing ever repeats exactly. Effects auto-cycle
-with a crossfade; press SPACE to cycle early, ESC or close the window to quit.
+handful of effects (plasma, ripple interference, particle swarm, tunnel warp,
+starfield warp) rendered onto a 256x240 buffer and scaled up. Each effect is
+driven purely by a continuous time value, so nothing ever repeats exactly.
+Pick one effect at the prompt and it runs standalone; ESC or close the window
+to quit.
 
 Run directly:
     source .venv/bin/activate
@@ -22,8 +23,6 @@ import pygame
 WIDTH, HEIGHT = 256, 240
 SCALE = 3
 FPS = 60
-MODE_SECONDS = 15.0
-TRANSITION_SECONDS = 1.5
 
 
 def hsv_to_rgb(h, s, v):
@@ -193,70 +192,27 @@ class StarfieldWarpEffect:
         return self.trail / 255.0
 
 
+EFFECTS = {
+    "1": ("plasma", PlasmaEffect),
+    "2": ("ripples", RipplesEffect),
+    "3": ("swarm", SwarmEffect),
+    "4": ("tunnel", TunnelEffect),
+    "5": ("starfield", StarfieldWarpEffect),
+}
+
+
 def prompt_mode():
     print("Select visualization:")
-    print("  1) classic suite  (plasma / ripples / swarm / tunnel, auto-cycling)")
-    print("  2) starfield warp (straight-line warp-speed starfield)")
+    print("  1) plasma          (sum-of-sines plasma with drifting hue field)")
+    print("  2) ripples         (circular wave interference)")
+    print("  3) swarm           (Lissajous particle swarm with trails)")
+    print("  4) tunnel          (color tunnel warp)")
+    print("  5) starfield warp  (straight-line warp-speed starfield)")
     choice = input("> ").strip()
-    return "starfield" if choice == "2" else "classic"
+    return EFFECTS.get(choice, EFFECTS["1"])
 
 
-def run_classic(screen, canvas, clock):
-    effects = [
-        ("plasma", PlasmaEffect()),
-        ("ripples", RipplesEffect()),
-        ("swarm", SwarmEffect()),
-        ("tunnel", TunnelEffect()),
-    ]
-
-    t0 = time.perf_counter()
-    current = 0
-    mode_start = 0.0
-    last_rgb = effects[current][1].render(0.0)
-    prev_frame = None
-
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_SPACE:
-                    prev_frame = last_rgb
-                    current = (current + 1) % len(effects)
-                    mode_start = time.perf_counter() - t0
-                    pygame.display.set_caption(f"visualizer - {effects[current][0]}")
-
-        t = time.perf_counter() - t0
-        name, effect = effects[current]
-
-        if t - mode_start > MODE_SECONDS:
-            prev_frame = last_rgb
-            current = (current + 1) % len(effects)
-            mode_start = t
-            name, effect = effects[current]
-            pygame.display.set_caption(f"visualizer - {name}")
-
-        rgb = effect.render(t)
-        elapsed_in_mode = t - mode_start
-        if prev_frame is not None and elapsed_in_mode < TRANSITION_SECONDS:
-            blend = elapsed_in_mode / TRANSITION_SECONDS
-            rgb = prev_frame * (1.0 - blend) + rgb * blend
-            if blend >= 1.0:
-                prev_frame = None
-
-        last_rgb = rgb
-        frame = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
-        pygame.surfarray.blit_array(canvas, frame.transpose(1, 0, 2))
-        pygame.transform.scale(canvas, (WIDTH * SCALE, HEIGHT * SCALE), screen)
-        pygame.display.flip()
-        clock.tick(FPS)
-
-
-def run_starfield(screen, canvas, clock):
-    effect = StarfieldWarpEffect()
+def run_effect(screen, canvas, clock, effect):
     t0 = time.perf_counter()
 
     running = True
@@ -278,17 +234,14 @@ def run_starfield(screen, canvas, clock):
 
 def main():
     pygame.init()
-    mode = prompt_mode()
+    name, effect_cls = prompt_mode()
 
-    pygame.display.set_caption(f"visualizer - {mode}")
+    pygame.display.set_caption(f"visualizer - {name}")
     screen = pygame.display.set_mode((WIDTH * SCALE, HEIGHT * SCALE))
     canvas = pygame.Surface((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
-    if mode == "starfield":
-        run_starfield(screen, canvas, clock)
-    else:
-        run_classic(screen, canvas, clock)
+    run_effect(screen, canvas, clock, effect_cls())
 
     pygame.quit()
     sys.exit()

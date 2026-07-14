@@ -10,6 +10,7 @@ build/
 venv/
 CLAUDE.local.md
 world.db
+saves/
 web/static/screens/
 ref/
 .claude/settings.local.json
