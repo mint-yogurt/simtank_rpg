@@ -1,0 +1,65 @@
+# Master enemy list -- hand-edited. Referenced by id from `enemy`/
+# `enemy_spawner` objects on any map's obj_<map>.yaml (see
+# data/maps/populate_yamls.py). Loaded by engine.enemy.load_enemy_defs().
+#
+# Template -- copy this block, rename the key, fill in your own values:
+#
+# some_enemy_id:                # key other objects reference as `enemy_id`
+#   name: "SOME ENEMY"          # display name (all-caps convention, not enforced)
+#   sprite: some_enemy_id       # stem of a file in assets/sprites/enemies/ --
+#                                #   a single horizontal strip, 16px tall,
+#                                #   frame count = width / 16 (2 frames today:
+#                                #   a south-facing walk cycle)
+#   battle_art: some_enemy.png  # filename in assets/tiles/enemies/ -- the
+#                                #   full-size static portrait shown on the
+#                                #   battle screen (engine.renderer.BattleScene),
+#                                #   unrelated to the overworld `sprite` strip
+#                                #   above; omit/leave blank if none exists yet
+#   battle_bg: null              # a procgen/visualizer.py effect name
+#                                #   (plasma/ripples/swarm/tunnel/starfield) to
+#                                #   use as this enemy's battle background;
+#                                #   null/omitted picks one at random per battle
+#   iq: 60                      # combat stat, matches engine.battle.Fighter
+#   weight: 500                 # combat stat, matches engine.battle.Fighter
+#   sweat: 6                    # combat stat, matches engine.battle.Fighter
+#   hair: 20                    # combat stat, matches engine.battle.Fighter
+#   level: 3                    # flat int, or a [min, max] range rolled at
+#                                #   spawn/placement time; a specific `enemy`
+#                                #   or `enemy_spawner` object on a map can
+#                                #   override this for that one placement
+#   move_speed: 2.5             # tiles/sec, fractional -- continuous
+#                                #   sub-tile movement, not tile-hops
+#   behavior: sentinel          # wanderer | pacer | sentinel -- see engine/enemy.py
+#   behavior_axis: null         # H | V -- pacer only (H = paces west/east,
+#                                #   V = paces north/south); leave null otherwise
+
+fat_guy2:
+  name: "FAT GUY"
+  sprite: fat_guy2
+  battle_art: fat_guy2.png
+  battle_bg: null
+  iq: 60
+  weight: 500
+  sweat: 3
+  hair: 10
+  level: 1
+  move_speed: 2.5
+  behavior: sentinel
+  behavior_axis: null
+  abilities:
+
+
+parkinglotguy:
+  name: "PARKING LOT GUY"
+  sprite: parkinglotguy
+  battle_art: parkinglotguy.png
+  battle_bg:
+  iq: 40
+  weight: 90
+  sweat: 4
+  hair: 1
+  level: 1
+  move_speed: 2
+  behavior: wanderer
+  behavior_axis: null
+  abilities:

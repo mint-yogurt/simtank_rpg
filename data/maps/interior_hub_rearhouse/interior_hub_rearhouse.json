@@ -1,0 +1,89 @@
+{ "compressionlevel":-1,
+ "height":3,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[138, 137, 169, 169, 136,
+            152, 184, 184, 185, 154,
+            168, 184, 185, 186, 170],
+         "height":3,
+         "id":1,
+         "name":"Tile Layer 1",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":5,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "draworder":"topdown",
+         "id":3,
+         "name":"Object Layer 1",
+         "objects":[
+                {
+                 "gid":241,
+                 "height":16,
+                 "id":1,
+                 "name":"poots_jail",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"npc",
+                 "visible":true,
+                 "width":16,
+                 "x":50,
+                 "y":32
+                }, 
+                {
+                 "gid":241,
+                 "height":16,
+                 "id":2,
+                 "name":"rearhouse_door",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"warp",
+                 "visible":true,
+                 "width":16,
+                 "x":16,
+                 "y":16
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "data":[0, 0, 226, 227, 228,
+            0, 0, 242, 243, 244,
+            89, 0, 0, 0, 0],
+         "height":3,
+         "id":2,
+         "name":"Tile Layer 2",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":5,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":4,
+ "nextobjectid":4,
+ "orientation":"orthogonal",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.2",
+ "tileheight":16,
+ "tilesets":[
+        {
+         "firstgid":1,
+         "source":"..\/..\/..\/assets\/tiles\/tiles_interior_deptstore.json"
+        }, 
+        {
+         "firstgid":257,
+         "source":"..\/..\/..\/assets\/tiles\/tiles_town.json"
+        }],
+ "tilewidth":16,
+ "type":"map",
+ "version":"1.10",
+ "width":5
+}

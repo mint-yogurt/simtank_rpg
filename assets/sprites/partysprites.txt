@@ -50,12 +50,12 @@
 10,3 =
 11,3 =
 
-0,4 = npc01_S1 #these npcs only ever face south placeholder colours for npc01 - ff83c1, 3f51cf, c03570
-1,4 = npc01_S2 #p.h. colours ff83c1, 3f51cf, c03570
-2,4 = npc02_S1 # placeholder colours - c03570, ff83c1
-3,4 = npc02_S2 # placeholder colours - c03570, ff83c1
-4,4 = npc05_S1 # placeholder colour - 5f0b61
-5,4 = npc05_S2 # placeholder colour - 5f0b61
+0,4 =
+1,4 =
+2,4 =
+3,4 =
+4,4 =
+5,4 =
 6,4 = enemy_overworld1_S1 # new enemy overworld sprites
 7,4 = enemy_overworld1_S2 # frame 2 of above sprite
 8,4 =
@@ -63,12 +63,12 @@
 10,4 =
 11,4 =
 
-0,5 = npc03_S1 # placeholder colours - ffcfc8, 3f51cf
-1,5 = npc03_S2 # placeholder colours - ffcfc8, 3f51cf
-2,5 = npc04_S1 # placeholder colours - 696969, 595652
-3,5 = npc04_S2 # placeholder colours - 696969, 595652
-4,5 = npc06_S1 # placeholder colours - c03570, ff83c1
-5,5 = npc06_S1 # placeholder colours - c03570, ff83c1
+0,5 =
+1,5 =
+2,5 =
+3,5 =
+4,5 =
+5,5 =
 6,5 = enemy_overworld2_S1 # new enemy overworld sprite 2 frame 1
 7,5 = enemy_overworld2_S2 
 8,5 =
@@ -76,13 +76,13 @@
 10,5 =
 11,5 =
 
-0,6 = npc07_S1 # placeholder colours - 3f51cf
-1,6 = npc07_S1 # placeholder colours - 3f51cf
-2,6 = npc08_W # placeholder colours: ffcfc8, c03570 (note this one faces e+w but just use it as all the other npc sprites, alternating between the frames no matter which direction it faces
-3,6 = npc08_E # placeholder colours: ffcfc8, c03570
-4,6 = 
-5,6 = 
-6,6 = enemy_overworld3_S1 
+0,6 =
+1,6 =
+2,6 =
+3,6 =
+4,6 =
+5,6 =
+6,6 = enemy_overworld3_S1
 7,6 = enemy_overworld3_S2
 8,6 =
 9,6 =

@@ -1,7 +1,7 @@
 """Deterministic enemy generation for simtank_rpg.
 
 Given a seed, produces a list of enemies with names, combat stats, and an NPC
-sprite key. Stat ranges match the Fighter dataclass in engine/combat.py.
+sprite key. Stat ranges match the Fighter dataclass in engine/battle.py.
 """
 
 import random
@@ -68,7 +68,7 @@ def generate_enemies(seed: int, count: int, level: int = 1,
         sprite_palette, overworld_sprite, behavior_type, behavior_axis
 
     `level` is the base level; each enemy gets ±1 variance.
-    Stat ranges match combat.py: IQ 40-200, WEIGHT 0-900, SWEAT 0-10, HAIR 0-100.
+    Stat ranges match engine/battle.py: IQ 40-200, WEIGHT 0-900, SWEAT 0-10, HAIR 0-100.
     `allow_overworld_sprite`: when True (overworld enemies), enemy also gets an
         overworld_sprite for the map view; battle and cave use npc_sprite.
     """

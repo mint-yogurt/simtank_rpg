@@ -9,8 +9,10 @@ either the number or the typed name. `map` first prompts for a save slot
 `c<N>` to wipe slot N back to nothing, so different chapters/scenarios can
 be tested without hand-editing save files. A fresh/new-game boot then lists
 every folder under data/maps/ (each expected to hold a Tiled export named
-<folder>.json) same as before. `battles` and `debug screen` are stubs for
-later.
+<folder>.json) same as before. `battles` prompts for an enemy id from
+data/enemy/enemies.yaml and boots engine.renderer.BattleScene against it —
+MELVIN vs. that one enemy, auto-attack only (see engine/battle.py). `debug
+screen` is still a stub for later.
 """
 import os
 import sys
@@ -18,7 +20,8 @@ from functools import partial
 from pathlib import Path
 
 from engine.config import cfg
-from engine.renderer import OverworldScene, run
+from engine.enemy import load_enemy_defs
+from engine.renderer import BattleScene, OverworldScene, run
 from engine.save import SLOT_COUNT, clear_slot, load_from_slot, slot_exists
 
 _MAPS_DIR = Path(__file__).parent / "data" / "maps"
@@ -84,6 +87,22 @@ def _choose_save_slot() -> tuple[int, bool]:
     return slot, not slot_exists(slot)
 
 
+def _choose_enemy() -> str:
+    enemy_ids = sorted(load_enemy_defs().keys())
+    if not enemy_ids:
+        print("No enemies found in data/enemy/enemies.yaml", flush=True)
+        sys.exit(1)
+
+    for i, eid in enumerate(enemy_ids, start=1):
+        print(f"  {i}. {eid}")
+    choice = input(f"enemy (1-{len(enemy_ids)})? ").strip()
+    try:
+        return enemy_ids[int(choice) - 1]
+    except (ValueError, IndexError):
+        print(f"Unknown choice {choice!r}", flush=True)
+        sys.exit(1)
+
+
 _MODES = ["map", "battles", "debug screen"]
 
 
@@ -130,8 +149,13 @@ def main():
             title=f"Front House Gaiden — debug [{map_path.parent.name}] (slot {slot})",
         )
     elif choice == "battles":
-        print("battles: not yet implemented", flush=True)
-        sys.exit(1)
+        enemy_id = _choose_enemy()
+        run(
+            partial(BattleScene, enemy_id=enemy_id),
+            view_size=view_size,
+            scale=cfg.pygame_scale,
+            title=f"Front House Gaiden — debug battle [{enemy_id}]",
+        )
     elif choice == "debug screen":
         print("debug screen: not yet implemented", flush=True)
         sys.exit(1)

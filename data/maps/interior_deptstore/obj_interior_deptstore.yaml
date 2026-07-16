@@ -1,8 +1,74 @@
 # Auto-synced from interior_deptstore.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
-# (dialogue, contents, event, sprite, behavior, destination_map,
-# destination_warp, facing, distance) are seeded per type but never
+# (dialogue, contents, event, sprite, behavior, npc_id,
+# destination_map, destination_warp, facing, distance, enemy_id,
+# level, enemies, spawn_chance) are seeded per type but never
 # overwritten once filled in -- see STUB_FIELDS in the script.
+#
+# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the
+#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this
+#   placement's own sprite/behavior/dialogue then become optional
+#   overrides on top of that shared definition: set, they win for
+#   this one placement; left blank (null / []), they fall back to
+#   whatever npc.yaml's entry says. event is unrelated -- still
+#   just a reserved stub, not wired to anything yet.
+#
+# enemy (hardcoded placement): enemy_id is a key from
+#   data/enemy/enemies.yaml (e.g. fat_guy2); level optionally
+#   overrides that entry's own level -- leave null to use it as-is.
+#
+# spawner (rolls once each time the map loads): spawn_chance is a
+#   plain number from 0.0 to 1.0 -- the odds THIS spawner produces
+#   anything at all (0.3 = ~3 times in 10; NOT a percentage, don't
+#   write 30).
+#
+# A fresh spawner stub already seeds `enemies` with one blank
+#   candidate block (enemy_id: null / chance: null) -- fill in
+#   that enemy_id and chance, then copy the whole `- enemy_id: ...
+#   chance: ...` block again (indented the same as the first) for
+#   each additional enemy this spawner can produce. Left with
+#   enemy_id: null (or emptied out to `enemies: []`), this spawner
+#   can NEVER produce anything, no matter what spawn_chance says --
+#   there's nothing valid to pick from. Each block is two fields,
+#   an enemy_id (a key from data/enemy/enemies.yaml) and a chance
+#   (any positive number -- a WEIGHT relative to the other blocks
+#   in this same list, not a standalone probability, and it does
+#   NOT need to add up to anything in particular). One enemy from
+#   this list is picked -- weighted by these numbers -- every time
+#   spawn_chance itself passes.
+#
+#   With only one enemy allowed at a spawner, its chance value
+#   doesn't matter (nothing to weigh it against) -- e.g. "only
+#   fat_guy2 ever spawns here, 40% of the time":
+#
+#     spawn_chance: 0.4
+#     enemies:
+#       - enemy_id: fat_guy2
+#         chance: 1
+#
+#   With two-plus candidates, chance sets the split between them
+#   -- e.g. "40% chance to spawn anything, and when it does, it's
+#   fat_guy2 three times out of four, parkinglotguy the other
+#   quarter" (chance: 3 vs chance: 1 -> a 3:1, i.e. 75%/25%, split
+#   -- doubling both to 6 and 2 would mean the exact same thing):
+#
+#     spawn_chance: 0.4
+#     enemies:
+#       - enemy_id: fat_guy2
+#         chance: 3
+#       - enemy_id: parkinglotguy
+#         chance: 1
+#
+#   Every `- enemy_id: ...` line must line up under `enemies:`
+#   with the same indentation as the `-` above, and `chance:`
+#   lines up under its own `enemy_id:` line, indented one level
+#   further -- YAML reads structure from indentation, so a block
+#   nested at the wrong depth silently becomes a different
+#   (usually broken) structure instead of an error.
+#
+#   level (top-level, alongside spawn_chance/enemies -- not per
+#   candidate) optionally overrides whichever enemy gets picked;
+#   leave it null to use that enemy's own level from enemies.yaml.
 
 3:
   destination_map: interior_wc_deptstore

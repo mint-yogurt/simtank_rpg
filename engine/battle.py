@@ -1,528 +1,312 @@
-"""Battle loop for simtank_rpg.
+"""Combat resolver + battle state machine for simtank_rpg — pure logic, no
+pygame. Mirrors the player/input split: this module knows stats, hit/crit/
+parry/damage math, and how one round of a fight advances; engine.renderer's
+BattleScene (see maptest.py's "battles" mode) owns pacing, drawing, and
+feeding dt into it.
 
-Extracted from run_cli.py so both CLI and web can share the same logic.
-The `emit` callback (optional) sends SSE events for the web layer; without it
-the battle runs silently to stdout (CLI mode). `run_battle` always returns a
-result dict: {"outcome": "win"|"loss"|"flee", "rounds": int}.
+Formerly two files (this one + engine/combat.py) — combat.py's resolver
+(Fighter, hit/crit/parry/damage math) is merged in here, since the split
+between "battle loop" and "battle math" wasn't pulling its weight once the
+loop itself got this small. combat.py no longer exists.
 
-Event types emitted:
-  battle_start  — initial HP state for all participants
-  battle_action — result of a single action (attack, defend, heal, etc.)
-  battle_end    — final outcome
+Attack chain:
+  1. to-hit      (SWEAT + level)          -> miss wastes the turn
+  2. crit check  (attacker level)          -> flags +bonus damage
+  3. parry check (defender level, rare)    -> reflect half, defender takes none
+  4. saving throw(multi-stat contest)      -> glance (tiny dmg) vs full
+  5. damage      (WEIGHT + level - resist)
+
+Stats never change; LVL/HP/XP do. Damage scales with level ("dinging").
+
+Scope note (first graphical wire-up, see README): this is a single Fighter
+(MELVIN) vs. a single enemy, auto-attack only — no player-driven action
+menu, no DEFEND/RUN logic, no party specials (SING/LAUGH/SNACK/TICKLE) or
+items wired in. Those are real, future battle actions -- but their exact
+scope/spec (what ITEM does mid-battle, whether/how SPECIAL comes back) isn't
+decided yet. Don't guess at an implementation for either when the time
+comes -- ask first.
 """
 
 import json
 import random
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from engine.combat import Fighter, hit_chance, resolve_attack, try_run, SPECIAL_MP_COSTS
-from engine.config import cfg
 from engine.journal import Journal
-from llm.client import ask
-from llm.prompts import build_battle_context, build_system_prompt
-from llm.schema import parse_action
 
-SPECIAL_COOLDOWNS: dict[str, int] = {
-    "SING":   2,
-    "TICKLE": 4,
-    "SNACK":  3,
-    "LAUGH":  3,
-}
+# =============================================================================
+# STAT NORMALIZATION  --  reference ranges. raw stat -> 0..1 fraction.
+# =============================================================================
+IQ_RANGE = (40, 200)
+WEIGHT_RANGE = (0, 900)
+SWEAT_RANGE = (0, 10)
+HAIR_RANGE = (0, 100)
 
 
+def _frac(value, lo_hi):
+    lo, hi = lo_hi
+    return max(0.0, min(1.0, (value - lo) / (hi - lo)))
 
-# ---------------------------------------------------------------------------
-# Data containers
-# ---------------------------------------------------------------------------
 
+# =============================================================================
+# KNOBS
+# =============================================================================
+# --- to-hit --------------------------------------------------
+HIT_BASE = 0.45
+HIT_SWEAT = 0.30         # SWEAT fraction's contribution
+HIT_LEVEL = 0.004        # per level above 1
+HIT_MIN, HIT_MAX = 0.10, 0.95
+
+# --- damage --------------------------------------------------
+DMG_BASE = 2.0
+DMG_WEIGHT = 4.0         # WEIGHT fraction's contribution
+GROWTH = 0.10            # dinging: dmg *= 1 + (level-1)*GROWTH   (lvl60 ~ 6.9x)
+RESIST = 2.0             # defender SWEAT fraction soaks this much
+CRIT_BONUS = 0.15        # +15% on a crit
+GLANCE_CHIP = 1          # flat damage a glancing blow deals
+
+# --- crit & parry (scale with LEVEL only) --------------------
+CRIT_START = 0.08
+PARRY_START = 0.08
+CRITPARRY_CEIL = 0.35    # chance at MAX_LEVEL
+MAX_LEVEL = 60
+_critparry_step = (CRITPARRY_CEIL - CRIT_START) / (MAX_LEVEL - 1)
+
+# --- saving throw (glance) : multi-stat defender vs attacker --
+# defender power = weighted sum of normalized stats. tune who defends well.
+SAVE_W_IQ = 0.50         # wits -> dodge (Billy shines here)
+SAVE_W_WEIGHT = 0.30     # bulk -> hard to shift
+SAVE_W_SWEAT = 0.20      # grit
+SAVE_LEVEL = 0.01
+SAVE_BASE = 0.25
+SAVE_SPREAD = 0.60       # how much the power gap swings the chance
+SAVE_MIN, SAVE_MAX = 0.05, 0.75
+
+# --- defend action -------------------------------------------
+DEF_BASE = 0.20
+DEF_SWEAT = 0.30
+DEF_LEVEL = 0.004
+DEF_CAP = 0.75
+
+# --- run away (party-wide, escalating) -----------------------
+RUN_BASE = 0.15
+RUN_STEP = 0.15          # per failed attempt by anyone
+
+# --- hp ------------------------------------------------------
+PARTY_HP_BASE = 25
+PARTY_HP_PER_LEVEL = 2
+ENEMY_HP_BASE = 14
+ENEMY_HP_WEIGHT = 12     # + WEIGHT_frac * this
+ENEMY_HP_PER_LEVEL = 3
+
+# --- mp ------------------------------------------------------
+PARTY_MP_BASE = 20
+PARTY_MP_PER_LEVEL = 1
+
+
+# =============================================================================
+# ENTITIES
+# =============================================================================
 @dataclass
-class BattleMember:
-    fighter:          Fighter
-    personality:      str
-    special:          dict
-    xp:               int = 0
-    status:           str | None = None
-    buffs:            list = field(default_factory=list)  # [{name, damage_mult, turns_remaining}]
-    special_cooldown: int = 0
+class Fighter:
+    name: str
+    iq: int
+    weight: int
+    sweat: int
+    hair: int
+    level: int = 1
+    is_enemy: bool = False
+    hp: int = field(default=0)
+    max_hp: int = field(default=0)
+    mp: int = field(default=0)
+    max_mp: int = field(default=0)
+    defending: bool = False
+
+    def __post_init__(self):
+        if self.max_hp == 0:
+            if self.is_enemy:
+                self.max_hp = round(
+                    ENEMY_HP_BASE
+                    + _frac(self.weight, WEIGHT_RANGE) * ENEMY_HP_WEIGHT
+                    + (self.level - 1) * ENEMY_HP_PER_LEVEL
+                )
+            else:
+                self.max_hp = PARTY_HP_BASE + (self.level - 1) * PARTY_HP_PER_LEVEL
+            self.hp = self.max_hp
+        if not self.is_enemy and self.max_mp == 0:
+            self.max_mp = PARTY_MP_BASE + (self.level - 1) * PARTY_MP_PER_LEVEL
+            self.mp = self.max_mp
 
     @property
-    def name(self):    return self.fighter.name
-    @property
-    def hp(self):      return max(0, self.fighter.hp)
-    @property
-    def max_hp(self):  return self.fighter.max_hp
-    @property
-    def mp(self):      return max(0, self.fighter.mp)
-    @property
-    def max_mp(self):  return self.fighter.max_mp
-    @property
-    def lvl(self):     return self.fighter.level
-    @property
-    def alive(self):   return self.fighter.alive
+    def alive(self):
+        return self.hp > 0
 
 
-@dataclass
-class BattleEnemy:
-    fighter:         Fighter
-    npc_sprite:      str = ""          # "npc01"–"npc08" for web renderer
-    sprite_url:      str = ""          # pre-rendered recolored sprite strip URL
-    status:          str | None = None
-    status_turns:    int = 0
-    status_duration: int | None = None
-
-    @property
-    def name(self):    return self.fighter.name
-    @property
-    def hp(self):      return max(0, self.fighter.hp)
-    @property
-    def max_hp(self):  return self.fighter.max_hp
-    @property
-    def lvl(self):     return self.fighter.level
-    @property
-    def alive(self):   return self.fighter.alive
-
-
-# ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
-
-def load_party(data_dir: Path) -> list[BattleMember]:
-    members = []
-    for path in sorted(data_dir.glob("*.json")):
-        s = json.loads(path.read_text())
-        fighter = Fighter(
-            name=s["name"], iq=s["iq"], weight=s["weight"],
-            sweat=s["sweat"], hair=s["hair"], level=s["lvl"],
-            hp=s["hp"], max_hp=s["max_hp"],
-            mp=s.get("mp", 0), max_mp=s.get("max_mp", 0),
-        )
-        members.append(BattleMember(
-            fighter=fighter,
-            personality=s.get("personality", ""),
-            special=s.get("special", {"name": "", "description": "", "target": None}),
-            xp=s.get("xp", 0),
-        ))
-    return members
-
-
-# ---------------------------------------------------------------------------
-# Formatting
-# ---------------------------------------------------------------------------
-
-def _fmt_attack(res: dict) -> str:
-    a, d, crit = res["attacker"], res["defender"], " CRIT!" if res["crit"] else ""
-    o = res["outcome"]
-    if o == "miss":   return f"  {a} swings at {d}... MISS."
-    if o == "parry":  return f"  {a} swings at {d}... PARRIED! {d} reflects {res['reflected']} back.{crit}"
-    if o == "glance": return f"  {a} grazes {d} for {res['damage']}.{crit}"
-    return f"  {a} hits {d} for {res['damage']}.{crit}"
-
-
-def _fmt_brief(res: dict) -> str:
-    o = res["outcome"]
-    if o == "miss":   return "missed"
-    if o == "parry":  return f"parried — {res['reflected']} reflected"
-    if o == "glance": return f"glanced for {res['damage']}"
-    return f"{res['damage']} damage"
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _spec_target_type(spec: dict) -> str:
-    t = spec.get("target")
-    return "ally" if t in (None, "") else t
-
-
-def _apply_damage_buffs(member: BattleMember, res: dict, enemy: BattleEnemy) -> None:
-    if res["damage"] <= 0:
-        return
-    for buff in member.buffs:
-        mult = buff.get("damage_mult", 1.0)
-        if mult > 1.0:
-            extra = max(0, round(res["damage"] * (mult - 1.0)))
-            enemy.fighter.hp -= extra
-            res["damage"] += extra
-
-
-def _tick_buffs(member: BattleMember) -> None:
-    member.buffs = [
-        dict(b, turns_remaining=b["turns_remaining"] - 1)
-        for b in member.buffs
-    ]
-    member.buffs = [b for b in member.buffs if b["turns_remaining"] > 0]
-    if member.special_cooldown > 0:
-        member.special_cooldown -= 1
-
-
-def _pick_ally(party: list, target_name: str | None, fallback: BattleMember) -> BattleMember:
-    return next(
-        (m for m in party if m.name == target_name and m.alive),
-        next((m for m in party if m.alive), fallback),
+def load_fighter(path: Path) -> Fighter:
+    """One party member's Fighter from data/party/<name>.json. Only pulls
+    the fields Fighter needs -- personality/special/items/xp live in the
+    same file but aren't read here (see module docstring: SPECIAL/ITEM
+    aren't wired into battle yet)."""
+    s = json.loads(Path(path).read_text())
+    return Fighter(
+        name=s["name"], iq=s["iq"], weight=s["weight"], sweat=s["sweat"], hair=s["hair"],
+        level=s["lvl"], hp=s["hp"], max_hp=s["max_hp"],
+        mp=s.get("mp", 0), max_mp=s.get("max_mp", 0),
     )
 
 
-def _party_hp(party: list[BattleMember]) -> dict:
-    return {m.name: m.hp for m in party}
+# =============================================================================
+# FORMULAS
+# =============================================================================
+def hit_chance(attacker):
+    c = HIT_BASE + _frac(attacker.sweat, SWEAT_RANGE) * HIT_SWEAT \
+        + (attacker.level - 1) * HIT_LEVEL
+    return max(HIT_MIN, min(HIT_MAX, c))
 
 
-def _party_mp(party: list[BattleMember]) -> dict:
-    return {m.name: m.mp for m in party}
+def crit_chance(level):
+    return CRIT_START + (level - 1) * _critparry_step
 
 
-# ---------------------------------------------------------------------------
-# SSE emit helpers
-# ---------------------------------------------------------------------------
-
-def _emit_action(emit, actor, action, target, res, flavor, enemy, party, sleep_ms):
-    if emit is None:
-        return
-    emit({
-        "type":        "battle_action",
-        "actor":       actor,
-        "action":      action,
-        "target":      target,
-        "outcome":     res.get("outcome", action.lower()),
-        "damage":      res.get("damage", 0),
-        "crit":        res.get("crit", False),
-        "flavor":      flavor,
-        "enemy_hp":    enemy.hp,
-        "enemy_max_hp": enemy.max_hp,
-        "party_hp":    _party_hp(party),
-        "party_mp":    _party_mp(party),
-    })
-    time.sleep(sleep_ms / 1000)
+def parry_chance(level):
+    return PARRY_START + (level - 1) * _critparry_step
 
 
-def _emit_end(emit, outcome, tick, enemy_name):
-    if emit:
-        emit({"type": "battle_end", "outcome": outcome,
-              "rounds": tick, "enemy_name": enemy_name})
+def save_chance(defender, attacker):
+    d_power = (_frac(defender.iq, IQ_RANGE) * SAVE_W_IQ
+               + _frac(defender.weight, WEIGHT_RANGE) * SAVE_W_WEIGHT
+               + _frac(defender.sweat, SWEAT_RANGE) * SAVE_W_SWEAT
+               + defender.level * SAVE_LEVEL)
+    a_power = _frac(attacker.weight, WEIGHT_RANGE) + attacker.level * SAVE_LEVEL
+    c = SAVE_BASE + (d_power - a_power) * SAVE_SPREAD
+    return max(SAVE_MIN, min(SAVE_MAX, c))
 
 
-# ---------------------------------------------------------------------------
-# Special actions
-# ---------------------------------------------------------------------------
+def raw_damage(attacker, defender):
+    raw = DMG_BASE + _frac(attacker.weight, WEIGHT_RANGE) * DMG_WEIGHT
+    scaled = raw * (1 + (attacker.level - 1) * GROWTH)
+    resist = _frac(defender.sweat, SWEAT_RANGE) * RESIST
+    return max(1, round(scaled - resist))
 
-def special_SING(member, enemy, spec, rng, history, emit, party, sleep_ms):
-    hit = rng.random() < hit_chance(member.fighter)
-    print(f"  {member.name} SINGS to {enemy.name}!", flush=True)
-    if hit and enemy.alive and not enemy.status:
-        enemy.status = spec["status_effect"]
-        enemy.status_turns = 0
-        enemy.status_duration = None
-        flavor = f"{member.name} SINGS to {enemy.name}! {enemy.name} is MESMERIZED!"
-        print(f"  {enemy.name} is MESMERIZED!", flush=True)
-        history[member.name] = f"SANG to {enemy.name} — inflicted MESMERIZED"
+
+def defend_reduction(fighter):
+    r = DEF_BASE + _frac(fighter.sweat, SWEAT_RANGE) * DEF_SWEAT \
+        + (fighter.level - 1) * DEF_LEVEL
+    return min(DEF_CAP, r)
+
+
+# =============================================================================
+# RESOLUTION  -- returns a structured result
+# =============================================================================
+def resolve_attack(attacker, defender, rng=None):
+    rng = rng or random
+    res = {"attacker": attacker.name, "defender": defender.name,
+           "outcome": None, "damage": 0, "reflected": 0, "crit": False}
+
+    if rng.random() >= hit_chance(attacker):
+        res["outcome"] = "miss"
+        return res
+
+    is_crit = rng.random() < crit_chance(attacker.level)
+    res["crit"] = is_crit
+
+    # parry (enemies never parry)
+    if not defender.is_enemy and rng.random() < parry_chance(defender.level):
+        dmg = raw_damage(attacker, defender)
+        if is_crit:
+            dmg = round(dmg * (1 + CRIT_BONUS))
+        reflected = max(1, round(dmg * 0.5))
+        attacker.hp -= reflected
+        res["outcome"] = "parry"
+        res["reflected"] = reflected
+        return res
+
+    # saving throw -> glance or full
+    glanced = rng.random() < save_chance(defender, attacker)
+    if glanced:
+        dmg = GLANCE_CHIP
+        res["outcome"] = "glance"
     else:
-        flavor = f"{member.name} SINGS to {enemy.name}! No effect."
-        print(f"  IT HAD NO EFFECT ON {enemy.name}!", flush=True)
-        history[member.name] = f"SANG to {enemy.name} — no effect"
-    _emit_action(emit, member.name, "SING", enemy.name,
-                 {"outcome": "status" if hit else "miss"}, flavor, enemy, party, sleep_ms)
+        dmg = raw_damage(attacker, defender)
+        res["outcome"] = "hit"
+
+    if is_crit:
+        dmg = round(dmg * (1 + CRIT_BONUS))
+
+    if defender.defending:
+        dmg = max(1, round(dmg * (1 - defend_reduction(defender))))
+
+    defender.hp -= dmg
+    res["damage"] = dmg
+    return res
 
 
-def special_LAUGH(member, enemy, spec, rng, history, emit, party, sleep_ms):
-    hit = rng.random() < hit_chance(member.fighter)
-    print(f"  {member.name} LAUGHS at {enemy.name}!", flush=True)
-    if hit and enemy.alive and not enemy.status:
-        enemy.status = "CRINGE"
-        enemy.status_turns = 0
-        enemy.status_duration = rng.randint(
-            spec.get("status_duration_min", 3), spec.get("status_duration_max", 5))
-        flavor = f"{member.name} LAUGHS! {enemy.name} is CRINGING!"
-        print(f"  {enemy.name} is CRINGING!", flush=True)
-        history[member.name] = f"LAUGHED at {enemy.name} — inflicted CRINGE"
-    else:
-        flavor = f"{member.name} LAUGHS at {enemy.name}! No effect."
-        print(f"  IT HAD NO EFFECT ON {enemy.name}!", flush=True)
-        history[member.name] = f"LAUGHED at {enemy.name} — no effect"
-    _emit_action(emit, member.name, "LAUGH", enemy.name,
-                 {"outcome": "status" if hit else "miss"}, flavor, enemy, party, sleep_ms)
+def try_run(run_attempts, rng=None):
+    rng = rng or random
+    chance = min(0.95, RUN_BASE + run_attempts * RUN_STEP)
+    return rng.random() < chance, chance
 
 
-# ---------------------------------------------------------------------------
-# Battle loop
-# ---------------------------------------------------------------------------
+# =============================================================================
+# FORMATTING
+# =============================================================================
+def _fmt_attack(res: dict) -> str:
+    a, d, crit = res["attacker"], res["defender"], " CRIT!" if res["crit"] else ""
+    o = res["outcome"]
+    if o == "miss":   return f"{a} swings at {d}... MISS."
+    if o == "parry":  return f"{a} swings at {d}... PARRIED! {d} reflects {res['reflected']} back.{crit}"
+    if o == "glance": return f"{a} grazes {d} for {res['damage']}.{crit}"
+    return f"{a} hits {d} for {res['damage']}.{crit}"
 
-MAX_ROUNDS = cfg.battle_max_rounds
 
+# =============================================================================
+# BATTLE STATE MACHINE
+# =============================================================================
+@dataclass
+class BattleState:
+    """One Fighter vs. one Fighter, auto-attack only (see module docstring).
 
-def run_battle(party: list[BattleMember], enemy: BattleEnemy,
-               rng: random.Random, emit=None,
-               battle_sleep_ms: int = 800) -> dict:
-    """Run a complete battle. Returns {"outcome": "win"|"loss"|"flee", "rounds": int}.
-
-    emit:            optional SSE broadcast callback (web mode)
-    battle_sleep_ms: delay between actions in web mode
+    A single `step()` resolves whichever side's turn it currently is and
+    returns the flavor text for it -- the caller (BattleScene) decides
+    *when* to call step(), so pacing/animation/typewriter timing stays a
+    rendering concern, not something this class blocks on.
     """
-    journal  = Journal()
-    history: dict[str, str] = {}
-    run_attempts = 0
-    tick = 0
-    alive_set = {m.name for m in party}
+    party: Fighter
+    enemy: Fighter
+    rng:   random.Random
+    phase: str = "party_turn"   # "party_turn" | "enemy_turn" | "win" | "loss"
+    round: int = 1
+    journal: Journal = field(default_factory=Journal)
 
-    print(f"\n=== {', '.join(m.name for m in party)}  VS  {enemy.name} (LVL {enemy.lvl}) ===\n",
-          flush=True)
+    def step(self) -> str:
+        if self.phase == "party_turn":
+            return self._step_party_attack()
+        if self.phase == "enemy_turn":
+            return self._step_enemy_attack()
+        return ""   # battle already over -- nothing left to advance
 
-    if emit:
-        emit({
-            "type":  "battle_start",
-            "enemy": {"name": enemy.name, "hp": enemy.hp,
-                      "max_hp": enemy.max_hp, "npc_sprite": enemy.npc_sprite,
-                      "sprite_url": enemy.sprite_url},
-            "party": [{"name": m.name, "hp": m.hp, "max_hp": m.max_hp,
-                   "mp": m.mp, "max_mp": m.max_mp} for m in party],
-        })
-
-    while True:
-        print(f"--- ROUND {tick + 1} ---", flush=True)
-
-        # ── Party turns ───────────────────────────────────────────────────────
-        for member in party:
-            if not member.alive or not enemy.alive:
-                continue
-
-            member.fighter.defending = False
-
-            print(f"  [{member.name} thinking...]", flush=True)
-            ctx      = build_battle_context(member, party, enemy, history, run_attempts)
-            sys_pmt  = build_system_prompt(member)
-            raw      = ask(ctx, sys_pmt)
-            party_names = [m.name for m in party]
-            dec = parse_action(raw, member.special.get("target"), enemy.name, party_names,
-                               special_name=member.special.get("name", ""))
-            action, target = dec["action"], dec["target"]
-
-            spec_name = member.special.get("name", "")
-            mp_cost = SPECIAL_MP_COSTS.get(spec_name, 0)
-            if action == "SPECIAL" and (
-                not spec_name
-                or member.special_cooldown > 0
-                or member.fighter.mp < mp_cost
-            ):
-                action = "ATTACK"
-
-            if action == "ATTACK":
-                res = resolve_attack(member.fighter, enemy.fighter, rng)
-                _apply_damage_buffs(member, res, enemy)
-                flavor = _fmt_attack(res).strip()
-                print(_fmt_attack(res), flush=True)
-                history[member.name] = f"attacked {enemy.name} — {_fmt_brief(res)}"
-                _emit_action(emit, member.name, "ATTACK", enemy.name,
-                             res, flavor, enemy, party, battle_sleep_ms)
-
-            elif action == "DEFEND":
-                member.fighter.defending = True
-                flavor = f"{member.name} takes a defensive stance."
-                print(f"  {flavor}", flush=True)
-                history[member.name] = "defended"
-                _emit_action(emit, member.name, "DEFEND", member.name,
-                             {"outcome": "defend"}, flavor, enemy, party, battle_sleep_ms)
-
-            elif action == "SPECIAL":
-                spec   = member.special
-                ttype  = _spec_target_type(spec)
-                effect = spec.get("effect_type")
-
-                if spec.get("name") == "SING":
-                    special_SING(member, enemy, spec, rng, history, emit, party, battle_sleep_ms)
-
-                elif spec.get("name") == "LAUGH":
-                    special_LAUGH(member, enemy, spec, rng, history, emit, party, battle_sleep_ms)
-
-                elif ttype == "enemy":
-                    status_effect = spec.get("status_effect")
-                    res = resolve_attack(member.fighter, enemy.fighter, rng)
-                    _apply_damage_buffs(member, res, enemy)
-                    hit = res["outcome"] != "miss"
-                    status_before = enemy.status
-                    if hit and enemy.alive and status_effect and not enemy.status:
-                        enemy.status = status_effect
-                        enemy.status_turns = 0
-                        if status_effect == "CRINGE":
-                            enemy.status_duration = rng.randint(
-                                spec.get("status_duration_min", 3),
-                                spec.get("status_duration_max", 5))
-                        else:
-                            enemy.status_duration = None
-                    status_applied = enemy.status and enemy.status != status_before
-                    flavor = f"{member.name} uses {spec['name']}! {_fmt_attack(res).strip()}"
-                    if status_applied:
-                        flavor += f" {enemy.name} is {enemy.status}!"
-                    print(f"  {flavor}", flush=True)
-                    history[member.name] = (
-                        f"used {spec['name']} on {enemy.name} — {_fmt_brief(res)}"
-                        + (f" — inflicted {enemy.status}" if status_applied else "")
-                    )
-                    _emit_action(emit, member.name, "SPECIAL", enemy.name,
-                                 res, flavor, enemy, party, battle_sleep_ms)
-
-                elif effect == "heal":
-                    ally   = _pick_ally(party, target, member)
-                    pct    = rng.uniform(spec.get("heal_pct_min", 0.15), spec.get("heal_pct_max", 0.25))
-                    amount = max(1, round(ally.max_hp * pct))
-                    ally.fighter.hp = min(ally.fighter.hp + amount, ally.max_hp)
-                    flavor = f"{member.name} uses {spec['name']} on {ally.name}! Restores {amount} HP."
-                    print(f"  {flavor}", flush=True)
-                    history[member.name] = f"used {spec['name']} on {ally.name} — healed {amount} HP"
-                    _emit_action(emit, member.name, "HEAL", ally.name,
-                                 {"outcome": "heal", "damage": amount},
-                                 flavor, enemy, party, battle_sleep_ms)
-
-                elif effect == "buff_damage":
-                    ally  = _pick_ally(party, target, member)
-                    mult  = spec.get("buff_mult", 1.15)
-                    turns = spec.get("buff_turns", 2)
-                    ally.buffs = [b for b in ally.buffs if b["name"] != "TICKLED"]
-                    ally.buffs.append({"name": "TICKLED", "damage_mult": mult, "turns_remaining": turns})
-                    pct  = round((mult - 1.0) * 100)
-                    flavor = f"{member.name} uses {spec['name']}! {ally.name} is TICKLED! +{pct}% dmg for {turns} turns."
-                    print(f"  {flavor}", flush=True)
-                    history[member.name] = (
-                        f"used {spec['name']} on {ally.name} — TICKLED (+{pct}% dmg, {turns} turns)")
-                    _emit_action(emit, member.name, "BUFF", ally.name,
-                                 {"outcome": "buff"}, flavor, enemy, party, battle_sleep_ms)
-
-                else:
-                    flavor = f"{member.name} uses {spec['name']}!"
-                    print(f"  {flavor}", flush=True)
-                    history[member.name] = f"used {spec['name']}"
-                    _emit_action(emit, member.name, "SPECIAL", enemy.name,
-                                 {"outcome": "special"}, flavor, enemy, party, battle_sleep_ms)
-
-                member.special_cooldown = SPECIAL_COOLDOWNS.get(spec.get("name", ""), 0)
-                member.fighter.mp = max(0, member.fighter.mp - SPECIAL_MP_COSTS.get(spec.get("name", ""), 0))
-
-            elif action == "RUN":
-                success, chance = try_run(run_attempts, rng)
-                run_attempts += 1
-                if success:
-                    flavor = f"{member.name} flees! THE PARTY ESCAPES!"
-                    print(f"  {flavor}", flush=True)
-                    journal.log_event({"type": "BATTLE_FLEE", "tick": tick})
-                    _emit_action(emit, member.name, "RUN", "", {"outcome": "flee"},
-                                 flavor, enemy, party, 0)
-                    _emit_end(emit, "flee", tick, enemy.name)
-                    return {"outcome": "flee", "rounds": tick}
-                else:
-                    flavor = f"{member.name} tries to run... fails. ({chance:.0%})"
-                    print(f"  {flavor}", flush=True)
-                    history[member.name] = "attempted to flee — failed"
-                    _emit_action(emit, member.name, "RUN", "",
-                                 {"outcome": "flee_fail"}, flavor, enemy, party, battle_sleep_ms)
-
-            _tick_buffs(member)
-
-            if not enemy.alive:
-                print(f"\n  *** {enemy.name} IS DEFEATED! ***\n", flush=True)
-                journal.log_event({"type": "ENEMY_KILLED", "tick": tick,
-                                   "enemy": enemy.name, "enemy_lvl": enemy.lvl})
-                journal.log_event({"type": "BATTLE_WIN", "tick": tick,
-                                   "enemy": enemy.name, "enemy_lvl": enemy.lvl})
-                _emit_end(emit, "win", tick, enemy.name)
-                return {"outcome": "win", "rounds": tick}
-
-        living = [m for m in party if m.alive]
-        if not living:
-            break
-
-        # ── Enemy turn ────────────────────────────────────────────────────────
-        enemy.fighter.defending = False
-
-        if enemy.status == "MESMERIZED":
-            _drop = [0.10, 0.25, 0.50, 0.80]
-            drop_chance = _drop[min(enemy.status_turns, len(_drop) - 1)]
-            if rng.random() < drop_chance:
-                enemy.status = None
-                enemy.status_turns = 0
-                target_member = rng.choice(living)
-                res = resolve_attack(enemy.fighter, target_member.fighter, rng)
-                flavor = f"{enemy.name} snaps out of MESMERIZE! " + _fmt_attack(res).strip()
-                print(f"  {flavor}", flush=True)
-                history[enemy.name] = f"snapped out of MESMERIZE — attacked {target_member.name} — {_fmt_brief(res)}"
-                _emit_action(emit, enemy.name, "ATTACK", target_member.name,
-                             res, flavor, enemy, party, battle_sleep_ms)
-            elif rng.random() < 0.5:
-                enemy.status_turns += 1
-                flavor = f"{enemy.name} is MESMERIZED! Cannot act."
-                print(f"  {flavor}", flush=True)
-                history[enemy.name] = "MESMERIZED — could not act"
-                _emit_action(emit, enemy.name, "STATUS", "",
-                             {"outcome": "mesmerized"}, flavor, enemy, party, battle_sleep_ms)
-            else:
-                enemy.status_turns += 1
-                target_member = rng.choice(living)
-                res = resolve_attack(enemy.fighter, target_member.fighter, rng)
-                flavor = _fmt_attack(res).strip() + " (MESMERIZED)"
-                print(f"  {flavor}", flush=True)
-                history[enemy.name] = f"attacked {target_member.name} — {_fmt_brief(res)} (still MESMERIZED)"
-                _emit_action(emit, enemy.name, "ATTACK", target_member.name,
-                             res, flavor, enemy, party, battle_sleep_ms)
-
-        elif enemy.status == "CRINGE":
-            if rng.random() < 0.35:
-                self_dmg = rng.randint(2, 5)
-                enemy.fighter.hp -= self_dmg
-                flavor = f"{enemy.name} is CRINGE-d! Attacks itself for {self_dmg}!"
-                print(f"  {flavor}", flush=True)
-                history[enemy.name] = f"CRINGE — attacked itself for {self_dmg} damage"
-                _emit_action(emit, enemy.name, "SELF_DAMAGE", enemy.name,
-                             {"outcome": "self_damage", "damage": self_dmg},
-                             flavor, enemy, party, battle_sleep_ms)
-            else:
-                target_member = rng.choice(living)
-                res = resolve_attack(enemy.fighter, target_member.fighter, rng)
-                flavor = _fmt_attack(res).strip() + " (CRINGE active)"
-                print(f"  {flavor}", flush=True)
-                history[enemy.name] = f"attacked {target_member.name} — {_fmt_brief(res)} (CRINGE active)"
-                _emit_action(emit, enemy.name, "ATTACK", target_member.name,
-                             res, flavor, enemy, party, battle_sleep_ms)
-            enemy.status_duration -= 1
-            if enemy.status_duration <= 0:
-                enemy.status = None
-                enemy.status_duration = None
-                print(f"  {enemy.name} is CRINGING no more!", flush=True)
-
+    def _step_party_attack(self) -> str:
+        res = resolve_attack(self.party, self.enemy, self.rng)
+        flavor = _fmt_attack(res)
+        if not self.enemy.alive:
+            self.phase = "win"
+            flavor += f" {self.enemy.name} is defeated!"
+            self.journal.log_event({"type": "ENEMY_KILLED", "tick": self.round,
+                                     "enemy": self.enemy.name, "enemy_lvl": self.enemy.level})
+            self.journal.log_event({"type": "BATTLE_WIN", "tick": self.round,
+                                     "enemy": self.enemy.name, "enemy_lvl": self.enemy.level})
         else:
-            target_member = rng.choice(living)
-            res = resolve_attack(enemy.fighter, target_member.fighter, rng)
-            flavor = _fmt_attack(res).strip()
-            print(f"  {flavor}", flush=True)
-            history[enemy.name] = f"attacked {target_member.name} — {_fmt_brief(res)}"
-            _emit_action(emit, enemy.name, "ATTACK", target_member.name,
-                         res, flavor, enemy, party, battle_sleep_ms)
+            self.phase = "enemy_turn"
+        return flavor
 
-        # Check enemy killed by parry reflection
-        if not enemy.alive:
-            print(f"\n  *** {enemy.name} IS DEFEATED! (parry) ***\n", flush=True)
-            journal.log_event({"type": "ENEMY_KILLED", "tick": tick,
-                               "enemy": enemy.name, "enemy_lvl": enemy.lvl})
-            journal.log_event({"type": "BATTLE_WIN", "tick": tick,
-                               "enemy": enemy.name, "enemy_lvl": enemy.lvl})
-            _emit_end(emit, "win", tick, enemy.name)
-            return {"outcome": "win", "rounds": tick}
-
-        for member in party:
-            if member.name in alive_set and not member.alive:
-                alive_set.discard(member.name)
-                journal.log_event({"type": "MEMBER_DIED", "tick": tick, "member": member.name})
-                print(f"  *** {member.name} HAS FALLEN! ***", flush=True)
-
-        if not any(m.alive for m in party):
-            break
-
-        tick += 1
-        if tick >= MAX_ROUNDS:
-            print(f"\n  *** BATTLE TIMED OUT AFTER {MAX_ROUNDS} ROUNDS. ***\n", flush=True)
-            _emit_end(emit, "timeout", tick, enemy.name)
-            return {"outcome": "timeout", "rounds": tick}
-
-    # Party wipe
-    journal.log_event({"type": "BATTLE_LOSS", "tick": tick})
-    print("\n  *** THE PARTY HAS FALLEN. ***\n", flush=True)
-    _emit_end(emit, "loss", tick, enemy.name)
-    return {"outcome": "loss", "rounds": tick}
+    def _step_enemy_attack(self) -> str:
+        res = resolve_attack(self.enemy, self.party, self.rng)
+        flavor = _fmt_attack(res)
+        if not self.party.alive:
+            self.phase = "loss"
+            flavor += f" {self.party.name} has fallen!"
+            self.journal.log_event({"type": "BATTLE_LOSS", "tick": self.round})
+        else:
+            self.phase = "party_turn"
+            self.round += 1
+        return flavor

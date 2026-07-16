@@ -77,6 +77,32 @@
                  "width":16,
                  "x":112,
                  "y":64
+                }, 
+                {
+                 "gid":877,
+                 "height":16,
+                 "id":20,
+                 "name":"toilet1",
+                 "opacity":0,
+                 "rotation":0,
+                 "type":"sign",
+                 "visible":true,
+                 "width":16,
+                 "x":144,
+                 "y":64
+                }, 
+                {
+                 "gid":877,
+                 "height":16,
+                 "id":21,
+                 "name":"toilet2",
+                 "opacity":0,
+                 "rotation":0,
+                 "type":"sign",
+                 "visible":true,
+                 "width":16,
+                 "x":176,
+                 "y":64
                 }],
          "opacity":1,
          "type":"objectgroup",
@@ -104,7 +130,7 @@
          "y":0
         }],
  "nextlayerid":4,
- "nextobjectid":20,
+ "nextobjectid":24,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.2",
@@ -113,6 +139,10 @@
         {
          "firstgid":1,
          "source":"..\/..\/..\/assets\/tiles\/tiles_interior_deptstore.json"
+        }, 
+        {
+         "firstgid":257,
+         "source":"..\/..\/..\/assets\/tiles\/tiles_town.json"
         }],
  "tilewidth":16,
  "type":"map",

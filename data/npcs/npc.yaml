@@ -1,0 +1,95 @@
+# Master NPC list -- hand-edited. Loaded by engine.npc.load_npc_defs() /
+# load_npc_sprite_specs(). A map's npcs_<map>.yaml (see
+# data/maps/populate_yamls.py) references an entry here by `npc_id`; that
+# placement's own sprite/behavior/dialogue fields are optional overrides —
+# leave them blank (null / []) to inherit from the matching entry below,
+# fill one in to override it for just that one placement. (Recoloring below
+# is keyed to npc_id specifically, not overridable per-placement -- see the
+# npcs: section.)
+#
+# NOTE: data/npcs/dialogue and data/npcs/ideas are unrelated personal
+# planning notes, not consumed by anything here or in the engine — nothing
+# from them is ported into this file.
+
+# ── Sprites ───────────────────────────────────────────────────────────────
+#
+# Names each NPC sprite strip living in assets/sprites/npcs/ -- one PNG file
+# per sprite (same convention as data/enemy/enemies.yaml's `sprite` field
+# and assets/sprites/enemies/), NOT the old shared party_sprites.png +
+# partysprites.txt mechanism, which is deprecated for NPCs -- nothing here
+# reads that file anymore. `file` is a bare filename stem (no `.png`), e.g.
+# `npc01` for assets/sprites/npcs/npc01.png.
+#
+# A sprite strip's width decides how it animates -- engine.renderer slices
+# it into tile_px (16px) frames and picks behavior by frame count:
+#
+#   32x16  (2 frames) -- south-only idle, the old npc01-style look. Facing
+#                         is ignored; it always alternates its 2 frames.
+#   128x16 (8 frames) -- full 4-directional walk cycle, same frame order as
+#                         the party sheet: S1,S2,N1,N2,W1,W2,E1,E2. A
+#                         "static" NPC using one of these faces whatever its
+#                         `facing:` field says (below); a "wander" NPC turns
+#                         to face whichever direction it's currently
+#                         stepping.
+#
+# `colors` lists the placeholder hex colors actually baked into that PNG's
+# pixels (6-digit, no `#`, e.g. "ff83c1") -- the swap *keys* a `npcs:`
+# entry's own `colors` (below) recolors, position-matched: this sprite's
+# colors[0] swaps to that NPC's colors[0], colors[1] to colors[1], and so
+# on. An NPC that doesn't set `colors` just shows the sprite as authored, no
+# swap. Recoloring happens once per unique NPC def when the game loads (not
+# per frame drawn), so multiple differently-colored NPCs can share one
+# sprite strip for free.
+#
+# ALWAYS QUOTE hex values, everywhere in this file -- "000000", not 000000.
+# YAML reads an unquoted all-digit value as a number, not text, and it does
+# NOT just reinterpret the digits: "000000" unquoted parses as the integer
+# 0 (silently wrong), and "001100" unquoted parses as *octal* 001100 = 576
+# decimal (silently very wrong) -- both load without any error, they're
+# just not the color you typed. Any hex value with only 0-9 digits (no
+# a-f) needs quotes; engine.npc's loaders also hard-fail on an unquoted one
+# that slipped through, rather than risk drawing the wrong color silently.
+#
+# Template -- copy this block, rename the key, point it at a filename stem
+# in assets/sprites/npcs/, and list that PNG's own placeholder colors:
+#
+# some_sprite_id:
+#   file: some_sprite_id
+#   colors: ["000000", "ffffff", "ade231"]
+
+sprites:
+  npc01:
+    file: npc01
+    colors: ["ff83c1", "3f51cf", "c03570"]   # 32x16 -- 2 frames, south-only idle
+  poots:
+    file: poots
+    colors: ["000000", "ffffff", "ade231"]   # 128x16 -- 8 frames, full facing
+
+# ── NPCs ──────────────────────────────────────────────────────────────────
+#
+# One entry per reusable NPC definition, referenced by `npc_id` from any
+# map's npcs_<map>.yaml. `sprite` must be a key in the sprites: section
+# above; `behavior` is "static" (idles in place) or "wander" (roams walkable
+# tiles); `facing` (static only -- ignored/overwritten for "wander", which
+# always faces its current movement direction) is "N"/"S"/"E"/"W", defaults
+# to "S" if left blank -- only visible on an 8-frame sprite, a 2-frame one
+# has no directional art to show it with; `dialogue` is a flat page list,
+# same shape as a sign's.
+#
+# `colors`, if set, replaces this sprite's own placeholder colors for this
+# NPC specifically, same length/order as the sprite's own `colors` list
+# (see Sprites above) -- this is what lets two different NPCs share one
+# sprite strip but look different. Leave it unset to use the sprite as
+# authored.
+#
+# Template -- copy this block, rename the key, fill in your own values:
+#
+# some_npc_id:                  # key other placements reference as npc_id
+#   sprite: npc01                # a key in the sprites: section above
+#   behavior: static              # static | wander
+#   facing: S                     # N | S | E | W -- static only, defaults to S
+#   colors: ["000000", "ffffff", "ade231"]   # optional -- recolors npc01 for just this NPC
+#   dialogue:                     # flat page list, shown on interact
+#     - "Some line of dialogue."
+
+npcs: {}
