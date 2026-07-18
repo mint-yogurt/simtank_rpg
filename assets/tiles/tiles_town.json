@@ -1,11 +1,11 @@
 { "columns":20,
  "image":"tiles_town.png",
- "imageheight":512,
+ "imageheight":775,
  "imagewidth":320,
  "margin":0,
  "name":"tiles_town",
  "spacing":0,
- "tilecount":640,
+ "tilecount":960,
  "tiledversion":"1.12.2",
  "tileheight":16,
  "tiles":[
@@ -240,7 +240,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -249,7 +249,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -285,7 +285,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -294,7 +294,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -303,7 +303,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -429,7 +429,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -465,7 +465,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4416,7 +4416,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4452,7 +4452,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4461,7 +4461,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4479,7 +4479,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4488,7 +4488,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -4502,6 +4502,195 @@
         }, 
         {
          "id":499,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":501,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":502,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":503,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":508,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":509,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":521,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":522,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":523,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":524,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":525,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":526,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":527,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":528,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":529,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":530,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":531,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":541,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":542,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":543,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":549,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":550,
          "properties":[
                 {
                  "name":"walkable",
@@ -4741,6 +4930,258 @@
                  "name":"walkable",
                  "type":"bool",
                  "value":true
+                }]
+        }, 
+        {
+         "id":660,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":661,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":662,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":663,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":664,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":674,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":677,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":680,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":681,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":682,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":683,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":684,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":691,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":692,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":697,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":700,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":701,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":702,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":703,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":704,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":711,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":712,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":717,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":720,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":721,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":722,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":723,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
+                }]
+        }, 
+        {
+         "id":724,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":false
                 }]
         }],
  "tilewidth":16,

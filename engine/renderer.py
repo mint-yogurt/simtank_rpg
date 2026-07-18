@@ -62,6 +62,7 @@ Controls:
   Escape / Q  — quit
 """
 import json
+import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -600,6 +601,7 @@ class MapObject:
     gid:      int
     row_exact: float = 0.0
     col_exact: float = 0.0
+    rotation: float = 0.0   # Tiled object rotation, degrees clockwise about the object's x/y anchor
     dialogue: list[str] = field(default_factory=list)
     contents: str | None = None
     sprite:   str | None = None
@@ -650,6 +652,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 gid       = obj.get("gid", 0),
                 row_exact = row_exact,
                 col_exact = col_exact,
+                rotation  = obj.get("rotation", 0.0),
                 dialogue  = data.get("dialogue", []),
                 contents  = data.get("contents"),
                 sprite    = data.get("sprite"),
@@ -667,16 +670,40 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
     return objects
 
 
+# Tiled stores per-tile mirroring in the top 3 bits of a layer cell's GID
+# (see https://doc.mapeditor.org/en/stable/reference/global-tile-ids/) --
+# used by e.g. the "mirror" brush to reuse one drawn tile both ways instead
+# of authoring two. Any code resolving a raw layer GID to an actual tile
+# must strip these before using it as a tileset-local id, or a mirrored
+# cell's GID (well over a billion) reads as "no such tile" -- see
+# get_tile_by_gid/tiled_passable_grid.
+_FLIP_H = 0x80000000
+_FLIP_V = 0x40000000
+_FLIP_D = 0x20000000
+_FLIP_MASK = _FLIP_H | _FLIP_V | _FLIP_D
+
+
 @dataclass
 class TiledMap:
     width:      int                 # tiles
     height:     int                 # tiles
     tilewidth:  int
     tileheight: int
-    firstgid:   int
-    tileset:    TiledTileset
+    tilesets:   list[tuple[int, TiledTileset]]   # (firstgid, tileset), ascending by firstgid
     layers:     list[TiledLayer]
     objects:    list[MapObject]
+
+
+def _tileset_for_gid(tilesets: list[tuple[int, TiledTileset]], clean_gid: int) -> tuple[int, TiledTileset] | None:
+    """Which of a map's (possibly several) tilesets a flip-stripped GID
+    belongs to: the one with the highest firstgid <= clean_gid -- same rule
+    Tiled itself uses to split one map's GID range across tilesets."""
+    match = None
+    for firstgid, tileset in tilesets:
+        if firstgid > clean_gid:
+            break
+        match = (firstgid, tileset)
+    return match
 
 
 def _load_tiled_tileset(path: Path) -> TiledTileset:
@@ -697,13 +724,22 @@ def _load_tiled_tileset(path: Path) -> TiledTileset:
 
 
 def load_tiled_map(path: Path) -> TiledMap:
-    """Load a Tiled JSON map and its sibling tileset JSON."""
+    """Load a Tiled JSON map and its sibling tileset JSON(s).
+
+    A map may paint from more than one tileset (e.g. town.json draws its
+    ground from tiles_town.json and its buildings from tiles_houses.json)
+    -- every entry in raw["tilesets"] gets loaded, not just the first, or
+    any GID from the ones after it resolves to nothing and draws as a
+    missing/black tile.
+    """
     raw = json.loads(path.read_text())
 
-    ts_entry = raw["tilesets"][0]
-    firstgid = ts_entry["firstgid"]
-    ts_stem = Path(ts_entry["source"]).stem
-    tileset = _load_tiled_tileset(_ASSETS / "tiles" / f"{ts_stem}.json")
+    tilesets = []
+    for ts_entry in raw["tilesets"]:
+        ts_stem = Path(ts_entry["source"]).stem
+        tileset = _load_tiled_tileset(_ASSETS / "tiles" / f"{ts_stem}.json")
+        tilesets.append((ts_entry["firstgid"], tileset))
+    tilesets.sort(key=lambda pair: pair[0])
 
     width, height = raw["width"], raw["height"]
     # Real, authored order: walk raw["layers"] once and keep every tile layer
@@ -729,8 +765,7 @@ def load_tiled_map(path: Path) -> TiledMap:
         height     = height,
         tilewidth  = raw["tilewidth"],
         tileheight = raw["tileheight"],
-        firstgid   = firstgid,
-        tileset    = tileset,
+        tilesets   = tilesets,
         layers     = layers,
         objects    = objects,
     )
@@ -739,8 +774,22 @@ def load_tiled_map(path: Path) -> TiledMap:
 def tiled_passable_grid(tmap: TiledMap) -> list[list[bool]]:
     """Build a [row][col] -> bool grid from every layer's `walkable` property.
 
-    A cell is blocked if ANY non-empty tile stacked there (across layers) is
-    marked not walkable. GID 0 (empty cell) never blocks by itself.
+    A cell's walkability is decided by the topmost non-empty tile stacked
+    there, not by ANDing every layer together -- a walkable tile painted on
+    a higher layer (a rug, a road decal, ...) makes the cell walkable even
+    if a lower layer underneath it is marked not walkable. `tmap.layers` is
+    in Tiled's authored bottom-to-top draw order (see load_tiled_map), so
+    walking it in order and overwriting the grid on every non-empty tile
+    naturally leaves the topmost tile's value as the final one. GID 0
+    (empty cell) never overwrites -- it shows through to whatever's below,
+    same as during drawing.
+
+    NOTE: "topmost tile wins" is a judgment call, not something confirmed
+    against every authored map -- if a map ever wants a decorative
+    walkable-tagged overlay (e.g. a shadow or overlay decal) to NOT make an
+    otherwise-blocked tile walkable, this rule will need reverting or
+    reworking (e.g. an explicit per-layer opt-in) rather than assuming
+    topmost-always-wins is universally correct.
     """
     grid = [[True] * tmap.width for _ in range(tmap.height)]
     for layer in tmap.layers:
@@ -750,9 +799,13 @@ def tiled_passable_grid(tmap: TiledMap) -> list[list[bool]]:
             for c, gid in enumerate(row):
                 if gid == 0:
                     continue
-                local_id = gid - tmap.firstgid
-                if not tmap.tileset.walkable.get(local_id, False):
-                    grid[r][c] = False
+                clean_gid = gid & ~_FLIP_MASK   # mirroring doesn't change walkability
+                resolved = _tileset_for_gid(tmap.tilesets, clean_gid)
+                if resolved is None:
+                    continue
+                firstgid, tileset = resolved
+                local_id = clean_gid - firstgid
+                grid[r][c] = tileset.walkable.get(local_id, False)
     return grid
 
 
@@ -766,11 +819,10 @@ def tiled_spawn_point(tmap: TiledMap) -> tuple[int, int]:
     return (spawn_row, tmap.width // 2)
 
 
-def load_tileset_by_gid(image_path: Path, columns: int, tile_px: int) -> list[pygame.Surface]:
+def _slice_tileset_image(image_path: Path, columns: int, tile_px: int) -> list[pygame.Surface]:
     """Slice a tileset image into a flat list of surfaces, index == local tile id.
 
-    Matches Tiled's own local-id numbering (row * columns + col), so a GID
-    from a map layer resolves via `gid - firstgid` directly into this list.
+    Matches Tiled's own local-id numbering (row * columns + col).
     """
     sheet = pygame.image.load(str(image_path)).convert_alpha()
     _, sheet_h = sheet.get_size()
@@ -785,14 +837,81 @@ def load_tileset_by_gid(image_path: Path, columns: int, tile_px: int) -> list[py
     return surfaces
 
 
-def get_tile_by_gid(surfaces: list[pygame.Surface], firstgid: int, gid: int) -> pygame.Surface | None:
-    """Resolve a Tiled GID to a surface. Returns None for GID 0 (empty cell)."""
+def load_tile_surfaces(tmap: TiledMap, tile_px: int) -> dict[int, pygame.Surface]:
+    """Slice every tileset a map draws from and combine them into one
+    gid -> surface lookup, keyed by each tile's absolute (map-wide) gid
+    rather than a tileset-local id -- so draw code doesn't need to know
+    which of a map's (possibly several) tilesets a given gid came from."""
+    surfaces: dict[int, pygame.Surface] = {}
+    for firstgid, tileset in tmap.tilesets:
+        local_surfaces = _slice_tileset_image(
+            _ASSETS / 'tiles' / tileset.image, tileset.columns, tile_px)
+        for local_id, surf in enumerate(local_surfaces):
+            surfaces[firstgid + local_id] = surf
+    return surfaces
+
+
+def get_tile_by_gid(surfaces: dict[int, pygame.Surface], gid: int) -> pygame.Surface | None:
+    """Resolve a raw Tiled layer GID to a surface. Returns None for GID 0
+    (empty cell) or a gid with no matching tile in any of the map's
+    tilesets.
+
+    A gid's top 3 bits may carry Tiled's per-cell mirror flags (see
+    _FLIP_MASK) rather than being part of the tile id -- those are stripped
+    to look the base tile up, then the mirror is applied and the result
+    cached back under the raw (flagged) gid so repeats are free. Flagged
+    gids run well over a billion, so they can't collide with a real
+    (unflagged) tile id in the same dict.
+    """
     if gid == 0:
         return None
-    local_id = gid - firstgid
-    if 0 <= local_id < len(surfaces):
-        return surfaces[local_id]
-    return None
+    cached = surfaces.get(gid)
+    if cached is not None:
+        return cached
+    flip_h = bool(gid & _FLIP_H)
+    flip_v = bool(gid & _FLIP_V)
+    flip_d = bool(gid & _FLIP_D)
+    if not (flip_h or flip_v or flip_d):
+        return None   # unflagged gid, already missed the dict above -- no such tile
+    base = surfaces.get(gid & ~_FLIP_MASK)
+    if base is None:
+        return None
+    surf = base
+    if flip_d:
+        surf = pygame.transform.rotate(pygame.transform.flip(surf, True, False), 90)
+    if flip_h:
+        surf = pygame.transform.flip(surf, True, False)
+    if flip_v:
+        surf = pygame.transform.flip(surf, False, True)
+    surfaces[gid] = surf
+    return surf
+
+
+def _rotate_about_point(surf: pygame.Surface, degrees_cw: float, pivot_local: tuple[float, float],
+                         pivot_world: tuple[float, float]) -> tuple[pygame.Surface, tuple[float, float]]:
+    """Rotate `surf` clockwise by `degrees_cw` (Tiled's object-rotation
+    convention) about `pivot_local` -- a point in the surface's own
+    coordinate space, e.g. (0, tile_px) for its bottom-left corner, which
+    is where Tiled tile objects anchor.
+
+    Returns the rotated surface and the top-left position to blit it at so
+    that the pivot lands at `pivot_world`. pygame.transform.rotate always
+    rotates about the surface's center and grows the surface to fit, so the
+    offset from that new center back to the pivot has to be tracked by hand.
+    """
+    w, h = surf.get_size()
+    center_x, center_y = w / 2, h / 2
+    dx, dy = pivot_local[0] - center_x, pivot_local[1] - center_y
+    # pygame's rotate() takes a counterclockwise angle -- negate to get Tiled's clockwise one.
+    rad = math.radians(-degrees_cw)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    new_dx = dx * cos_a + dy * sin_a
+    new_dy = -dx * sin_a + dy * cos_a
+    rotated = pygame.transform.rotate(surf, -degrees_cw)
+    rw, rh = rotated.get_size()
+    pivot_in_rotated = (rw / 2 + new_dx, rh / 2 + new_dy)
+    topleft = (pivot_world[0] - pivot_in_rotated[0], pivot_world[1] - pivot_in_rotated[1])
+    return rotated, topleft
 
 
 # ── NPC behaviors ────────────────────────────────────────────────────────────
@@ -1009,11 +1128,7 @@ class OverworldScene:
         print(f'Loading map {map_path.stem}...', flush=True)
         self.map_path = map_path
         self.tmap = tmap if tmap is not None else load_tiled_map(map_path)
-        self.tile_surfaces = load_tileset_by_gid(
-            _ASSETS / 'tiles' / self.tmap.tileset.image,
-            self.tmap.tileset.columns,
-            self.tile_px,
-        )
+        self.tile_surfaces = load_tile_surfaces(self.tmap, self.tile_px)
         self.passable = tiled_passable_grid(self.tmap)
         print(f'  {len(self.tile_surfaces)} tiles', flush=True)
 
@@ -1153,6 +1268,15 @@ class OverworldScene:
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.KEYDOWN:
+            # DEV-ONLY: hot-reload the current map's JSON/tileset off disk
+            # without restarting the process, so map edits can be checked
+            # live. Not a shipping feature -- cut this before release.
+            if event.key == pygame.K_r and self._transition_phase is None:
+                self._load_map(self.map_path,
+                                spawn=(self.player.row, self.player.col),
+                                facing=self.player.facing)
+                return
+
             direction = _DIR_KEY.get(event.key)
             if direction:
                 if self.player.state == PlayerState.IN_MENU:
@@ -1662,7 +1786,7 @@ class OverworldScene:
         for r, row in enumerate(layer.grid):
             y = r * self.tile_px - cam_y
             for c, gid in enumerate(row):
-                surf = get_tile_by_gid(self.tile_surfaces, self.tmap.firstgid, gid)
+                surf = get_tile_by_gid(self.tile_surfaces, gid)
                 if surf:
                     surface.blit(surf, (c * self.tile_px - cam_x, y))
 
@@ -1685,9 +1809,16 @@ class OverworldScene:
         for obj in self.objects:
             if obj.type == "container" and self.game_state.flag(persistent_id(map_name, obj.name)):
                 continue
-            obj_surf = get_tile_by_gid(self.tile_surfaces, self.tmap.firstgid, obj.gid)
+            obj_surf = get_tile_by_gid(self.tile_surfaces, obj.gid)
             if obj_surf:
-                surface.blit(obj_surf, (obj.col * self.tile_px - cam_x, obj.row * self.tile_px - cam_y))
+                topleft = (obj.col * self.tile_px - cam_x, obj.row * self.tile_px - cam_y)
+                if obj.rotation:
+                    # Tiled tile objects anchor (and rotate) about their bottom-left
+                    # corner, not their center -- see MapObject.rotation.
+                    pivot_world = (topleft[0], topleft[1] + self.tile_px)
+                    obj_surf, topleft = _rotate_about_point(
+                        obj_surf, obj.rotation, (0, self.tile_px), pivot_world)
+                surface.blit(obj_surf, topleft)
 
         for npc in self.npcs:
             # npc_id set -> this NPC resolved against a real def, so its
