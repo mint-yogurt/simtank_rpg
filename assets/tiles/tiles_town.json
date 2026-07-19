@@ -1689,7 +1689,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1698,7 +1698,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1707,7 +1707,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1716,7 +1716,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1815,7 +1815,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1869,7 +1869,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {

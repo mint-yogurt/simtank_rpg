@@ -20,10 +20,18 @@ consumables:
     stackable: true
     value: 5
 
+  - id: large_meatball
+    name: Large Meatball
+    category: consumables
+    description: Mystery meat. Restores 10 HP
+    effect: {hp: 10}
+    stackable: true
+    value: 3
+
   - id: chinese_mana_potion
     name: Chinese Mana Potion
     category: consumables
-    description: The label is in a language nobody can read.
+    description: It's covered in unreadable warning labels.
     effect: {mp: 20}
     stackable: true
     value: 8
@@ -31,7 +39,7 @@ consumables:
   - id: piggled_egg
     name: Piggled Egg
     category: consumables
-    description: Curiously spicy pickled egg.
+    description: Curiously spicy pickled egg. Restores 25 HP.
     effect: {hp: 25}
     stackable: true
     value: 8
@@ -39,7 +47,7 @@ consumables:
   - id: boiled_hotdog
     name: Boiled Hotdog
     category: consumables
-    description: A classic.
+    description: Still dripping wet. Heals 20 HP.
     effect: {hp: 20}
     stackable: true
     value: 4
@@ -55,10 +63,18 @@ consumables:
   - id: bag_of_soup
     name: Bag of Soup
     category: consumables
-    description: Full heal, but you have to eat it out of a bag.
-    effect: {hp: 999}
+    description: What, you've never ate soup out of a grocery bag? Restores 50 HP.
+    effect: {hp: 50}
     stackable: true
-    value: 50
+    value: 20
+
+  - id: floorburger
+    name: Floorburger
+    category: consumables
+    description: Best not to think too hard about the name. Restores 75 HP.
+    effect: {hp: 75}
+    stackable: true
+    value: 40
 
 weapons:
   - id: broken_q_tip

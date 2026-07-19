@@ -982,6 +982,15 @@
                 }]
         }, 
         {
+         "id":762,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
          "id":780,
          "properties":[
                 {
