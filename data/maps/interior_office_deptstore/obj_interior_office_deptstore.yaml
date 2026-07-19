@@ -13,6 +13,17 @@
 #   whatever npc.yaml's entry says. event is unrelated -- still
 #   just a reserved stub, not wired to anything yet.
 #
+#   dialogue is either a flat page list (always shown the same way)
+#   or a list of {when, unless, pages} variants that branch on
+#   engine.game_state flags, checked top-to-bottom, first match
+#   wins -- see data/npcs/npc.yaml's own dialogue comments for the
+#   exact shape. Every npc_id gets a free flag, npc_met:<npc_id>,
+#   set the instant it's ever talked to -- reference it in an
+#   unless to write a first-ever-meeting variant. A one-off named
+#   character (one placement only) usually belongs entirely here,
+#   not in npc.yaml, which is best kept for sprite/behavior plus
+#   any dialogue that's genuinely shared across placements.
+#
 # enemy (hardcoded placement): enemy_id is a key from
 #   data/enemy/enemies.yaml (e.g. fat_guy2); level optionally
 #   overrides that entry's own level -- leave null to use it as-is.
@@ -85,9 +96,9 @@
   name: office_locked
   type: warp
 3:
-  destination_map: town_parkinglot
+  destination_map: town
   destination_warp: ladder_roof
-  distance: 1
-  facing: S
+  distance: null
+  facing: N
   name: ladder_office
   type: warp

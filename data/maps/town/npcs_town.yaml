@@ -1,4 +1,4 @@
-# Auto-synced from interior_office_deptstore.json by populate_yamls.py.
+# Auto-synced from town.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,

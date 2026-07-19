@@ -1,4 +1,4 @@
-# Auto-synced from interior_office_deptstore.json by populate_yamls.py.
+# Auto-synced from interior_fronthouse.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
@@ -81,4 +81,40 @@
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
 
-{}
+3:
+  contents: broken_q_tip
+  dialogue:
+  - This will have to do. I should EQUIP this in the MENU.
+  name: chest_melvinroom
+  type: container
+4:
+  destination_map: null
+  destination_warp: null
+  distance: null
+  facing: null
+  name: bed_spawn
+  type: warp
+5:
+  destination_map: interior_fronthouse_1f
+  destination_warp: fh_1f_N
+  distance: null
+  facing: E
+  name: fh_stairs_N
+  type: warp
+6:
+  destination_map: interior_fronthouse_1f
+  destination_warp: fh_1f_S
+  distance: null
+  facing: E
+  name: fh_stairs_S
+  type: warp
+7:
+  dialogue:
+  - Good old Poors Lite.
+  name: cans1
+  type: sign
+8:
+  dialogue:
+  - Two First Names Whiskey.
+  name: bottles1
+  type: sign

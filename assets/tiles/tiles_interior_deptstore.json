@@ -1,11 +1,11 @@
 { "columns":16,
  "image":"tiles_interior_deptstore.png",
- "imageheight":256,
+ "imageheight":512,
  "imagewidth":256,
  "margin":0,
  "name":"tiles_interior_deptstore",
  "spacing":0,
- "tilecount":256,
+ "tilecount":512,
  "tiledversion":"1.12.2",
  "tileheight":16,
  "tiles":[
@@ -825,7 +825,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":true
+                 "value":false
                 }]
         }, 
         {
@@ -960,7 +960,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":true
+                 "value":false
                 }]
         }, 
         {
@@ -969,7 +969,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":true
+                 "value":false
                 }]
         }, 
         {
@@ -1059,7 +1059,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1068,7 +1068,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1077,7 +1077,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1212,7 +1212,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":true
+                 "value":false
                 }]
         }, 
         {
@@ -1221,7 +1221,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":true
+                 "value":false
                 }]
         }, 
         {
@@ -1509,7 +1509,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1644,7 +1644,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -1653,7 +1653,7 @@
                 {
                  "name":"walkable",
                  "type":"bool",
-                 "value":false
+                 "value":true
                 }]
         }, 
         {
@@ -2306,6 +2306,87 @@
         }, 
         {
          "id":255,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":267,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":283,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":302,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":317,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":318,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":319,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":333,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":334,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":335,
          "properties":[
                 {
                  "name":"walkable",

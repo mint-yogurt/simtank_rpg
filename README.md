@@ -71,7 +71,7 @@ old_man_intro:
     - "Stay away from the forest."
 ```
 
-Signs and NPCs both use this page-list shape today, but inline — a sign's `dialogue` lives directly on its entry in `obj_<map>.yaml`, an NPC's on its entry in `npcs_<map>.yaml`, rather than in a separate ID-keyed file. A separate ID-keyed dialogue file resolved conditionally through NPC logic isn't built yet — see Roadmap (Event System).
+Signs and NPCs both use this page-list shape today, but inline — a sign's `dialogue` lives directly on its entry in `obj_<map>.yaml`, an NPC's on its entry in `npcs_<map>.yaml` (or on its shared def in `data/npcs/npc.yaml`, if the placement doesn't override it), rather than in a separate ID-keyed file. A separate ID-keyed dialogue file isn't built yet — see Roadmap (Event System) — but an NPC's inline `dialogue` can already be conditional: instead of a flat page list, it can be a list of `{when, unless, pages}` variants checked top-to-bottom against `GameState.flags`, first match wins (`engine.npc.DialogueVariant`/`resolve_dialogue`). Every `npc_id` gets a free flag, `npc_met:<npc_id>`, set the instant it's ever talked to, so a first-ever-meeting variant is just `unless: [npc_met:<npc_id>]`. This is a narrower, purpose-built mechanism (conditions only, no actions) — not the general `if`/`then`/`else` executor sketched below, which is still unbuilt. Signs don't have this yet, only NPCs.
 
 **Event System — conditions and actions.** One flag primitive, `GameState.flags` (`engine/game_state.py`), is the only thing a condition ever checks — deliberately not two (flags *and* a live inventory lookup): "has the castle key" is modeled as a flag set the moment the key's granted, not `Inventory.has()`.
 
@@ -89,7 +89,7 @@ Built now (containers) or next in line: `set_flag`, `clear_flag`, `give_item`, `
 
 **Current state:** the flag store this all sits on is real and save-able (`GameState.flags`/`persistent_id`), and so is order-preserving layer compositing (see Maps above), which is what lets a triggered object's tile disappear into whatever's painted underneath it. What's actually built *on* that foundation is still one concrete case, not the general `if`/`then`/`else` evaluator sketched above: containers. Every container gets its flag for free via `persistent_id(map_name, object_name)` — no registry, no per-object declaration. Opening one sets that flag and is inert afterward, one open, ever; a container with `contents` set also grants it, appending a synthesized `"Received {item name}."` page — see `engine.input._open_container`.
 
-Still not built: the general `if`/`if_not` condition check and `then`/`else` action-list executor, conditional dialogue for signs/NPCs, locked warps, and the `pan_camera`/`force_move`/`wait` action kinds. Also scoped but not designed at all yet: **animated tiles** (frame-cycling GIDs — how that interacts with the current one-surface-per-GID tile lookup isn't decided).
+Still not built: the general `if`/`if_not` condition check and `then`/`else` action-list executor, conditional dialogue for signs (NPCs have their own narrower flag-variant mechanism now — see Dialogue above), locked warps, and the `pan_camera`/`force_move`/`wait` action kinds. Also scoped but not designed at all yet: **animated tiles** (frame-cycling GIDs — how that interacts with the current one-surface-per-GID tile lookup isn't decided).
 
 ---
 
@@ -109,7 +109,8 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [x] Enemy/spawner placement, spawn-chance resolution, continuous movement (not battle-triggered yet)
 - [ ] Event System — general `if`/`then`/`else` script executor (containers are the only flag-driven case built so far)
 - [ ] Trigger System — script-driven doors/switches, locked warps
-- [ ] NPC logic YAML — conditional dialogue via the Event System
+- [x] Conditional NPC dialogue — flag-gated `{when, unless, pages}` variants, inline on an NPC's def or placement (`engine.npc.DialogueVariant`/`resolve_dialogue`); narrower than the Event System below (conditions only, no actions), and signs don't have it yet
+- [ ] NPC logic YAML — richer scripted NPC behavior (actions, not just dialogue conditions) via the general Event System
 - [ ] Animated tiles — not designed yet
 
 ### Input & Core Game Loop

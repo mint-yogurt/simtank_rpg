@@ -19,7 +19,9 @@ itself, only open()/close()/advance(). A pressed while a dialogue box is
 open advances/closes it; A pressed while idle and facing an interactable
 (sign, NPC, or container) opens one instead — see handle_a_button, and
 _open_container for how a container's dialogue also grants its `contents`
-item and sets a flag (engine.game_state) the first time it's opened. SAVE's
+item and sets a flag (engine.game_state) the first time it's opened. An
+NPC's dialogue can branch on game_state flags the same way — see
+handle_a_button and engine.npc.resolve_dialogue/npc_met_flag. SAVE's
 YES/NO overlay writes to disk via engine.save on YES — see handle_a_button.
 """
 
@@ -27,6 +29,8 @@ from engine.dialogue import DialogueBox
 from engine.game_state import GameState, persistent_id
 from engine.inventory import Inventory
 from engine.menu import InventoryMenu, SaveMenu, SettingsMenu, StartMenu
+from engine.movement import OPPOSITE_DIR
+from engine.npc import npc_met_flag, resolve_dialogue
 from engine.player import Player, PlayerState
 from engine.save import save_to_slot
 
@@ -207,6 +211,23 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     flag — `dialogue`/`DialogueBox` itself doesn't know containers exist,
     it's just shown whatever pages `_open_container` returns.
 
+    An NPC's pages come from resolving `target.dialogue_variants` (already
+    merged from its placement's own npcs_<map>.yaml override or its
+    NpcDef's dialogue — see OverworldScene._load_map) against `game_state`'s
+    current flags — see engine.npc.resolve_dialogue. Right after resolving
+    (so this interaction still sees the pre-visit flag state), an npc_id'd
+    NPC has its `engine.npc.npc_met_flag` set — unconditionally, every
+    visit, not just the first — so dialogue can branch on "have we ever
+    met" via `unless: [npc_met_flag(...)]` on its first-meeting variant.
+    Opening an NPC's dialogue also turns it to face the player —
+    `engine.movement.OPPOSITE_DIR[player.facing]`, since the player is
+    always facing the NPC to reach it (adjacent_interactable only returns
+    the tile directly ahead) — visible only on an 8-frame (full-facing)
+    sprite; a no-op on a 2-frame one, which ignores `facing` entirely (see
+    get_npc_frame). This overrides whatever the NPC was already facing —
+    its own authored `facing:`, or wherever a "wander" NPC's last step left
+    it — every single time its dialogue opens, not just the first.
+
     `wrap_pages(raw_pages: list[str]) -> list[str]` turns each hand-authored
     YAML page into one or more screens sized to fit the dialogue box, since a
     page's text won't always fit in one screen. It's pygame.font-aware
@@ -245,9 +266,16 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
 
     if player.can_interact():
         target = player.adjacent_interactable(npcs, objects)
-        if target is not None and target.type in ("sign", "npc"):
+        if target is not None and target.type == "sign":
             dialogue.open(wrap_pages(target.dialogue))
             player.set_state(PlayerState.IN_DIALOGUE)
+        elif target is not None and target.type == "npc":
+            target.facing = OPPOSITE_DIR[player.facing]
+            pages = resolve_dialogue(target.dialogue_variants, game_state.flag)
+            dialogue.open(wrap_pages(pages))
+            player.set_state(PlayerState.IN_DIALOGUE)
+            if target.npc_id:
+                game_state.set_flag(npc_met_flag(target.npc_id))
         elif target is not None and target.type == "container":
             pages = _open_container(target, game_state, inventory, item_defs, map_name)
             if pages is not None:

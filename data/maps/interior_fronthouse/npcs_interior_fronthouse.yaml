@@ -1,4 +1,4 @@
-# Auto-synced from interior_office_deptstore.json by populate_yamls.py.
+# Auto-synced from interior_fronthouse.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
@@ -81,4 +81,24 @@
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
 
-{}
+1:
+  behavior: static
+  dialogue:
+  - I don't know what happened last night, but my batteries are almost dead. You got
+    to run to Bald-Mart down the street and grab me some.
+  - Check that trash can for something to defend yourself with.
+  - Come on Melvin, get me some new batteries!
+  event: null
+  name: billy
+  npc_id: billy
+  sprite: billy1
+  type: npc
+2:
+  behavior: wander
+  dialogue:
+  - You guys really tied one on last night!
+  event: null
+  name: roach
+  npc_id: roach
+  sprite: roach2
+  type: npc

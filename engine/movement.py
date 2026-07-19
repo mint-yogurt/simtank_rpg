@@ -23,6 +23,8 @@ _DIR_DELTA: dict[str, tuple[int, int]] = {
     "W": ( 0, -1),
 }
 
+OPPOSITE_DIR: dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
 _EPS = 1e-6
 
 

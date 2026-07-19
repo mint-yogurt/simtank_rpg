@@ -28,6 +28,16 @@ recolors that sprite for this NPC specifically, position-matched against
 the sprite's placeholder list -- e.g. sprite colors[0] swaps to this NPC's
 colors[0]. Two NPCs can share one sprite strip and still look different.
 See engine.renderer.recolor_surface for the actual pixel remap.
+
+Dialogue can branch on engine.game_state flags -- see DialogueVariant/
+resolve_dialogue below. Every npc_id'd NPC gets a free flag,
+`npc_met:<npc_id>`, set the instant it's ever talked to (engine.input.
+handle_a_button, after resolving that interaction's pages but before the
+next one) -- deliberately global (not map-scoped like
+engine.game_state.persistent_id, since a named NpcDef is one character
+regardless of which map places it), and needs no authoring: reference it
+in a variant's `unless` to write "the first time we've ever met" dialogue,
+same as wizard's does.
 """
 
 from dataclasses import dataclass, field
@@ -66,6 +76,42 @@ class NpcSpriteSpec:
 
 
 @dataclass(frozen=True)
+class DialogueVariant:
+    """One candidate page-list for an NpcDef's `dialogue:` -- see
+    resolve_dialogue. `when` flags must ALL be true and `unless` flags must
+    ALL be false for this variant to match; either/both left empty means
+    that side imposes no restriction, so a variant with neither set always
+    matches (an unconditional catch-all)."""
+    pages:  list[str] = field(default_factory=list)
+    when:   list[str] = field(default_factory=list)
+    unless: list[str] = field(default_factory=list)
+
+
+def npc_met_flag(npc_id: str) -> str:
+    """The engine.game_state flag key set the first time npc_id is ever
+    talked to (engine.input.handle_a_button) -- global, not per-map (unlike
+    engine.game_state.persistent_id), since an NpcDef is one character
+    regardless of which map places it. Reference this same string literally
+    (e.g. "npc_met:wizard") in a DialogueVariant's `unless` in npc.yaml to
+    write that character's first-ever-meeting dialogue."""
+    return f"npc_met:{npc_id}"
+
+
+def resolve_dialogue(variants: list[DialogueVariant], flag) -> list[str]:
+    """First variant (authoring order) whose `when`/`unless` both pass,
+    given `flag(key) -> bool` (engine.game_state.GameState.flag, or
+    equivalent) -- see DialogueVariant. Put the most specific/rare
+    conditions first and an unconditional variant last as a catch-all; a
+    def with no variant matching the current flags (author error -- no
+    catch-all present) shows no dialogue at all (empty list), same as an
+    NPC with no `dialogue:` set."""
+    for variant in variants:
+        if all(flag(f) for f in variant.when) and not any(flag(f) for f in variant.unless):
+            return variant.pages
+    return []
+
+
+@dataclass(frozen=True)
 class NpcDef:
     """One entry of data/npcs/npc.yaml's `npcs:` section. Static -- never
     mutated at runtime."""
@@ -77,7 +123,34 @@ class NpcDef:
     colors:   list[str] | None = None  # replacement palette, position-matched
                                         #   against this sprite's own placeholder
                                         #   colors; None = use them as authored
-    dialogue: list[str] = field(default_factory=list)
+    dialogue: list[DialogueVariant] = field(default_factory=list)
+
+
+def parse_dialogue(raw: list) -> list[DialogueVariant]:
+    """A yaml `dialogue:` list is either the old flat page-list shape (a
+    list of strings -- wrapped here into one unconditional DialogueVariant,
+    so every pre-existing/simple NPC needs no changes) or a list of
+    variant dicts (`pages:`, plus optional `when:`/`unless:`) for
+    conditional dialogue -- see DialogueVariant/resolve_dialogue. Mixing
+    the two shapes in one list isn't supported -- the first element decides
+    which shape the whole list is read as.
+
+    Shared by both npc.yaml's own `npcs:` entries (load_npc_defs, below)
+    and a placement's own `dialogue:` override in a map's npcs_<map>.yaml
+    (engine.renderer.OverworldScene._load_map) -- either one can be a flat
+    list or a conditional variant list, same rule either place."""
+    if not raw:
+        return []
+    if isinstance(raw[0], str):
+        return [DialogueVariant(pages=list(raw))]
+    return [
+        DialogueVariant(
+            pages  = entry.get("pages") or [],
+            when   = entry.get("when") or [],
+            unless = entry.get("unless") or [],
+        )
+        for entry in raw
+    ]
 
 
 def load_npc_defs(path: Path = _NPC_DEFS_PATH) -> dict[str, NpcDef]:
@@ -92,7 +165,7 @@ def load_npc_defs(path: Path = _NPC_DEFS_PATH) -> dict[str, NpcDef]:
             behavior = entry.get("behavior") or "static",
             facing   = entry.get("facing") or "S",
             colors   = _validated_colors(colors, f"npc.yaml npcs.{npc_id}.colors") if colors else None,
-            dialogue = entry.get("dialogue") or [],
+            dialogue = parse_dialogue(entry.get("dialogue") or []),
         )
     return defs
 

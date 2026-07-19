@@ -602,6 +602,72 @@ class TitleIntroEffect:
         return np.clip(frame, 0.0, 1.0)
 
 
+class KaleidoscopeEffect:
+    """Mode 12: a real kaleidoscope, not a rainbow-noise fill.
+
+    Radial symmetry comes from folding the angle around the center into
+    N_WEDGES repeating slices and then mirroring within each slice (the
+    classic kaleidoscope-mirror technique) — the same handful of features
+    just gets reflected around, rather than the whole canvas being filled
+    independently.
+
+    Color is deliberately restrained: a duotone pair of tertiary hues a
+    fixed 60 degrees apart (HUE_SPAN) — not a full hue sweep — with the
+    pattern blending smoothly between just those two anchors. The pair
+    drifts together through the wheel (one full rotation per
+    HUE_DRIFT_PERIOD), so the palette itself evolves but never jumps or
+    flashes between unrelated hues. Saturation and value are both kept
+    mid-range for the same reason — no pure-white flares, no max-saturation
+    neon. A small per-block hue jitter, re-rolled every frame, adds sparkle
+    without turning it into a rainbow.
+
+    Rendered at a chunky PIXELxPIXEL grid and nearest-upscaled, for a
+    pixelated look instead of smooth gradients.
+    """
+
+    N_WEDGES = 8
+    HUE_SPAN = 60.0 / 360.0     # duotone anchor spacing stays fixed at a tertiary-scale interval
+    HUE_DRIFT_PERIOD = 90.0     # seconds for one full rotation of the whole duotone through the wheel
+    HUE_JITTER = 0.008          # max per-block random hue offset, re-rolled every frame
+    ROTATE_SPEED = 0.09         # overall pattern rotation, radians/sec-ish
+    PIXEL = 4                   # chunk size in canvas pixels; must evenly divide both WIDTH and HEIGHT
+
+    def __init__(self):
+        self.gh = HEIGHT // self.PIXEL
+        self.gw = WIDTH // self.PIXEL
+        gys, gxs = np.mgrid[0:self.gh, 0:self.gw]
+        bx = (gxs * self.PIXEL + self.PIXEL / 2).astype(np.float32)
+        by = (gys * self.PIXEL + self.PIXEL / 2).astype(np.float32)
+        cx, cy = WIDTH / 2.0, HEIGHT / 2.0
+        dx, dy = bx - cx, by - cy
+        self.radius = np.sqrt(dx * dx + dy * dy)
+        self.angle = np.arctan2(dy, dx)
+
+    def render(self, t):
+        wedge = math.tau / self.N_WEDGES
+        a = np.mod(self.angle + t * self.ROTATE_SPEED, wedge)
+        a = np.abs(a - wedge / 2.0)  # mirror-fold each wedge -> 2x N_WEDGES-fold symmetry
+
+        r = self.radius
+        v = (
+            np.sin(a * 9.0 + r * 0.045 - t * 0.35)
+            + np.sin(r * 0.08 - a * 6.0 + t * 0.22)
+            + np.sin((a * 13.0 + r * 0.03) - t * 0.12)
+        )
+        v = (v + 3.0) / 6.0  # 0..1 structured pattern, no per-pixel randomness
+
+        hue_offset = (t / self.HUE_DRIFT_PERIOD) % 1.0
+        mix = 0.5 + 0.5 * np.cos(v * math.pi + a * 2.0)  # smooth blend between the two duotone anchors
+        jitter = np.random.uniform(-self.HUE_JITTER, self.HUE_JITTER, size=v.shape).astype(np.float32)
+        hue = (hue_offset + mix * self.HUE_SPAN + jitter) % 1.0
+
+        sat = 0.5 + 0.12 * v
+        val = 0.22 + 0.62 * v
+
+        rgb = hsv_to_rgb(hue, sat, val)
+        return np.repeat(np.repeat(rgb, self.PIXEL, axis=0), self.PIXEL, axis=1)
+
+
 EFFECTS = {
     "1": ("plasma", PlasmaEffect),
     "2": ("ripples", RipplesEffect),
@@ -614,6 +680,7 @@ EFFECTS = {
     "9": ("chromeflame-symbols", ChromeFlameSymbolMaskEffect),
     "10": ("titlescreenv1", TitleScreenV1Effect),
     "11": ("titleintro", TitleIntroEffect),
+    "12": ("kaleidoscope", KaleidoscopeEffect),
 }
 
 
@@ -630,6 +697,7 @@ def prompt_mode():
     print("  9) chromeflame-symbols (mode 7 masked to gaidensymbols.png glyphs, black elsewhere for now)")
     print("  10) titlescreenv1  (mode 9 composited over mode 6 static)")
     print("  11) titleintro     (scripted fronthouse/gaiden intro sequence)")
+    print("  12) kaleidoscope   (mirrored radial symmetry, restrained tertiary duotone)")
     choice = input("> ").strip()
     return EFFECTS.get(choice, EFFECTS["1"])
 

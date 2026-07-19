@@ -1,4 +1,4 @@
-# Auto-synced from interior_office_deptstore.json by populate_yamls.py.
+# Auto-synced from town.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
@@ -81,4 +81,63 @@
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
 
-{}
+1:
+  destination_map: interior_fronthouse_1f
+  destination_warp: fh_frontdoor
+  distance: 1
+  facing: S
+  name: fh_frontdoor
+  type: warp
+3:
+  destination_map: interior_hub_rearhouse
+  destination_warp: rearhouse_door
+  distance: null
+  facing: S
+  name: rearhouse_door
+  type: warp
+4:
+  contents: forgotten_onion
+  dialogue:
+  - I knew I left that somewhere!
+  name: trash_rearhouse
+  type: container
+5:
+  dialogue:
+  - REAR HOUSE.
+  name: sign_rearhouse
+  type: sign
+6:
+  destination_map: interior_pizzahutparkinglot
+  destination_warp: pizza_door
+  distance: 1
+  facing: S
+  name: pizza_door
+  type: warp
+7:
+  destination_map: interior_deptstore
+  destination_warp: dept_entrance_L
+  distance: 1
+  facing: S
+  name: dept_frontdoor_L
+  type: warp
+8:
+  destination_map: interior_deptstore
+  destination_warp: dept_entrance_R
+  distance: 1
+  facing: S
+  name: dept_frontdoor_R
+  type: warp
+9:
+  destination_map: interior_office_deptstore
+  destination_warp: ladder_office
+  distance: null
+  facing: N
+  name: ladder_roof
+  type: warp
+10:
+  destination_map: town_tunnel_1
+  destination_warp: tunnel_enter
+  distance: 1
+  facing: E
+  name: tunnel_enter
+  type: warp

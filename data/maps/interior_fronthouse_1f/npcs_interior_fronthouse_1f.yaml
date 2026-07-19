@@ -1,4 +1,4 @@
-# Auto-synced from interior_office_deptstore.json by populate_yamls.py.
+# Auto-synced from interior_fronthouse_1f.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
 # (dialogue, contents, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
@@ -81,4 +81,20 @@
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
 
-{}
+1:
+  behavior: wander
+  dialogue:
+  - Melvin! You're finally awake. I don't know what you Front House Boys got up to
+    last night, but you're in big trouble.
+  - Poots is trapped in some kind of jail cell in the Rear House, Billy's batteries
+    are drained...
+  - And the Side House is gone! After years of garden warfare, the Side House Boys
+    Headquarters disappeared without a trace.
+  - I don't know what's going on, but you will have to figure this all out. The House
+    Wars must continue, it cannot end like this. We must return the Side House and
+    finish this fight properly!
+  event: null
+  name: wizard
+  npc_id: null
+  sprite: wizard
+  type: npc

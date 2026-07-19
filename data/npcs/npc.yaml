@@ -32,6 +32,13 @@
 #                         to face whichever direction it's currently
 #                         stepping.
 #
+# Height can be any multiple of 16px, independent of the frame-count table
+# above (which is keyed off width only) -- e.g. wizard is 128x32: still the
+# 8-frame walk cycle, just 32px tall per frame. The bottom 16px of each
+# frame is the ordinary body (behaves exactly like a 16-tall sprite); any
+# rows above that are just placed on top as a fixed overhang (a hat, tall
+# hair, ...) with no animation of their own.
+#
 # `colors` lists the placeholder hex colors actually baked into that PNG's
 # pixels (6-digit, no `#`, e.g. "ff83c1") -- the swap *keys* a `npcs:`
 # entry's own `colors` (below) recolors, position-matched: this sprite's
@@ -64,6 +71,21 @@ sprites:
   poots:
     file: poots
     colors: ["000000", "ffffff", "ade231"]   # 128x16 -- 8 frames, full facing
+  wizard:
+    file: wizard
+    colors: ["930084", "bcbcbc", "bcbcbc", "503001"]
+  billy1:
+    file: billy
+    colors: []
+  roach2:
+    file: roach2
+    colors: []
+  pizza_cashier:
+    file: pizza_cashier
+    colors: []
+  flies:
+    file: flies
+    colors: []
 
 # ── NPCs ──────────────────────────────────────────────────────────────────
 #
@@ -73,14 +95,52 @@ sprites:
 # tiles); `facing` (static only -- ignored/overwritten for "wander", which
 # always faces its current movement direction) is "N"/"S"/"E"/"W", defaults
 # to "S" if left blank -- only visible on an 8-frame sprite, a 2-frame one
-# has no directional art to show it with; `dialogue` is a flat page list,
-# same shape as a sign's.
+# has no directional art to show it with.
 #
 # `colors`, if set, replaces this sprite's own placeholder colors for this
 # NPC specifically, same length/order as the sprite's own `colors` list
 # (see Sprites above) -- this is what lets two different NPCs share one
 # sprite strip but look different. Leave it unset to use the sprite as
 # authored.
+#
+# `dialogue` here is this def's own fallback -- shown by any placement that
+# references this npc_id and doesn't set its own `dialogue:` override in
+# its npcs_<map>.yaml entry (see that file's stub comments). For a
+# reusable/generic NPC (barks shared across several placements) it belongs
+# here; for a one-off named character with exactly one placement (like
+# wizard), it's usually simpler to just leave this blank and author the
+# real dialogue directly on that one placement instead -- same two shapes
+# either place:
+#
+# Simplest -- a flat page list, same shape as a sign's, always shown the
+# same way regardless of game state:
+#
+#   dialogue:
+#     - "Some line of dialogue."
+#     - "Another page."
+#
+# Or a list of *variants* to support dialogue that changes based on
+# engine.game_state flags -- each one an optional `when:` (flags that must
+# ALL be true), an optional `unless:` (flags that must ALL be false), and
+# its own `pages:`. Checked top-to-bottom, first variant whose when/unless
+# both pass wins -- put the most specific/rare conditions first, and an
+# unconditional variant (no when/unless at all) last as the catch-all.
+# Every npc_id gets a free flag, "npc_met:<npc_id>", set the instant it's
+# ever talked to (before that visit, it isn't set yet) -- reference it in
+# an `unless` to write a character's first-ever-meeting dialogue. Nothing
+# else sets flags for you; a variant keyed on some other event (a quest
+# beat, an item found, ...) only works once whatever triggers that event
+# actually calls game_state.set_flag for it.
+#
+#   dialogue:
+#     - unless: ["npc_met:some_npc_id"]   # first time ever, before that flag exists
+#       pages:
+#         - "First-meeting line."
+#     - when: ["some_other_flag"]         # later, once some_other_flag is set
+#       pages:
+#         - "Conditional line."
+#     - pages:                            # fallback -- always matches
+#         - "Default line."
 #
 # Template -- copy this block, rename the key, fill in your own values:
 #
@@ -92,4 +152,8 @@ sprites:
 #   dialogue:                     # flat page list, shown on interact
 #     - "Some line of dialogue."
 
-npcs: {}
+npcs:
+  wizard:
+    sprite: wizard
+    behavior: static
+    facing: S

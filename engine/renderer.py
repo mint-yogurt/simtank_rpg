@@ -92,7 +92,7 @@ from engine.input import (
 from engine.game_state import GameState, persistent_id
 from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
 from engine.menu import InventoryMenu, SaveMenu, SettingsMenu, StartMenu
-from engine.npc import load_npc_defs, load_npc_sprite_specs
+from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue
 from engine.player import Player, PlayerState
 from procgen.visualizer import EFFECTS
 
@@ -394,15 +394,21 @@ def get_party_frame(sprites: dict[str, pygame.Surface],
 # `sprite` field in data/enemy/enemies.yaml.
 
 def load_enemy_sprites(sprites_dir: Path, tile_px: int = 16) -> dict[str, list[pygame.Surface]]:
-    """Slice every PNG in `sprites_dir` into a list of tile_px x tile_px
-    animation frames, keyed by filename stem. Call after pygame.display.set_mode()."""
+    """Slice every PNG in `sprites_dir` into a list of tile_px-wide animation
+    frames, keyed by filename stem. Frame height is the sheet's own height
+    (always a multiple of tile_px), not hardcoded to tile_px -- a sheet
+    taller than one tile is a normal tile_px x tile_px frame (bottom rows)
+    with extra rows stacked above it (e.g. a hat/head overhang on an NPC).
+    See _draw_entities, which anchors the bottom tile_px rows to the tile
+    and lets any extra height extend upward. Call after
+    pygame.display.set_mode()."""
     frames: dict[str, list[pygame.Surface]] = {}
     for path in sorted(sprites_dir.glob('*.png')):
         sheet = pygame.image.load(str(path)).convert_alpha()
-        width, _ = sheet.get_size()
+        width, height = sheet.get_size()
         count = width // tile_px
         frames[path.stem] = [
-            sheet.subsurface(pygame.Rect(i * tile_px, 0, tile_px, tile_px)).copy()
+            sheet.subsurface(pygame.Rect(i * tile_px, 0, tile_px, height)).copy()
             for i in range(count)
         ]
     return frames
@@ -426,6 +432,15 @@ def get_enemy_frame(enemy_sprites: dict[str, list[pygame.Surface]],
 # count (width / tile_px) decides how get_npc_frame animates it: 2 frames is
 # a facing-less south-only idle loop, 8 is a full walk cycle in the party
 # sheet's own S1,S2,N1,N2,W1,W2,E1,E2 order, and does respond to facing.
+#
+# A strip's height, independently of frame count, may be any multiple of
+# tile_px -- e.g. 128x32 is still the 8-frame walk cycle above, just with
+# each frame 32px tall instead of 16. The bottom tile_px rows are the
+# ordinary body, treated exactly like a 16-tall sprite; anything above that
+# is drawn as a plain overhang (a hat, a tall hood, ...) with no separate
+# animation or logic of its own. load_enemy_sprites slices the full height;
+# _draw_entities anchors the bottom tile_px rows to the NPC's tile and lets
+# the rest extend upward.
 #
 # Recoloring (see engine.npc's module docstring / NpcDef.colors /
 # NpcSpriteSpec.colors): a sprite loads once here, unrecolored; per-NPC
@@ -964,6 +979,16 @@ class NPC:
     uses it to pick that def's precomputed *recolored* frame set
     (self.npc_frames_by_id) instead of the sprite's raw one; an inline NPC
     with no def (npc_id stays None) always draws its sprite unrecolored.
+
+    `dialogue_variants` (engine.npc.DialogueVariant list) is the
+    placement's own npcs_<map>.yaml `dialogue:` if it set one (parsed via
+    engine.npc.parse_dialogue — a flat page list or a conditional variant
+    list, same rule as the def), else the resolved def's own `dialogue`,
+    else empty — same override-or-fall-back-to-def rule as sprite/behavior,
+    see _load_map. engine.input.handle_a_button resolves this against live
+    engine.game_state flags at interact time, not baked into a flat list
+    here, since flags can change between one visit and the next — see
+    engine.npc.resolve_dialogue.
     """
     index:      int                 # stable identity (Tiled object id) for tweens
     name:       str
@@ -974,7 +999,7 @@ class NPC:
     facing:     str = "S"           # "N" | "S" | "E" | "W" -- only visible on an 8-frame sprite
     type:       str = "npc"
     npc_id:     str | None = None   # key into OverworldScene.npc_defs/npc_frames_by_id, if resolved
-    dialogue:   list[str] = field(default_factory=list)
+    dialogue_variants: list[DialogueVariant] = field(default_factory=list)
 
 
 # ── Scene ────────────────────────────────────────────────────────────────────
@@ -1156,13 +1181,21 @@ class OverworldScene:
             # passability (_passable_with_npcs) and interaction
             # (Player.adjacent_interactable) both key off of, so both line
             # up with where the NPC visually stands.
+            # Dialogue: the placement's own o.dialogue (npcs_<map>.yaml),
+            # parsed the same way npc.yaml's own dialogue is (flat page
+            # list or conditional variant list -- see engine.npc.
+            # parse_dialogue), wins if it authored anything at all --
+            # exactly like sprite/behavior above. Otherwise fall back to
+            # the resolved def's own (already-parsed) variant list.
+            own_dialogue = parse_dialogue(o.dialogue)
+            dialogue_variants = own_dialogue or (npc_def.dialogue if npc_def else [])
             self.npcs.append(NPC(
                 index=o.id, name=o.name, row=round(o.row_exact), col=round(o.col_exact),
                 npc_sprite=o.sprite or (npc_def.sprite if npc_def else None),
                 behavior=o.behavior or (npc_def.behavior if npc_def else None) or "static",
                 facing=npc_def.facing if npc_def else "S",
                 npc_id=o.npc_id if npc_def else None,
-                dialogue=o.dialogue or (npc_def.dialogue if npc_def else []),
+                dialogue_variants=dialogue_variants,
             ))
 
         # Enemies: `enemy` objects place directly; `spawner` objects roll
@@ -1457,14 +1490,36 @@ class OverworldScene:
         spawn, facing = self._warp_landing(target)
         self._load_map(dest_path, tmap=dest_tmap, spawn=spawn, facing=facing)
 
+    def _npc_frames(self, npc: 'NPC') -> list[pygame.Surface] | None:
+        """This NPC's resolved frame list -- the recolored cache for an
+        npc_id'd NPC (self.npc_frames_by_id, set once at __init__), or its
+        sprite's raw, unrecolored frames for an inline placement with no
+        def. Shared by _draw_entities (which frame to draw) and
+        _passable_with_npcs (how many tiles tall it is, for collision) so
+        both always agree on the same frame set."""
+        frames = self.npc_frames_by_id.get(npc.npc_id) if npc.npc_id else None
+        if frames is None:
+            spec = self.npc_sprite_specs.get(npc.npc_sprite)
+            frames = self.npc_sprites.get(spec.file) if spec else None
+        return frames
+
     def _passable_with_npcs(self) -> list[list[bool]]:
         """The static walkable grid with every NPC's current tile marked
-        impassable, so the player can't walk through them. Rebuilt fresh on
-        each attempted step since NPCs move — engine.player stays headless
-        and ignorant of NPCs entirely; it just sees a plain grid."""
+        impassable, so the player can't walk through them -- including any
+        extra tile(s) a taller-than-one-tile sprite's overhang is drawn
+        over (see load_enemy_sprites/_draw_entities): a 32px-tall NPC also
+        blocks the tile directly north of its own row/col, where its
+        hat/head is drawn, not just its body tile. Rebuilt fresh on each
+        attempted step since NPCs move — engine.player stays headless and
+        ignorant of NPCs entirely; it just sees a plain grid."""
         grid = [row[:] for row in self.passable]
         for npc in self.npcs:
-            grid[npc.row][npc.col] = False
+            frames = self._npc_frames(npc)
+            tile_span = (frames[0].get_height() // self.tile_px) if frames else 1
+            for i in range(tile_span):
+                r = npc.row - i
+                if 0 <= r < len(grid):
+                    grid[r][npc.col] = False
         return grid
 
     def _tile_occupied(self, row: int, col: int, exclude_npc: 'NPC | None' = None) -> bool:
@@ -1821,25 +1876,23 @@ class OverworldScene:
                 surface.blit(obj_surf, topleft)
 
         for npc in self.npcs:
-            # npc_id set -> this NPC resolved against a real def, so its
-            # precomputed *recolored* frame set applies (self.npc_frames_by_id
-            # — see __init__); otherwise (an inline placement, no def) fall
-            # back to its sprite's raw, unrecolored frames.
-            frames = self.npc_frames_by_id.get(npc.npc_id) if npc.npc_id else None
-            if frames is None:
-                spec = self.npc_sprite_specs.get(npc.npc_sprite)
-                frames = self.npc_sprites.get(spec.file) if spec else None
+            frames = self._npc_frames(npc)
             npc_surf = get_npc_frame(frames, npc.facing, self._anim_frame)
             if npc_surf:
                 vr, vc = self._npc_visual_pos(npc)
-                surface.blit(npc_surf, (round(vc * self.tile_px) - cam_x, round(vr * self.tile_px) - cam_y))
+                # A frame taller than one tile (see load_enemy_sprites) anchors its
+                # bottom tile_px rows to the tile; extra height extends upward.
+                y_overhang = npc_surf.get_height() - self.tile_px
+                surface.blit(npc_surf, (round(vc * self.tile_px) - cam_x,
+                                        round(vr * self.tile_px) - cam_y - y_overhang))
 
         for enemy in self.enemies:
             edef = self.enemy_defs.get(enemy.enemy_id)
             enemy_surf = get_enemy_frame(self.enemy_sprites, edef.sprite, self._anim_frame) if edef else None
             if enemy_surf:
+                y_overhang = enemy_surf.get_height() - self.tile_px
                 surface.blit(enemy_surf, (round(enemy.col * self.tile_px) - cam_x,
-                                          round(enemy.row * self.tile_px) - cam_y))
+                                          round(enemy.row * self.tile_px) - cam_y - y_overhang))
 
         player_surf = get_party_frame(self.sprites, 'melvin', self.player.facing, self._player_anim)
         if player_surf:
