@@ -13,6 +13,7 @@ Run directly:
 """
 
 import math
+import random
 import sys
 import time
 from pathlib import Path
@@ -668,6 +669,104 @@ class KaleidoscopeEffect:
         return np.repeat(np.repeat(rgb, self.PIXEL, axis=0), self.PIXEL, axis=1)
 
 
+class WaterEffect:
+    """Mode 13: layered scrolling/bobbing water, built from a 3-tile 16x16
+    strip (water_green.png: flat base color, then two tiling wave layers)
+    rather than the numpy math the other effects use — the tiles are
+    composited as real pygame surfaces and tiled/scrolled across the
+    canvas, then the result is handed back as an rgb array like every
+    other effect.
+
+    Layer 1 and layer 2 each scroll horizontally and vertically (layer 2
+    faster than layer 1) and independently bob up/down by a random amount
+    that itself drifts slowly between BOB_AMPLITUDE_RANGE, so the "waves"
+    never settle into an obviously fixed cycle. All speeds/amplitudes
+    below are the tweakable knobs.
+    """
+
+    WATER_DIR = Path(__file__).resolve().parent.parent / "assets" / "tiles" / "water"
+    TILE = 16
+
+    # -- scroll speed, tiles-per-second-ish (x, y); layer 2 > layer 1 --
+    SCROLL_SPEED_1 = (-4.0, 0.0)   # layer 1 scrolls right
+    SCROLL_SPEED_2 = (7.0, 0.0)    # layer 2 scrolls left, faster
+
+    # -- vertical bob --
+    BOB_SPEED_1 = 1.05           # radians/sec-ish; how fast layer 1 bobs
+    BOB_SPEED_2 = 1.575          # layer 2 bobs a bit faster than layer 1
+    BOB_AMPLITUDE_RANGE = (1.0, 3.0)   # px; random target amplitude drawn from this range
+    BOB_RETARGET_INTERVAL = (2.0, 5.0)  # seconds between rerolling the amplitude target, per layer
+    BOB_EASE_RATE = 0.5          # how fast the amplitude eases toward its new random target
+    MAX_BOB = 3                  # must be >= BOB_AMPLITUDE_RANGE[1]; sets the vertical tile margin
+
+    def __init__(self, sheet_path=None):
+        if sheet_path is None:
+            sheet_path = sorted(self.WATER_DIR.glob("*.png"))[0]
+        sheet = pygame.image.load(str(sheet_path)).convert_alpha()
+        base_tile = sheet.subsurface((0, 0, self.TILE, self.TILE))
+        layer1_tile = sheet.subsurface((self.TILE, 0, self.TILE, self.TILE))
+        layer2_tile = sheet.subsurface((self.TILE * 2, 0, self.TILE, self.TILE))
+
+        self.base_surf = self._build_tiled(base_tile, WIDTH, HEIGHT)
+        self.layer1_surf = self._build_tiled(
+            layer1_tile, WIDTH + self.TILE, HEIGHT + self.TILE + self.MAX_BOB * 2)
+        self.layer2_surf = self._build_tiled(
+            layer2_tile, WIDTH + self.TILE, HEIGHT + self.TILE + self.MAX_BOB * 2)
+
+        self.canvas_surf = pygame.Surface((WIDTH, HEIGHT)).convert_alpha()
+
+        self.bob_phase1 = 0.0
+        self.bob_phase2 = 0.0
+        self.bob_amp1 = self.bob_amp1_target = random.uniform(*self.BOB_AMPLITUDE_RANGE)
+        self.bob_amp2 = self.bob_amp2_target = random.uniform(*self.BOB_AMPLITUDE_RANGE)
+        self.next_retarget1 = random.uniform(*self.BOB_RETARGET_INTERVAL)
+        self.next_retarget2 = random.uniform(*self.BOB_RETARGET_INTERVAL)
+        self.last_t = 0.0
+
+    @staticmethod
+    def _build_tiled(tile, w, h):
+        surf = pygame.Surface((w, h)).convert_alpha()
+        surf.fill((0, 0, 0, 0))
+        tw, th = tile.get_size()
+        for y in range(0, h, th):
+            for x in range(0, w, tw):
+                surf.blit(tile, (x, y))
+        return surf
+
+    def _step_bob(self, dt, phase, speed, amp, amp_target, next_retarget):
+        next_retarget -= dt
+        if next_retarget <= 0.0:
+            amp_target = random.uniform(*self.BOB_AMPLITUDE_RANGE)
+            next_retarget = random.uniform(*self.BOB_RETARGET_INTERVAL)
+        amp += (amp_target - amp) * min(dt * self.BOB_EASE_RATE, 1.0)
+        phase += dt * speed
+        return phase, amp, amp_target, next_retarget
+
+    def render(self, t):
+        dt = min(max(t - self.last_t, 0.0), 0.1)
+        self.last_t = t
+
+        self.bob_phase1, self.bob_amp1, self.bob_amp1_target, self.next_retarget1 = self._step_bob(
+            dt, self.bob_phase1, self.BOB_SPEED_1, self.bob_amp1, self.bob_amp1_target, self.next_retarget1)
+        self.bob_phase2, self.bob_amp2, self.bob_amp2_target, self.next_retarget2 = self._step_bob(
+            dt, self.bob_phase2, self.BOB_SPEED_2, self.bob_amp2, self.bob_amp2_target, self.next_retarget2)
+
+        bob1 = math.sin(self.bob_phase1) * self.bob_amp1
+        bob2 = math.sin(self.bob_phase2) * self.bob_amp2
+
+        scroll1_x = (t * self.SCROLL_SPEED_1[0]) % self.TILE
+        scroll1_y = (t * self.SCROLL_SPEED_1[1]) % self.TILE
+        scroll2_x = (t * self.SCROLL_SPEED_2[0]) % self.TILE
+        scroll2_y = (t * self.SCROLL_SPEED_2[1]) % self.TILE
+
+        self.canvas_surf.blit(self.base_surf, (0, 0))
+        self.canvas_surf.blit(self.layer1_surf, (int(-scroll1_x), int(-scroll1_y - self.MAX_BOB + bob1)))
+        self.canvas_surf.blit(self.layer2_surf, (int(-scroll2_x), int(-scroll2_y - self.MAX_BOB + bob2)))
+
+        arr = pygame.surfarray.array3d(self.canvas_surf).astype(np.float32) / 255.0
+        return arr.transpose(1, 0, 2)
+
+
 EFFECTS = {
     "1": ("plasma", PlasmaEffect),
     "2": ("ripples", RipplesEffect),
@@ -681,6 +780,7 @@ EFFECTS = {
     "10": ("titlescreenv1", TitleScreenV1Effect),
     "11": ("titleintro", TitleIntroEffect),
     "12": ("kaleidoscope", KaleidoscopeEffect),
+    "13": ("water", WaterEffect),
 }
 
 
@@ -698,8 +798,23 @@ def prompt_mode():
     print("  10) titlescreenv1  (mode 9 composited over mode 6 static)")
     print("  11) titleintro     (scripted fronthouse/gaiden intro sequence)")
     print("  12) kaleidoscope   (mirrored radial symmetry, restrained tertiary duotone)")
+    print("  13) water          (layered scrolling/bobbing water — pick a sheet from assets/tiles/water/)")
     choice = input("> ").strip()
     return EFFECTS.get(choice, EFFECTS["1"])
+
+
+def prompt_water_sheet():
+    """Mode 13 has no single fixed source image — list every PNG in
+    assets/tiles/water/ and let the user pick which 3-tile strip to load."""
+    sheets = sorted(WaterEffect.WATER_DIR.glob("*.png"))
+    print("Select water sheet:")
+    for i, path in enumerate(sheets, start=1):
+        print(f"  {i}) {path.name}")
+    choice = input("> ").strip()
+    try:
+        return sheets[int(choice) - 1]
+    except (ValueError, IndexError):
+        return sheets[0]
 
 
 def run_effect(screen, canvas, clock, effect):
@@ -725,13 +840,16 @@ def run_effect(screen, canvas, clock, effect):
 def main():
     pygame.init()
     name, effect_cls = prompt_mode()
+    water_sheet = prompt_water_sheet() if effect_cls is WaterEffect else None
 
     pygame.display.set_caption(f"visualizer - {name}")
     screen = pygame.display.set_mode((WIDTH * SCALE, HEIGHT * SCALE))
     canvas = pygame.Surface((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
-    run_effect(screen, canvas, clock, effect_cls())
+    effect = effect_cls(water_sheet) if effect_cls is WaterEffect else effect_cls()
+
+    run_effect(screen, canvas, clock, effect)
 
     pygame.quit()
     sys.exit()

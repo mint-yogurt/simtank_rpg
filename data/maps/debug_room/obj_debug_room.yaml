@@ -1,12 +1,17 @@
-# Auto-synced from hub_fronthouse.json by populate_yamls.py.
+# Auto-synced from debug_room.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
-# (dialogue, contents, event, sprite, behavior, npc_id,
+# (dialogue, contents, gold, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
-# level, enemies, spawn_chance) are seeded per type but never
-# overwritten once filled in -- see STUB_FIELDS in the script.
+# level, enemies, spawn_chance, stock, farewell) are seeded per type
+# but never overwritten once filled in -- see STUB_FIELDS in the script.
 #
-# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the
-#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this
+# container: contents (a single item id from data/items/items.yaml)
+#   and gold (a flat amount) are independent -- grant an item, gold,
+#   both, or neither (null/null = pure flavor text, dialogue only).
+#
+# npc: npc_id, if filled in (on an npc or shop object -- both share
+#   this field), is a key into data/npcs/npc.yaml (the master NPC
+#   list, loaded by engine.npc.load_npc_defs()) -- this
 #   placement's own sprite/behavior/dialogue then become optional
 #   overrides on top of that shared definition: set, they win for
 #   this one placement; left blank (null / []), they fall back to
@@ -80,69 +85,37 @@
 #   level (top-level, alongside spawn_chance/enemies -- not per
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
+#
+# shop: a shopkeeper -- a person, not a static fixture -- so it uses
+#   the same sprite/behavior/npc_id fields as npc above (see the
+#   npc paragraph). Two fields of its own: stock, a list of
+#   {item, price} mappings (item a key from data/items/items.yaml,
+#   price the gold cost to buy one, independent of that item's own
+#   sell value in items.yaml -- a shop can mark things up or down);
+#   and farewell, the goodbye line(s) shown in a dialogue box after
+#   the player backs out of the buy/sell screen (same shape as
+#   dialogue, but placement-only -- no npc.yaml-level fallback).
+#   Talking to a shopkeeper is talk-then-shop, same as any npc: A
+#   opens dialogue (the greeting) first; the buy/sell screen opens
+#   once that closes -- see engine.menu.ShopMenu.pending_shop.
+#   A shop has no one-shot flag -- both are available every visit.
 
-9:
-  destination_map: interior_hub_rearhouse
-  destination_warp: rearhouse_door
-  distance: 1
-  facing: S
-  name: rearhouse_door
-  type: warp
-10:
+1:
+  dialogue: []
+  name: saladbarL
+  type: healer
+2:
+  dialogue: []
+  name: saladabarR
+  type: healer
+3:
   destination_map: null
   destination_warp: null
   distance: null
   facing: null
-  name: fronthouse_door
+  name: spawn
   type: warp
-11:
-  dialogue:
-  - Here lies Donny's childhood.
-  name: donny_grave
+4:
+  dialogue: []
+  name: radio
   type: sign
-12:
-  dialogue:
-  - What a wonderful world.
-  name: emptytrash1
-  type: sign
-13:
-  destination_map: town_town1
-  destination_warp: fhwarp_1
-  distance: 2
-  facing: E
-  name: fhwarp_1
-  type: warp
-14:
-  destination_map: town_town1
-  destination_warp: fhwarp_2
-  distance: 2
-  facing: E
-  name: fhwarp_2
-  type: warp
-15:
-  destination_map: town_town1
-  destination_warp: fhwarp_3
-  distance: 2
-  facing: E
-  name: fhwarp_3
-  type: warp
-16:
-  destination_map: town_town1
-  destination_warp: fhwarp_4
-  distance: 2
-  facing: E
-  name: fhwarp_4
-  type: warp
-17:
-  destination_map: town_town1
-  destination_warp: fhwarp_5
-  distance: 2
-  facing: E
-  name: fhwarp_5
-  type: warp
-18:
-  contents: forgotten_onion
-  dialogue:
-  - I knew I left that somewhere...
-  name: rearhouse_trash
-  type: container

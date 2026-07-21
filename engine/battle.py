@@ -19,12 +19,14 @@ Attack chain:
 Stats never change; LVL/HP/XP do. Damage scales with level ("dinging").
 
 Scope note (first graphical wire-up, see README): this is a single Fighter
-(MELVIN) vs. a single enemy, auto-attack only — no player-driven action
-menu, no DEFEND/RUN logic, no party specials (SING/LAUGH/SNACK/TICKLE) or
-items wired in. Those are real, future battle actions -- but their exact
-scope/spec (what ITEM does mid-battle, whether/how SPECIAL comes back) isn't
-decided yet. Don't guess at an implementation for either when the time
-comes -- ask first.
+(MELVIN) vs. a single enemy. The party's turn is now player-driven -- see
+BattleMenu below -- and ATTACK/RUN both actually do something when
+confirmed (see BattleState.step/attempt_run); ITEM/DEFEND are still real,
+choosable rows with no effect wired in yet, and SPECIAL isn't in the row at
+all (each party member gets their own special, unlocked by a story flag or
+player level -- see README roadmap's SING/LAUGH/SNACK/TICKLE table -- not
+by just existing in the party). Don't guess at ITEM/DEFEND's effects when
+the time comes -- ask first.
 """
 
 import json
@@ -32,7 +34,9 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from engine.enemy import resolve_level
 from engine.journal import Journal
+from engine.roster import PartyMember
 
 # =============================================================================
 # STAT NORMALIZATION  --  reference ranges. raw stat -> 0..1 fraction.
@@ -88,9 +92,11 @@ DEF_SWEAT = 0.30
 DEF_LEVEL = 0.004
 DEF_CAP = 0.75
 
-# --- run away (party-wide, escalating) -----------------------
-RUN_BASE = 0.15
-RUN_STEP = 0.15          # per failed attempt by anyone
+# --- run away (level-scaled base, escalating per failed attempt) --
+RUN_BASE = 0.40          # chance at equal level
+RUN_LEVEL_SCALE = 0.03   # +/- per level of difference (party level - enemy level)
+RUN_STEP = 0.15          # added per failed attempt this battle, by anyone
+RUN_MIN, RUN_MAX = 0.05, 0.95
 
 # --- hp ------------------------------------------------------
 PARTY_HP_BASE = 25
@@ -143,15 +149,33 @@ class Fighter:
 
 
 def load_fighter(path: Path) -> Fighter:
-    """One party member's Fighter from data/party/<name>.json. Only pulls
-    the fields Fighter needs -- personality/special/items/xp live in the
-    same file but aren't read here (see module docstring: SPECIAL/ITEM
-    aren't wired into battle yet)."""
+    """One party member's Fighter from data/party/<name>.json, read fresh
+    off disk -- hp/mp/level are whatever the file says, not live state. Only
+    pulls the fields Fighter needs -- personality/special/items/xp live in
+    the same file but aren't read here (see module docstring: SPECIAL/ITEM
+    aren't wired into battle yet). Still used by maptest.py's isolated
+    "battles" debug mode, which has no save/roster to read live state from
+    -- see fighter_from_roster for the real-game path."""
     s = json.loads(Path(path).read_text())
     return Fighter(
         name=s["name"], iq=s["iq"], weight=s["weight"], sweat=s["sweat"], hair=s["hair"],
         level=s["lvl"], hp=s["hp"], max_hp=s["max_hp"],
         mp=s.get("mp", 0), max_mp=s.get("max_mp", 0),
+    )
+
+
+def fighter_from_roster(path: Path, member: PartyMember) -> Fighter:
+    """One party member's Fighter for a real (non-debug) battle: static
+    combat stats (iq/weight/sweat/hair) from data/party/<name>.json, live
+    hp/max_hp/mp/max_mp/level from `member` (engine.roster.Roster) instead
+    of the file -- a battle that leaves this member hurt carries that HP
+    back into the overworld and across saves, rather than resetting fresh
+    from disk every time the way load_fighter's debug path does."""
+    s = json.loads(Path(path).read_text())
+    return Fighter(
+        name=s["name"], iq=s["iq"], weight=s["weight"], sweat=s["sweat"], hair=s["hair"],
+        level=member.lvl, hp=member.hp, max_hp=member.max_hp,
+        mp=member.mp, max_mp=member.max_mp,
     )
 
 
@@ -241,9 +265,21 @@ def resolve_attack(attacker, defender, rng=None):
     return res
 
 
-def try_run(run_attempts, rng=None):
+def try_run(party_level, enemy_level, run_attempts, rng=None):
+    """Escape chance for RUN -- see BattleState.attempt_run. `party_level`
+    is meant to be the average party member's level; battle is still
+    1v1-MELVIN-only (see module docstring), so for now it's just his level
+    -- this becomes a real average once full-party battles exist, no other
+    change needed here. Base chance is RUN_BASE at equal level, shifting by
+    RUN_LEVEL_SCALE per level of advantage/disadvantage (clamped to
+    RUN_MIN/RUN_MAX -- no guaranteed-escape threshold at any level gap,
+    everything in this battle system stays probabilistic). `run_attempts`
+    (prior failed attempts *this battle*) adds RUN_STEP on top, so a run
+    always eventually succeeds no matter how bad the matchup, same idea as
+    crit/parry/save elsewhere in this module never hard-gating on a stat."""
     rng = rng or random
-    chance = min(0.95, RUN_BASE + run_attempts * RUN_STEP)
+    base = max(RUN_MIN, min(RUN_MAX, RUN_BASE + (party_level - enemy_level) * RUN_LEVEL_SCALE))
+    chance = min(RUN_MAX, base + run_attempts * RUN_STEP)
     return rng.random() < chance, chance
 
 
@@ -264,19 +300,32 @@ def _fmt_attack(res: dict) -> str:
 # =============================================================================
 @dataclass
 class BattleState:
-    """One Fighter vs. one Fighter, auto-attack only (see module docstring).
+    """One Fighter vs. one Fighter (see module docstring). ATTACK and RUN
+    are wired to actually do something -- see BattleMenu below; ITEM/DEFEND
+    are still no-ops.
 
     A single `step()` resolves whichever side's turn it currently is and
     returns the flavor text for it -- the caller (BattleScene) decides
     *when* to call step(), so pacing/animation/typewriter timing stays a
-    rendering concern, not something this class blocks on.
+    rendering concern, not something this class blocks on. RUN is a
+    separate entry point, `attempt_run()`, since it's a player choice on
+    the party's turn rather than something step() should ever resolve on
+    its own the way it does the enemy's turn.
     """
     party: Fighter
     enemy: Fighter
     rng:   random.Random
-    phase: str = "party_turn"   # "party_turn" | "enemy_turn" | "win" | "loss"
+    phase: str = "party_turn"   # "party_turn" | "enemy_turn" | "win" | "loss" | "fled"
     round: int = 1
+    run_attempts: int = 0   # prior *failed* RUN attempts this battle -- see try_run
     journal: Journal = field(default_factory=Journal)
+    enemy_gold:  int | list[int] | None = None   # raw EnemyDef.gold, threaded in by the caller
+    enemy_xp:    int | list[int] | None = None   # raw EnemyDef.xp, threaded in by the caller
+    enemy_drop_item:   str | None = None          # raw EnemyDef.drop_item, threaded in by the caller
+    enemy_drop_chance: float = 0.0                 # raw EnemyDef.drop_chance, threaded in by the caller
+    gold_reward: int | None = None                # resolved once the win fires; None until then
+    xp_reward:   int | None = None                # resolved once the win fires; None until then
+    item_reward: str | None = None                 # resolved item id, or None if no drop rolled/set
 
     def step(self) -> str:
         if self.phase == "party_turn":
@@ -284,6 +333,23 @@ class BattleState:
         if self.phase == "enemy_turn":
             return self._step_enemy_attack()
         return ""   # battle already over -- nothing left to advance
+
+    def attempt_run(self) -> str:
+        """Resolve a RUN choice on the party's turn -- see try_run for the
+        chance formula. Success ends the battle with phase "fled" (no
+        rewards, no penalty -- the caller just returns to the overworld,
+        the enemy that was fought stays on the map since it wasn't
+        defeated). Failure burns the turn -- the enemy gets to attack --
+        and bumps run_attempts so the next try is more likely to work."""
+        success, chance = try_run(self.party.level, self.enemy.level, self.run_attempts, self.rng)
+        if success:
+            self.phase = "fled"
+            self.journal.log_event({"type": "BATTLE_FLED", "tick": self.round, "chance": chance})
+            return f"{self.party.name} got away safely!"
+        self.run_attempts += 1
+        self.phase = "enemy_turn"
+        self.journal.log_event({"type": "RUN_FAILED", "tick": self.round, "chance": chance})
+        return f"{self.party.name} couldn't get away!"
 
     def _step_party_attack(self) -> str:
         res = resolve_attack(self.party, self.enemy, self.rng)
@@ -295,6 +361,23 @@ class BattleState:
                                      "enemy": self.enemy.name, "enemy_lvl": self.enemy.level})
             self.journal.log_event({"type": "BATTLE_WIN", "tick": self.round,
                                      "enemy": self.enemy.name, "enemy_lvl": self.enemy.level})
+            self.gold_reward = resolve_level(self.enemy_gold, self.rng) if self.enemy_gold is not None else 0
+            if self.gold_reward:
+                flavor += f" +${self.gold_reward}."
+                self.journal.log_event({"type": "GOLD_AWARDED", "tick": self.round,
+                                         "enemy": self.enemy.name, "gold": self.gold_reward})
+            self.xp_reward = resolve_level(self.enemy_xp, self.rng) if self.enemy_xp is not None else 0
+            if self.xp_reward:
+                flavor += f" +{self.xp_reward}XP."
+                self.journal.log_event({"type": "XP_AWARDED", "tick": self.round,
+                                         "enemy": self.enemy.name, "xp": self.xp_reward})
+            # Item name isn't shown here -- BattleState/BattleScene have no
+            # ItemDef access (that's OverworldScene's job) -- see caller for
+            # the "Found X!" message shown after returning to the overworld.
+            if self.enemy_drop_item and self.rng.random() < self.enemy_drop_chance:
+                self.item_reward = self.enemy_drop_item
+                self.journal.log_event({"type": "ITEM_AWARDED", "tick": self.round,
+                                         "enemy": self.enemy.name, "item": self.item_reward})
         else:
             self.phase = "enemy_turn"
         return flavor
@@ -310,3 +393,34 @@ class BattleState:
             self.phase = "party_turn"
             self.round += 1
         return flavor
+
+
+# =============================================================================
+# ACTION MENU  -- cursor state for the battle screen's ATTACK/ITEM/DEFEND/RUN
+# row (see module docstring). SPECIAL isn't in this row -- each party member
+# gets their own special ability, unlocked by a story flag or player level,
+# not just by existing in the party -- re-add it once that gating is built.
+# =============================================================================
+BATTLE_MENU_OPTIONS: tuple[str, ...] = ("ATTACK", "ITEM", "DEFEND", "RUN")
+
+
+@dataclass
+class BattleMenu:
+    """Cursor state for the party turn's action row -- mirrors
+    engine.menu.StartMenu: a vertical list, N/S move + wrap. ATTACK and RUN
+    both do something when confirmed right now (see
+    BattleScene._confirm_choice) -- ITEM/DEFEND are real choosable rows,
+    just no-ops until their effects are designed. This class only tracks
+    the cursor itself; whether the row is even shown is BattleScene's call
+    (only during the party's turn, while it's actually waiting on a
+    choice)."""
+    selected: int = 0
+
+    def move_cursor(self, direction: str) -> None:
+        if direction == "N":
+            self.selected = (self.selected - 1) % len(BATTLE_MENU_OPTIONS)
+        elif direction == "S":
+            self.selected = (self.selected + 1) % len(BATTLE_MENU_OPTIONS)
+
+    def selected_option(self) -> str:
+        return BATTLE_MENU_OPTIONS[self.selected]

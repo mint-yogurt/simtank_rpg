@@ -1,12 +1,17 @@
 # Auto-synced from town.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
-# (dialogue, contents, event, sprite, behavior, npc_id,
+# (dialogue, contents, gold, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
-# level, enemies, spawn_chance) are seeded per type but never
-# overwritten once filled in -- see STUB_FIELDS in the script.
+# level, enemies, spawn_chance, stock, farewell) are seeded per type
+# but never overwritten once filled in -- see STUB_FIELDS in the script.
 #
-# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the
-#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this
+# container: contents (a single item id from data/items/items.yaml)
+#   and gold (a flat amount) are independent -- grant an item, gold,
+#   both, or neither (null/null = pure flavor text, dialogue only).
+#
+# npc: npc_id, if filled in (on an npc or shop object -- both share
+#   this field), is a key into data/npcs/npc.yaml (the master NPC
+#   list, loaded by engine.npc.load_npc_defs()) -- this
 #   placement's own sprite/behavior/dialogue then become optional
 #   overrides on top of that shared definition: set, they win for
 #   this one placement; left blank (null / []), they fall back to
@@ -80,6 +85,20 @@
 #   level (top-level, alongside spawn_chance/enemies -- not per
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
+#
+# shop: a shopkeeper -- a person, not a static fixture -- so it uses
+#   the same sprite/behavior/npc_id fields as npc above (see the
+#   npc paragraph). Two fields of its own: stock, a list of
+#   {item, price} mappings (item a key from data/items/items.yaml,
+#   price the gold cost to buy one, independent of that item's own
+#   sell value in items.yaml -- a shop can mark things up or down);
+#   and farewell, the goodbye line(s) shown in a dialogue box after
+#   the player backs out of the buy/sell screen (same shape as
+#   dialogue, but placement-only -- no npc.yaml-level fallback).
+#   Talking to a shopkeeper is talk-then-shop, same as any npc: A
+#   opens dialogue (the greeting) first; the buy/sell screen opens
+#   once that closes -- see engine.menu.ShopMenu.pending_shop.
+#   A shop has no one-shot flag -- both are available every visit.
 
 1:
   destination_map: interior_fronthouse_1f
@@ -99,6 +118,7 @@
   contents: forgotten_onion
   dialogue:
   - I knew I left that somewhere!
+  gold: null
   name: trash_rearhouse
   type: container
 5:
@@ -141,3 +161,166 @@
   facing: E
   name: tunnel_enter
   type: warp
+11:
+  destination_map: interior_town1
+  destination_warp: tinyhouse
+  distance: null
+  facing: S
+  name: tinyhouse
+  type: warp
+12:
+  destination_map: interior_town1
+  destination_warp: 3xhouse
+  distance: null
+  facing: S
+  name: 3xhouse
+  type: warp
+13:
+  destination_map: interior_town1
+  destination_warp: house_NW
+  distance: null
+  facing: S
+  name: house_NW
+  type: warp
+14:
+  destination_map: interior_town1
+  destination_warp: house_SW
+  distance: null
+  facing: S
+  name: house_SW
+  type: warp
+15:
+  destination_map: interior_town1
+  destination_warp: gnomehouse
+  distance: null
+  facing: S
+  name: gnomehouse
+  type: warp
+16:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  level: null
+  name: spawner_dog1
+  spawn_chance: 0.3
+  type: spawner
+17:
+  enemies:
+  - chance: 1
+    enemy_id: employee
+  - chance: 1
+    enemy_id: parkinglotguy
+  level: null
+  name: spawner_parkinglot1
+  spawn_chance: 0.5
+  type: spawner
+18:
+  enemies:
+  - chance: 2
+    enemy_id: employee
+  - chance: 1
+    enemy_id: parkinglotguy
+  level: null
+  name: spawner_parkinglot2
+  spawn_chance: 0.4
+  type: spawner
+19:
+  enemies:
+  - chance: 1
+    enemy_id: employee
+  - chance: 2
+    enemy_id: parkinglotguy
+  level: null
+  name: spawner_parkinglot3
+  spawn_chance: 0.5
+  type: spawner
+20:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  level: null
+  name: spawner_dog2
+  spawn_chance: 0.4
+  type: spawner
+21:
+  enemies:
+  - chance: 1
+    enemy_id: fat_guy2
+  level: null
+  name: spawner_street1
+  spawn_chance: 0.3
+  type: spawner
+22:
+  enemies:
+  - chance: 1
+    enemy_id: fat_guy2
+  - chance: 1
+    enemy_id: parkinglotguy
+  level: null
+  name: spawner_neartunnel
+  spawn_chance: null
+  type: spawner
+23:
+  enemies:
+  - chance: 1
+    enemy_id: parkinglotguy
+  - chance: 1
+    enemy_id: fat_guy2
+  level: null
+  name: spawner_trailtunnel
+  spawn_chance: 0.4
+  type: spawner
+24:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  level: null
+  name: spawner_dog3
+  spawn_chance: 0.2
+  type: spawner
+25:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  - chance: 1
+    enemy_id: parkinglotguy
+  - chance: 1
+    enemy_id: fat_guy2
+  level: null
+  name: spawner_street2
+  spawn_chance: 0.3
+  type: spawner
+26:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  - chance: 1
+    enemy_id: parkinglotguy
+  - chance: 1
+    enemy_id: fat_guy2
+  level: null
+  name: spawner_street3
+  spawn_chance: 0.4
+  type: spawner
+27:
+  enemies:
+  - chance: 1
+    enemy_id: shitbull
+  - chance: 1
+    enemy_id: parkinglotguy
+  - chance: 1
+    enemy_id: fat_guy2
+  level: null
+  name: spawner_street4
+  spawn_chance: 0.5
+  type: spawner
+28:
+  enemies:
+  - chance: 2
+    enemy_id: employee
+  - chance: 1
+    enemy_id: parkinglotguy
+  level: null
+  name: spawner_parkinglot4
+  spawn_chance: 0.4
+  type: spawner

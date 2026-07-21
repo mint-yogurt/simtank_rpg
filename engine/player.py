@@ -27,6 +27,7 @@ class PlayerState(Enum):
     INTERACTING = auto()   # brief pause after pressing confirm on an object
     IN_DIALOGUE = auto()   # dialogue box open
     IN_MENU     = auto()   # pause/inventory/equipment menu open
+    IN_SHOP     = auto()   # shop buy/sell menu open, opened by facing a `shop` object
     IN_BATTLE   = auto()   # battle scene active
 
 

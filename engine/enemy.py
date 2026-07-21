@@ -55,11 +55,11 @@ class EnemyDef:
                                           #   full-size battle portrait (see
                                           #   engine.renderer.BattleScene), distinct
                                           #   from the 16px overworld `sprite` above
-    battle_bg:      str | None           # a procgen.visualizer effect name
-                                          #   ("plasma"/"ripples"/"swarm"/"tunnel"/
-                                          #   "starfield") to use as this enemy's
-                                          #   battle background; null/omitted picks
-                                          #   one at random per battle
+    battle_bg:      str                  # a procgen.visualizer effect name (see
+                                          #   procgen/visualizer.py's EFFECTS dict
+                                          #   for the full list) -- this enemy's
+                                          #   battle background. Required, no
+                                          #   random fallback.
     iq:             int
     weight:         int
     sweat:          int
@@ -68,6 +68,10 @@ class EnemyDef:
     move_speed:     float                # tiles/sec
     behavior:       str                  # "wanderer" | "pacer" | "sentinel"
     behavior_axis:  str | None = None    # "H" | "V" -- pacer only
+    gold:           int | list[int] | None = None   # flat or [min, max] gold reward on defeat; None = no reward
+    xp:             int | list[int] | None = None   # flat or [min, max] XP reward on defeat; None = no reward
+    drop_item:      str | None = None                # item id from data/items/items.yaml; None = no drop
+    drop_chance:    float = 0.0                       # 0..1, only rolled if drop_item is set
 
 
 def load_enemy_defs(path: Path = _ENEMY_DEFS_PATH) -> dict[str, EnemyDef]:
@@ -80,7 +84,7 @@ def load_enemy_defs(path: Path = _ENEMY_DEFS_PATH) -> dict[str, EnemyDef]:
             name          = entry["name"],
             sprite        = entry["sprite"],
             battle_art    = entry.get("battle_art"),
-            battle_bg     = entry.get("battle_bg"),
+            battle_bg     = entry["battle_bg"],
             iq            = entry["iq"],
             weight        = entry["weight"],
             sweat         = entry["sweat"],
@@ -89,6 +93,10 @@ def load_enemy_defs(path: Path = _ENEMY_DEFS_PATH) -> dict[str, EnemyDef]:
             move_speed    = entry["move_speed"],
             behavior      = entry["behavior"],
             behavior_axis = entry.get("behavior_axis"),
+            gold          = entry.get("gold"),
+            xp            = entry.get("xp"),
+            drop_item     = entry.get("drop_item"),
+            drop_chance   = entry.get("drop_chance", 0.0),
         )
     return defs
 

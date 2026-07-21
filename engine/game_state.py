@@ -43,6 +43,19 @@ class GameState:
     def set_var(self, key: str, value: Any) -> None:
         self.variables[key] = value
 
+    @property
+    def gold(self) -> int:
+        return self.variables.get("gold", 0)
+
+    def add_gold(self, n: int) -> None:
+        self.variables["gold"] = self.gold + n
+
+    def spend_gold(self, n: int) -> bool:
+        if n > self.gold:
+            return False
+        self.variables["gold"] = self.gold - n
+        return True
+
     def to_dict(self) -> dict:
         return {"flags": dict(self.flags), "variables": dict(self.variables)}
 

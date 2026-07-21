@@ -1,12 +1,17 @@
-# Auto-synced from town_town1.json by populate_yamls.py.
+# Auto-synced from debug_room.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
-# (dialogue, contents, event, sprite, behavior, npc_id,
+# (dialogue, contents, gold, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
-# level, enemies, spawn_chance) are seeded per type but never
-# overwritten once filled in -- see STUB_FIELDS in the script.
+# level, enemies, spawn_chance, stock, farewell) are seeded per type
+# but never overwritten once filled in -- see STUB_FIELDS in the script.
 #
-# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the
-#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this
+# container: contents (a single item id from data/items/items.yaml)
+#   and gold (a flat amount) are independent -- grant an item, gold,
+#   both, or neither (null/null = pure flavor text, dialogue only).
+#
+# npc: npc_id, if filled in (on an npc or shop object -- both share
+#   this field), is a key into data/npcs/npc.yaml (the master NPC
+#   list, loaded by engine.npc.load_npc_defs()) -- this
 #   placement's own sprite/behavior/dialogue then become optional
 #   overrides on top of that shared definition: set, they win for
 #   this one placement; left blank (null / []), they fall back to
@@ -80,102 +85,106 @@
 #   level (top-level, alongside spawn_chance/enemies -- not per
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
+#
+# shop: a shopkeeper -- a person, not a static fixture -- so it uses
+#   the same sprite/behavior/npc_id fields as npc above (see the
+#   npc paragraph). Two fields of its own: stock, a list of
+#   {item, price} mappings (item a key from data/items/items.yaml,
+#   price the gold cost to buy one, independent of that item's own
+#   sell value in items.yaml -- a shop can mark things up or down);
+#   and farewell, the goodbye line(s) shown in a dialogue box after
+#   the player backs out of the buy/sell screen (same shape as
+#   dialogue, but placement-only -- no npc.yaml-level fallback).
+#   Talking to a shopkeeper is talk-then-shop, same as any npc: A
+#   opens dialogue (the greeting) first; the buy/sell screen opens
+#   once that closes -- see engine.menu.ShopMenu.pending_shop.
+#   A shop has no one-shot flag -- both are available every visit.
 
-1:
-  destination_map: town_parkinglot
-  destination_warp: prklot_enter_1
-  distance: 1
-  facing: S
-  name: prklot_enter_1
-  type: warp
-2:
-  destination_map: town_parkinglot
-  destination_warp: prklot_enter_2
-  distance: 1
-  facing: S
-  name: prklot_enter_2
-  type: warp
-3:
-  destination_map: town_parkinglot
-  destination_warp: prklot_enter_3
-  distance: 1
-  facing: S
-  name: prklot_enter_3
-  type: warp
-4:
-  destination_map: town_parkinglot
-  destination_warp: prklot_enter_4
-  distance: 1
-  facing: S
-  name: prklot_enter_4
-  type: warp
 5:
-  destination_map: town_parkinglot
-  destination_warp: prklot_enter_5
-  distance: 1
-  facing: S
-  name: prklot_enter_5
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc1
+  npc_id: null
+  sprite: null
+  type: npc
 6:
-  destination_map: hub_fronthouse
-  destination_warp: fhwarp_1
-  distance: 2
-  facing: W
-  name: fhwarp_1
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc2
+  npc_id: null
+  sprite: null
+  type: npc
 7:
-  destination_map: hub_fronthouse
-  destination_warp: fhwarp_2
-  distance: 2
-  facing: W
-  name: fhwarp_2
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc3
+  npc_id: null
+  sprite: null
+  type: npc
 8:
-  destination_map: hub_fronthouse
-  destination_warp: fhwarp_3
-  distance: 2
-  facing: W
-  name: fhwarp_3
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc4
+  npc_id: null
+  sprite: null
+  type: npc
 9:
-  destination_map: hub_fronthouse
-  destination_warp: fhwarp_4
-  distance: 2
-  facing: W
-  name: fhwarp_4
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc5
+  npc_id: null
+  sprite: null
+  type: npc
 10:
-  destination_map: hub_fronthouse
-  destination_warp: fhwarp_5
-  distance: 2
-  facing: W
-  name: fhwarp_5
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc6
+  npc_id: null
+  sprite: null
+  type: npc
 11:
-  destination_map: interior_town1
-  destination_warp: tinyhouse
-  distance: 1
-  facing: S
-  name: tinyhouse
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc7
+  npc_id: null
+  sprite: null
+  type: npc
 12:
-  destination_map: interior_town1
-  destination_warp: 3xhouse
-  distance: 1
-  facing: S
-  name: 3xhouse
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc8
+  npc_id: null
+  sprite: null
+  type: npc
 13:
-  destination_map: interior_town1
-  destination_warp: house_SW
-  distance: 1
-  facing: S
-  name: house_SW
-  type: warp
-14:
-  destination_map: interior_town1
-  destination_warp: house_NW
-  distance: 1
-  facing: S
-  name: house_NW
-  type: warp
+  behavior: null
+  dialogue: []
+  event: null
+  name: npc9
+  npc_id: null
+  sprite: null
+  type: npc
+15:
+  behavior: static
+  dialogue:
+  - Welcome! Take a look around.
+  event: null
+  farewell:
+  - Thanks for stopping by!
+  name: shop
+  npc_id: null
+  sprite: pizza_cashier
+  stock:
+  - item: forgotten_onion
+    price: 10
+  - item: large_meatball
+    price: 6
+  type: shop

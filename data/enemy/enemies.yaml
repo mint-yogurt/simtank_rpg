@@ -15,10 +15,10 @@
 #                                #   battle screen (engine.renderer.BattleScene),
 #                                #   unrelated to the overworld `sprite` strip
 #                                #   above; omit/leave blank if none exists yet
-#   battle_bg: null              # a procgen/visualizer.py effect name
-#                                #   (plasma/ripples/swarm/tunnel/starfield) to
-#                                #   use as this enemy's battle background;
-#                                #   null/omitted picks one at random per battle
+#   battle_bg: static            # required -- a procgen/visualizer.py effect
+#                                #   name (see that file's EFFECTS dict for the
+#                                #   full list). No random fallback; every
+#                                #   enemy must set one.
 #   iq: 60                      # combat stat, matches engine.battle.Fighter
 #   weight: 500                 # combat stat, matches engine.battle.Fighter
 #   sweat: 6                    # combat stat, matches engine.battle.Fighter
@@ -27,6 +27,18 @@
 #                                #   spawn/placement time; a specific `enemy`
 #                                #   or `enemy_spawner` object on a map can
 #                                #   override this for that one placement
+#   gold: 5                     # gold reward on defeat -- flat int, a
+#                                #   [min, max] range rolled the same way as
+#                                #   level, or omit/null for no reward
+#   xp: 5                       # XP reward on defeat -- flat int or [min, max]
+#                                #   range, same convention as gold; omit/null
+#                                #   for none. Accumulates on the party member's
+#                                #   engine.roster.PartyMember.xp -- no leveling
+#                                #   formula exists yet, so this doesn't change
+#                                #   lvl by itself (see README roadmap)
+#   drop_item: null             # item id from data/items/items.yaml dropped on
+#                                #   defeat, or null for no possible drop
+#   drop_chance: 0.0            # 0..1 -- only rolled if drop_item is set
 #   move_speed: 2.5             # tiles/sec, fractional -- continuous
 #                                #   sub-tile movement, not tile-hops
 #   behavior: sentinel          # wanderer | pacer | sentinel -- see engine/enemy.py
@@ -34,32 +46,74 @@
 #                                #   V = paces north/south); leave null otherwise
 
 fat_guy2:
-  name: "FAT GUY"
+  name: "SLOB"
   sprite: fat_guy2
   battle_art: fat_guy2.png
-  battle_bg: null
+  battle_bg: static
   iq: 60
   weight: 500
   sweat: 3
   hair: 10
   level: 1
+  gold: 10
+  xp: 8
+  drop_item: null
+  drop_chance: 0.0
   move_speed: 2.5
   behavior: sentinel
   behavior_axis: null
-  abilities:
 
 
 parkinglotguy:
-  name: "PARKING LOT GUY"
+  name: "LOCAL SCHIZO"
   sprite: parkinglotguy
   battle_art: parkinglotguy.png
-  battle_bg:
+  battle_bg: static
   iq: 40
   weight: 90
   sweat: 4
   hair: 1
   level: 1
+  gold: 4
+  xp: 3
+  drop_item: null
+  drop_chance: 0.0
   move_speed: 2
   behavior: wanderer
   behavior_axis: null
-  abilities:
+
+shitbull:
+  name: "SHITBULL"
+  sprite: shitbull
+  battle_art: shitbull.png
+  battle_bg: static
+  iq: 20
+  weight: 60
+  sweat: 4
+  hair: 90
+  level: 1
+  gold: 6
+  xp: 5
+  drop_item: null
+  drop_chance: 0.0
+  move_speed: 3
+  behavior: sentinel
+  behavior_axis: null
+
+employee:
+  name: "BALD-MART EMPLOYEE"
+  sprite: employee
+  battle_art: employee.png
+  battle_bg: static
+  iq: 45
+  weight: 380
+  sweat: 2
+  hair: 10
+  level: 1
+  gold: 12
+  xp: 10
+  drop_item: null
+  drop_chance: 0.0
+  move_speed: 1.5
+  behavior: wanderer
+  behavior_axis: null

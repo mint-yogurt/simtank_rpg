@@ -180,3 +180,93 @@ class InventoryMenu:
             self.selected = max(0, self.selected - 1)
         elif direction == "S":
             self.selected = min(max(list_len - 1, 0), self.selected + 1)
+
+
+BUY, SELL = "buy", "sell"
+
+
+@dataclass
+class ShopMenu:
+    """Shop-screen overlay for talking to a shopkeeper (a `shop`-type NPC —
+    see engine.renderer.NPC/OverworldScene._load_map; a shop is a person
+    first, built from the same npcs_<map>.yaml pipeline as any other NPC,
+    not a separate static object). Opened by facing the shopkeeper and
+    pressing A, same as any NPC — not from the start menu, unlike every
+    other menu in this module — see engine.input for the open/close wiring
+    and engine.player.PlayerState.IN_SHOP.
+
+    The interaction is talk-then-shop, not straight-to-menu: A on a
+    shopkeeper opens a normal dialogue box with their greeting first;
+    `pending_shop` (the shopkeeper's name) is set at that moment and
+    consumed the instant that dialogue box closes, which is what actually
+    calls `open()` and flips to the buy/sell screen — see
+    engine.input.handle_a_button. Backing all the way out of the buy/sell
+    screen (B, not mid quantity-pick) closes this menu and, if the
+    shopkeeper has a farewell line, shows that in a dialogue box too before
+    returning to idle — see engine.input.handle_b_button.
+
+    Holds no shop/item/inventory data itself, same split as every other
+    class here: `shop_name` is just the shopkeeper NPC's `name`, which the
+    caller (engine.input/engine.renderer) resolves back to the actual
+    stock/dialogue each time it's needed, the same "identify by name" idiom
+    engine.game_state.persistent_id already uses for containers.
+
+    Two modes (BUY/SELL, E/W toggles, same idiom as InventoryMenu's
+    category switch), each with its own scrollable list (N/S, clamped, same
+    idiom as InventoryMenu's item list). Confirming a row (A) enters a
+    nested quantity-picker sub-state (`picking_amount`) rather than
+    transacting immediately — E/W adjusts `amount` there (same idiom as
+    SettingsMenu's SCALE row), A confirms the transaction, B cancels back
+    to the list without transacting.
+    """
+    is_open:        bool = False
+    shop_name:      str | None = None
+    pending_shop:   str | None = None   # set on A-press-shopkeeper; consumed when the greeting dialogue closes
+    mode:           str = BUY
+    cursor:         int = 0
+    picking_amount: bool = False
+    amount:         int = 1
+    message:        str | None = None   # one-line transaction feedback
+
+    def open(self, shop_name: str) -> None:
+        self.is_open = True
+        self.shop_name = shop_name
+        self.pending_shop = None
+        self.mode = BUY
+        self.cursor = 0
+        self.picking_amount = False
+        self.amount = 1
+        self.message = None
+
+    def close(self) -> None:
+        self.is_open = False
+        self.shop_name = None
+        self.pending_shop = None
+
+    def start_amount_pick(self) -> None:
+        self.picking_amount = True
+        self.amount = 1
+
+    def cancel_amount(self) -> None:
+        self.picking_amount = False
+        self.amount = 1
+
+    def move_cursor(self, direction: str, list_len: int, max_amount: int = 1) -> None:
+        """Route a direction press: adjusts `amount` while picking a
+        transaction quantity, otherwise toggles BUY/SELL (E/W, resetting
+        the cursor since the two modes' lists differ) or scrolls the
+        current mode's list (N/S, clamped like InventoryMenu's)."""
+        self.message = None
+        if self.picking_amount:
+            if direction == "E":
+                self.amount = min(max_amount, self.amount + 1)
+            elif direction == "W":
+                self.amount = max(1, self.amount - 1)
+            return
+        if direction in ("E", "W"):
+            self.mode = SELL if self.mode == BUY else BUY
+            self.cursor = 0
+        elif direction == "N":
+            self.cursor = max(0, self.cursor - 1)
+        elif direction == "S":
+            self.cursor = min(max(list_len - 1, 0), self.cursor + 1)

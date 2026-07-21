@@ -1,12 +1,17 @@
 # Auto-synced from interior_pizzahutparkinglot.json by populate_yamls.py.
 # id/name/type are overwritten on every sync; missing stub fields
-# (dialogue, contents, event, sprite, behavior, npc_id,
+# (dialogue, contents, gold, event, sprite, behavior, npc_id,
 # destination_map, destination_warp, facing, distance, enemy_id,
-# level, enemies, spawn_chance) are seeded per type but never
-# overwritten once filled in -- see STUB_FIELDS in the script.
+# level, enemies, spawn_chance, stock, farewell) are seeded per type
+# but never overwritten once filled in -- see STUB_FIELDS in the script.
 #
-# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the
-#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this
+# container: contents (a single item id from data/items/items.yaml)
+#   and gold (a flat amount) are independent -- grant an item, gold,
+#   both, or neither (null/null = pure flavor text, dialogue only).
+#
+# npc: npc_id, if filled in (on an npc or shop object -- both share
+#   this field), is a key into data/npcs/npc.yaml (the master NPC
+#   list, loaded by engine.npc.load_npc_defs()) -- this
 #   placement's own sprite/behavior/dialogue then become optional
 #   overrides on top of that shared definition: set, they win for
 #   this one placement; left blank (null / []), they fall back to
@@ -80,6 +85,20 @@
 #   level (top-level, alongside spawn_chance/enemies -- not per
 #   candidate) optionally overrides whichever enemy gets picked;
 #   leave it null to use that enemy's own level from enemies.yaml.
+#
+# shop: a shopkeeper -- a person, not a static fixture -- so it uses
+#   the same sprite/behavior/npc_id fields as npc above (see the
+#   npc paragraph). Two fields of its own: stock, a list of
+#   {item, price} mappings (item a key from data/items/items.yaml,
+#   price the gold cost to buy one, independent of that item's own
+#   sell value in items.yaml -- a shop can mark things up or down);
+#   and farewell, the goodbye line(s) shown in a dialogue box after
+#   the player backs out of the buy/sell screen (same shape as
+#   dialogue, but placement-only -- no npc.yaml-level fallback).
+#   Talking to a shopkeeper is talk-then-shop, same as any npc: A
+#   opens dialogue (the greeting) first; the buy/sell screen opens
+#   once that closes -- see engine.menu.ShopMenu.pending_shop.
+#   A shop has no one-shot flag -- both are available every visit.
 
 1:
   destination_map: town
@@ -101,5 +120,6 @@
 6:
   contents: null
   dialogue: []
+  gold: null
   name: pizza_trash1
   type: container

@@ -5,14 +5,17 @@
 Prompts with a numbered list: 1. map 2. battles 3. debug screen. Accepts
 either the number or the typed name. `map` first prompts for a save slot
 (engine/save.py) — pick an in-use slot to resume exactly where it left off
-(map, player position, inventory, flags), an empty one to start fresh, or
-`c<N>` to wipe slot N back to nothing, so different chapters/scenarios can
-be tested without hand-editing save files. A fresh/new-game boot then lists
-every folder under data/maps/ (each expected to hold a Tiled export named
-<folder>.json) same as before. `battles` prompts for an enemy id from
-data/enemy/enemies.yaml and boots engine.renderer.BattleScene against it —
-MELVIN vs. that one enemy, auto-attack only (see engine/battle.py). `debug
-screen` is still a stub for later.
+(map, player position, inventory, flags, party HP/MP/XP/level), an empty
+one to start fresh, or `c<N>` to wipe slot N back to nothing, so different
+chapters/scenarios can be tested without hand-editing save files. A
+fresh/new-game boot then lists every folder under data/maps/ (each expected
+to hold a Tiled export named <folder>.json) same as before — touching an
+enemy on the map starts a real battle (see engine.renderer.OverworldScene.
+start_battle), win/loss actually changes the loaded game's state. `battles`
+prompts for an enemy id from data/enemy/enemies.yaml and boots
+engine.renderer.BattleScene against it directly — MELVIN vs. that one
+enemy, an isolated debug fight with no save/overworld involved (see
+engine/battle.py). `debug screen` is still a stub for later.
 """
 import os
 import sys
@@ -134,16 +137,16 @@ def main():
         slot, is_new = _choose_save_slot()
         if is_new:
             map_path = _choose_map()
-            player = inventory = game_state = None
+            player = inventory = game_state = roster = None
         else:
-            map_name, player, inventory, game_state = load_from_slot(slot)
+            map_name, player, inventory, game_state, roster = load_from_slot(slot)
             map_path = _MAPS_DIR / map_name / f"{map_name}.json"
             print(f"Loaded slot {slot}: {map_name}, player at "
                   f"({player.row},{player.col})", flush=True)
 
         run(
             partial(OverworldScene, map_path=map_path, player=player,
-                    inventory=inventory, game_state=game_state, active_slot=slot),
+                    inventory=inventory, game_state=game_state, roster=roster, active_slot=slot),
             view_size=view_size,
             scale=cfg.pygame_scale,
             title=f"Front House Gaiden — debug [{map_path.parent.name}] (slot {slot})",

@@ -9,6 +9,7 @@ Journal — global milestone log + narrative strings.
 
 _TEMPLATES = {
     "BATTLE_WIN":     lambda e: f"PARTY DEFEATED LVL {e['enemy_lvl']} {e['enemy']}.",
+    "GOLD_AWARDED":   lambda e: f"PARTY FOUND ${e['gold']}.",
     "BATTLE_LOSS":    lambda e: "THE PARTY HAS FALLEN.",
     "BATTLE_FLEE":    lambda e: "PARTY FLED. NO XP GAINED.",
     "MEMBER_DIED":    lambda e: f"{e['member']} WAS SLAIN.",

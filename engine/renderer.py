@@ -71,7 +71,9 @@ import numpy as np
 import pygame
 import yaml
 
-from engine.battle import BattleState, Fighter, load_fighter
+from engine.battle import (
+    BATTLE_MENU_OPTIONS, BattleMenu, BattleState, Fighter, fighter_from_roster, load_fighter,
+)
 from engine.config import cfg
 from engine.dialogue import DialogueBox
 from engine.enemy import (
@@ -91,9 +93,11 @@ from engine.input import (
 )
 from engine.game_state import GameState, persistent_id
 from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
-from engine.menu import InventoryMenu, SaveMenu, SettingsMenu, StartMenu
+from engine.menu import BUY, InventoryMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu
 from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue
 from engine.player import Player, PlayerState
+from engine.roster import Roster
+from engine.save import load_from_slot, slot_exists
 from procgen.visualizer import EFFECTS
 
 _REPO_ROOT   = Path(__file__).parent.parent
@@ -107,9 +111,30 @@ _NPC_SPRITES_DIR = _ASSETS / 'sprites' / 'npcs'
 _BATTLE_ART_DIR = _ASSETS / 'tiles' / 'enemies'
 _PARTY_DIR   = _REPO_ROOT / 'data' / 'party'
 _MENU_DIR    = _ASSETS / 'menus'
+_FX_TRANSITIONS_PNG = _ASSETS / 'fx' / 'transitions.png'
 
 _NPC_ANIM_MS = 500   # ms per NPC animation frame flip
 _NPC_MOVE_MS = 800   # ms between NPC AI position updates; also NPC tween duration
+
+_BATTLE_IMMUNITY_MS = 2000   # after a battle ends, how long before touching
+                              # an enemy can trigger another one -- the player
+                              # is returned to the exact tile they were
+                              # grabbed on, likely still overlapping it
+_BATTLE_IMMUNITY_BLINK_MS = 100   # how often the player sprite toggles
+                                   # visible/hidden during the immunity window
+
+_BATTLE_TRANSITION_ANIM_MS  = 2000   # 8 frames over this long -- see
+                                      # OverworldScene._tick_battle_transition
+_BATTLE_TRANSITION_HOLD_MS  = 500    # solid black after the animation, before
+                                      # BattleScene actually appears
+_BATTLE_TRANSITION_ANIM_COUNT = 3    # rows of assets/fx/transitions.png that
+                                      # are actually finished -- bump by hand
+                                      # as more get added; never lets a random
+                                      # pick exceed however many rows the file
+                                      # actually has, even if this constant
+                                      # drifts ahead of it (see start_battle)
+
+_GAME_OVER_TEXT_COLOR = (255, 255, 255)
 
 _DIR_KEY = {
     pygame.K_UP:    'N',
@@ -170,6 +195,18 @@ _SET_VALUE_X    = 120
 _SET_ROW_LABELS = ("SCALE", "DISPLAY MODE")
 _SET_TEXT_COLOR = (255, 255, 255)
 _SET_DIM_COLOR  = (110, 110, 110)   # unselected row label
+
+# Shop-screen layout. Same "no art yet, plain dialogue_font on black"
+# approach as inventory/settings above -- the greeting/farewell are their
+# own dialogue-box beats (see engine.menu.ShopMenu.pending_shop), so this
+# screen opens straight on a BUY/SELL mode header (same "< X >" idiom as
+# the inventory header), then the current mode's scrollable list.
+_SHOP_MARGIN      = 8
+_SHOP_HEADER_Y    = _SHOP_MARGIN
+_SHOP_LIST_TOP_Y  = 40
+_SHOP_LIST_LEFT_X = _SHOP_MARGIN
+_SHOP_TEXT_COLOR  = (255, 255, 255)
+_SHOP_DIM_COLOR   = (110, 110, 110)
 
 # Dialogue box layout. dialogue_box.png is 256x240 — 16px taller than the
 # 256x224 game screen (view_cols/view_rows * tile_px) — so it docks to one
@@ -414,6 +451,27 @@ def load_enemy_sprites(sprites_dir: Path, tile_px: int = 16) -> dict[str, list[p
     return frames
 
 
+def load_transition_frames(path: Path, tile_px: int = 16) -> list[list[pygame.Surface]]:
+    """Slice assets/fx/transitions.png into rows of 8 tile_px-wide frames --
+    one row per animated screen transition (see OverworldScene.
+    start_battle/_draw_battle_transition_overlay). `.convert_alpha()` is
+    load-bearing here, same as load_enemy_sprites -- these frames dissolve
+    from mostly-transparent toward opaque black across their 8 frames, and
+    a `.convert()` (dropping alpha) would make every frame opaque instead,
+    silently turning the whole transition into a hard cut to black on
+    frame 1. Slices every row present in the file; how many are actually
+    finished/usable is a separate, hand-maintained count -- see
+    _BATTLE_TRANSITION_ANIM_COUNT."""
+    sheet = pygame.image.load(str(path)).convert_alpha()
+    width, height = sheet.get_size()
+    cols, rows = width // tile_px, height // tile_px
+    return [
+        [sheet.subsurface(pygame.Rect(col * tile_px, row * tile_px, tile_px, tile_px)).copy()
+         for col in range(cols)]
+        for row in range(rows)
+    ]
+
+
 def get_enemy_frame(enemy_sprites: dict[str, list[pygame.Surface]],
                     sprite: str, anim_frame: int) -> pygame.Surface | None:
     """Surface for an enemy's current animation frame."""
@@ -552,14 +610,19 @@ class TiledLayer:
 
 @dataclass
 class MapObject:
-    """A container/sign/npc/warp placed on the map's Tiled object layer,
-    merged with its hand-authored content from obj_<map>.yaml /
+    """A container/sign/healer/npc/warp placed on the map's Tiled object
+    layer, merged with its hand-authored content from obj_<map>.yaml /
     npcs_<map>.yaml (see data/maps/populate_yamls.py). `dialogue` is a list
-    of pages; `type == "sign"` opens it directly, `type == "container"`
-    opens it via engine.input's container handling (dialogue plus an item
-    grant — see `contents` below), and `type == "npc"` entries hand theirs
-    off to NPC (see below, built from these in OverworldScene._load_map)
-    which is interactable the same way. `sprite`/`behavior`/`npc_id` are
+    of pages; `type == "sign"` opens it directly, `type == "healer"` (e.g. a
+    saladbar — full party heal for free, every visit, no flag) currently
+    opens the exact same way (see engine.input.handle_a_button's
+    TODO(party-hp) — party HP is live state now via engine.roster.Roster,
+    the heal action itself just isn't implemented yet),
+    `type == "container"` opens it via engine.input's container handling
+    (dialogue plus an item grant — see `contents` below), and `type ==
+    "npc"` entries hand theirs off to NPC (see below, built from these in
+    OverworldScene._load_map) which is interactable the same way.
+    `sprite`/`behavior`/`npc_id` are
     only ever set for `type == "npc"` entries — `npc_id`, if set, is a key
     into engine.npc.load_npc_defs()'s result (data/npcs/npc.yaml); this
     object's own `sprite`/`behavior`/`dialogue` are then optional overrides
@@ -586,16 +649,20 @@ class MapObject:
     this field exists on them too but nothing reads it.
 
     `contents` is only ever set for `type == "container"` entries: a single
-    item id from data/items/items.yaml, or None for a container that's pure
-    flavor (dialogue only, no loot). See engine.input's container handling
-    for how opening one grants the item; either way (loot or not), opening a
-    container sets a flag keyed by engine.game_state.persistent_id(map_name,
-    this object's name) — every container is single-use, one open. That same
-    flag is what OverworldScene._draw_entities checks to stop drawing the
-    container's `gid` once opened: paint whichever tile should show through
-    once it's empty (a used-up trash can, an opened chest, ...) on the tile
-    layer beneath the container object, and it's revealed for free the
-    instant the flag's set — no separate "opened" sprite or state field.
+    item id from data/items/items.yaml, or None for no item loot. `gold` is
+    also only ever set for `type == "container"` entries: a flat gold
+    amount credited via engine.game_state.GameState.add_gold, or None for
+    no gold. The two are independent -- a container can grant an item, gold,
+    both, or neither (pure flavor, dialogue only). See engine.input's
+    container handling for how opening one grants either/both; either way
+    (loot or not), opening a container sets a flag keyed by
+    engine.game_state.persistent_id(map_name, this object's name) — every
+    container is single-use, one open. That same flag is what
+    OverworldScene._draw_entities checks to stop drawing the container's
+    `gid` once opened: paint whichever tile should show through once it's
+    empty (a used-up trash can, an opened chest, ...) on the tile layer
+    beneath the container object, and it's revealed for free the instant
+    the flag's set — no separate "opened" sprite or state field.
 
     `enemy_id`/`level` are only ever set for `type == "enemy"` entries: a
     hardcoded placement, `enemy_id` a key into data/enemy/enemies.yaml,
@@ -607,7 +674,22 @@ class MapObject:
     spawns once the gate passes (see engine.enemy.resolve_spawn), `level`
     again an optional override. Both types are placed and anchored exactly
     like `npc` objects (rectangle tool, no `gid`, top-left anchor) -- see
-    engine.enemy for the runtime `Enemy` these become."""
+    engine.enemy for the runtime `Enemy` these become.
+
+    `stock`/`farewell` are only ever set for `type == "shop"` entries -- a
+    shop is a derivative of `npc` (same sprite/behavior/npc_id/dialogue
+    fields, same row in npcs_<map>.yaml, same self.npcs list and
+    engine.npc.NPC runtime object -- see OverworldScene._load_map), not a
+    static object, so it's excluded from self.objects the same way `npc` is.
+    `stock` is a list of `{item, price}` dicts, `item` a key into
+    data/items/items.yaml and `price` the buy cost in gold -- independent of
+    that item's own `value` (the sell price a shop pays out, see
+    engine.inventory.ItemDef). `dialogue` is the shopkeeper's one-line
+    greeting, shown via a normal dialogue box before the buy/sell screen
+    opens (see engine.input.handle_a_button); `farewell` is the one-line
+    goodbye shown the same way after the player backs out of the buy/sell
+    screen. Unlike a container, a shop has no one-shot flag -- both
+    greeting and buy/sell screen are available every visit."""
     id:       int
     name:     str
     type:     str
@@ -619,6 +701,7 @@ class MapObject:
     rotation: float = 0.0   # Tiled object rotation, degrees clockwise about the object's x/y anchor
     dialogue: list[str] = field(default_factory=list)
     contents: str | None = None
+    gold:     int | None = None   # type == "container" only: flat gold grant, independent of contents
     sprite:   str | None = None
     behavior: str | None = None
     npc_id:   str | None = None
@@ -630,6 +713,8 @@ class MapObject:
     level:        int | list[int] | None = None
     enemies:      list = field(default_factory=list)
     spawn_chance: float | None = None
+    stock:        list[dict] = field(default_factory=list)   # type == "shop" only: [{item, price}, ...]
+    farewell:     list[str] = field(default_factory=list)    # type == "shop" only: goodbye line, shown on close
 
 
 def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> list[MapObject]:
@@ -670,6 +755,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 rotation  = obj.get("rotation", 0.0),
                 dialogue  = data.get("dialogue", []),
                 contents  = data.get("contents"),
+                gold      = data.get("gold"),
                 sprite    = data.get("sprite"),
                 behavior  = data.get("behavior"),
                 npc_id    = data.get("npc_id"),
@@ -681,6 +767,8 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 level        = data.get("level"),
                 enemies      = data.get("enemies", []),
                 spawn_chance = data.get("spawn_chance"),
+                stock        = data.get("stock", []),
+                farewell     = data.get("farewell", []),
             ))
     return objects
 
@@ -961,18 +1049,23 @@ _DIR_DELTA = {'N': (-1, 0), 'S': (1, 0), 'E': (0, 1), 'W': (0, -1)}
 
 @dataclass
 class NPC:
-    """A roaming/static character built from a map's `type == "npc"` objects
-    merged with npcs_<map>.yaml (see MapObject, which this is built from in
-    OverworldScene._load_map). `sprite`/`behavior`/`facing`/`dialogue` are
-    already fully resolved by the time an NPC exists — that MapObject's own
-    fields win if set, else whatever its `npc_id` points at in
-    engine.npc.load_npc_defs()'s result (data/npcs/npc.yaml), else the
-    static "no def, nothing set" fallback (`behavior="static"`,
-    `facing="S"`, empty dialogue) — see _load_map. `type` is always "npc" —
-    it exists only so Player.adjacent_interactable()/handle_a_button can
-    branch on it the same way they do for MapObject, without needing to
-    know NPC is a distinct class. `dialogue` works exactly like a sign's:
-    face the NPC and press A to open it — see handle_a_button.
+    """A roaming/static character built from a map's `type == "npc"` OR
+    `type == "shop"` objects merged with npcs_<map>.yaml (see MapObject,
+    which this is built from in OverworldScene._load_map) — a shop is a
+    person (a shopkeeper) first, so it's built from exactly the same
+    pipeline as any other NPC, not a separate static-object type.
+    `sprite`/`behavior`/`facing`/`dialogue` are already fully resolved by
+    the time an NPC exists — that MapObject's own fields win if set, else
+    whatever its `npc_id` points at in engine.npc.load_npc_defs()'s result
+    (data/npcs/npc.yaml), else the static "no def, nothing set" fallback
+    (`behavior="static"`, `facing="S"`, empty dialogue) — see _load_map.
+    `type` is "npc" or "shop", carried straight from the source MapObject —
+    Player.adjacent_interactable()/handle_a_button branch on it the same
+    way they do for MapObject, without needing to know NPC is a distinct
+    class. `dialogue` works exactly like a sign's: face the NPC and press A
+    to open it — see handle_a_button. For a shop, that same greeting closes
+    into the buy/sell screen instead of back to idle — see
+    engine.menu.ShopMenu.pending_shop / handle_a_button.
 
     `npc_id` (distinct from `npc_sprite`) is only ever set when this NPC
     resolved against a real def — draw-time (OverworldScene._draw_entities)
@@ -989,6 +1082,14 @@ class NPC:
     engine.game_state flags at interact time, not baked into a flat list
     here, since flags can change between one visit and the next — see
     engine.npc.resolve_dialogue.
+
+    `stock`/`farewell_variants` are only ever set for `type == "shop"`
+    entries: `stock` a list of `{item, price}` dicts (see
+    engine.menu.ShopMenu / engine.input._confirm_shop_transaction),
+    `farewell_variants` the goodbye line shown (same resolve_dialogue rule
+    as `dialogue_variants`) after the player backs all the way out of the
+    buy/sell screen — placement-only, no npc.yaml-level fallback, since a
+    farewell is authored per-shopkeeper, not shared across placements.
     """
     index:      int                 # stable identity (Tiled object id) for tweens
     name:       str
@@ -997,9 +1098,11 @@ class NPC:
     npc_sprite: str | None          # e.g. "npc01" -- key into engine.npc.load_npc_sprite_specs()'s result
     behavior:   str = "static"      # "static" | "wander"
     facing:     str = "S"           # "N" | "S" | "E" | "W" -- only visible on an 8-frame sprite
-    type:       str = "npc"
+    type:       str = "npc"         # "npc" | "shop"
     npc_id:     str | None = None   # key into OverworldScene.npc_defs/npc_frames_by_id, if resolved
     dialogue_variants: list[DialogueVariant] = field(default_factory=list)
+    stock:             list[dict] = field(default_factory=list)             # type == "shop" only
+    farewell_variants: list[DialogueVariant] = field(default_factory=list)   # type == "shop" only
 
 
 # ── Scene ────────────────────────────────────────────────────────────────────
@@ -1014,11 +1117,12 @@ class OverworldScene:
 
     def __init__(self, map_path: Path = _HUB_MAP, player: Player | None = None,
                  inventory: Inventory | None = None, game_state: GameState | None = None,
-                 active_slot: int = 1):
-        """`player`/`inventory`/`game_state`, if given, are what a save slot
-        restores (see engine.save / maptest.py's save-slot picker) — omit
-        all three for a fresh boot with no save (maptest.py's map-picker
-        flow: default Player, empty Inventory, empty GameState). `spawn` is
+                 roster: Roster | None = None, active_slot: int = 1):
+        """`player`/`inventory`/`game_state`/`roster`, if given, are what a
+        save slot restores (see engine.save / maptest.py's save-slot picker)
+        — omit all four for a fresh boot with no save (maptest.py's
+        map-picker flow: default Player, empty Inventory, empty GameState,
+        fresh Roster). `spawn` is
         only overridden from the loaded player's own row/col when a save
         was actually passed in; a fresh boot keeps the existing debug
         convenience of landing on a random warp (see _load_map) rather than
@@ -1032,6 +1136,7 @@ class OverworldScene:
         self.sprites = load_sprites(_SPRITES_PNG, _SPRITES_TXT, self.tile_px)
         self.enemy_sprites = load_enemy_sprites(_ENEMY_SPRITES_DIR, self.tile_px)
         self.menu_assets = load_menu_assets(_MENU_DIR)
+        self.transition_frames = load_transition_frames(_FX_TRANSITIONS_PNG, self.tile_px)
         self.dialogue_font = pygame.font.Font(str(_DIALOGUE_FONT_PATH), _DIALOGUE_FONT_PT)
         print(f'  {len(self.sprites)} sprites, {len(self.enemy_sprites)} enemy sprites', flush=True)
 
@@ -1087,6 +1192,7 @@ class OverworldScene:
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
         self.inventory_menu = InventoryMenu()   # opened from INVENTORY on self.menu
         self.settings_menu = SettingsMenu(scale=cfg.pygame_scale)   # opened from SETTINGS on self.menu
+        self.shop_menu = ShopMenu()   # opened directly from the overworld by facing a `shop` object
         self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
         self.active_slot = active_slot
 
@@ -1098,6 +1204,7 @@ class OverworldScene:
         self.item_defs = load_item_defs()
         self.inventory = inventory if inventory is not None else Inventory()
         self.game_state = game_state if game_state is not None else GameState()
+        self.roster = roster if roster is not None else Roster.fresh()
 
         self._npc_rng = random.Random(0x4875624E5043)
         self._enemy_rng = random.Random(0x456E656D79)   # "Enemy" in hex
@@ -1126,6 +1233,35 @@ class OverworldScene:
         self._pending_warp: 'MapObject | None' = None
         self._fade_overlay = pygame.Surface((cfg.view_cols * self.tile_px, cfg.view_rows * self.tile_px))
         self._fade_overlay.fill((0, 0, 0))
+
+        # Battle state -- see start_battle/_end_battle/_update_enemies.
+        # battle_scene is None whenever no battle is active; while it isn't,
+        # handle_event/update/draw all delegate to it wholesale (see those
+        # methods) rather than swapping the top-level scene (engine.renderer.
+        # run() has no such mechanism, and this mirrors the warp transition
+        # above -- one self-contained state machine per concern, all living
+        # inside this one OverworldScene instance).
+        self.battle_scene: 'BattleScene | None' = None
+        self._battle_source_enemy: 'Enemy | None' = None
+        self._battle_immunity_ms = 0   # counts down after a battle ends -- see _update_enemies
+        self._immunity_blink_elapsed = 0
+        self._immunity_blink_visible = True
+
+        # Battle-entry transition -- see start_battle/_tick_battle_transition/
+        # _draw_battle_transition_overlay. None means no transition is in
+        # progress; battle_scene stays None the whole time this is active --
+        # it's only actually constructed once the transition completes.
+        # _pending_battle stashes start_battle's args until then.
+        self._battle_transition_phase: str | None = None   # None | "anim" | "hold"
+        self._battle_transition_elapsed = 0
+        self._battle_transition_frame_idx = 0
+        self._battle_transition_frames: list[pygame.Surface] | None = None
+        self._pending_battle: dict | None = None
+
+        # Game-over state -- see _start_game_over/_reload_last_save. A full
+        # pause, same tier as the battle/transition/dialogue/menu checks in
+        # update()/handle_event()/draw().
+        self._game_over = False
 
         spawn = (self.player.row, self.player.col) if self._loaded_save else None
         facing = self.player.facing if self._loaded_save else None
@@ -1158,9 +1294,12 @@ class OverworldScene:
         print(f'  {len(self.tile_surfaces)} tiles', flush=True)
 
         self.objects = [o for o in self.tmap.objects
-                        if o.type not in ("npc", "warp", "enemy", "spawner")]   # containers/signs
+                        if o.type not in ("npc", "shop", "warp", "enemy", "spawner")]   # containers/signs
         self.warps = [o for o in self.tmap.objects if o.type == "warp"]
-        npc_map_objects = [o for o in self.tmap.objects if o.type == "npc"]
+        # A shop is a person first -- built from the exact same objects as
+        # any other NPC (npcs_<map>.yaml, sprite/behavior/npc_id, drawn by
+        # _draw_entities the same way), not a separate static object type.
+        npc_map_objects = [o for o in self.tmap.objects if o.type in ("npc", "shop")]
         self.npcs = []
         for o in npc_map_objects:
             # npc_id, if set, points at a shared definition in
@@ -1194,8 +1333,11 @@ class OverworldScene:
                 npc_sprite=o.sprite or (npc_def.sprite if npc_def else None),
                 behavior=o.behavior or (npc_def.behavior if npc_def else None) or "static",
                 facing=npc_def.facing if npc_def else "S",
+                type=o.type,
                 npc_id=o.npc_id if npc_def else None,
                 dialogue_variants=dialogue_variants,
+                stock=o.stock,
+                farewell_variants=parse_dialogue(o.farewell),
             ))
 
         # Enemies: `enemy` objects place directly; `spawner` objects roll
@@ -1299,7 +1441,54 @@ class OverworldScene:
 
     # ── input ────────────────────────────────────────────────────────────────
 
+    def _resolve_shop(self) -> 'NPC | None':
+        return next((n for n in self.npcs if n.name == self.shop_menu.shop_name), None)
+
+    def _shop_amount_context(self, shop: 'NPC') -> tuple[int, int]:
+        """(list_len, max_amount) for whichever mode self.shop_menu is
+        currently in -- shared by the direction-key routing in
+        handle_event and the "x{amount} TOTAL" line in _draw_shop_menu."""
+        if self.shop_menu.mode == BUY:
+            if not shop.stock:
+                return 0, 0
+            price = shop.stock[self.shop_menu.cursor]["price"]
+            return len(shop.stock), (self.game_state.gold // price if price > 0 else 0)
+        sellable = self.inventory.sellable_items(self.item_defs)
+        if not sellable:
+            return 0, 0
+        owned = self.inventory.counts.get(sellable[self.shop_menu.cursor], 0)
+        return len(sellable), owned
+
     def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type == pygame.KEYUP:
+            # Always resolve a physical key release, regardless of which
+            # gate below would otherwise swallow the event -- otherwise a
+            # direction key released while the battle-transition/battle/
+            # game-over gates are active never reaches self._input.release,
+            # and the player keeps "walking" in that direction once control
+            # returns (stuck facing/moving whatever was held the instant an
+            # enemy touched them), since HeldDirectionInput still thinks the
+            # key is down.
+            direction = _DIR_KEY.get(event.key)
+            if direction:
+                self._input.release(direction)
+            button = _BUTTON_KEY.get(event.key)
+            if button:
+                self._held_buttons.discard(button)
+            return
+
+        if self._battle_transition_phase is not None:
+            return   # entering battle -- swallow input entirely, see start_battle
+
+        if self.battle_scene is not None:
+            self.battle_scene.handle_event(event)
+            return
+
+        if self._game_over:
+            if event.type == pygame.KEYDOWN and _BUTTON_KEY.get(event.key) == 'A':
+                self._reload_last_save()
+            return
+
         if event.type == pygame.KEYDOWN:
             # DEV-ONLY: hot-reload the current map's JSON/tileset off disk
             # without restarting the process, so map edits can be checked
@@ -1312,12 +1501,15 @@ class OverworldScene:
 
             direction = _DIR_KEY.get(event.key)
             if direction:
-                if self.player.state == PlayerState.IN_MENU:
+                if self.player.state in (PlayerState.IN_MENU, PlayerState.IN_SHOP):
                     category_item_count = len(self.inventory.items_in(
                         self.inventory_menu.selected_category(), self.item_defs))
+                    shop = self._resolve_shop() if self.shop_menu.is_open else None
+                    shop_list_len, shop_max_amount = self._shop_amount_context(shop) if shop else (0, 0)
                     handle_menu_direction(direction, self.menu, self.save_menu,
                                            self.inventory_menu, self.settings_menu,
-                                           category_item_count)
+                                           self.shop_menu, category_item_count,
+                                           shop_list_len, shop_max_amount)
                 else:
                     # Turn-in-place (a tap that doesn't move, just faces the
                     # new way) only applies from a dead stop — see
@@ -1333,36 +1525,56 @@ class OverworldScene:
                 self._held_buttons.add(button)
             if button == 'START':
                 handle_start_button(self.player, self.menu, self.save_menu,
-                                     self.inventory_menu, self.settings_menu)
+                                     self.inventory_menu, self.settings_menu, self.shop_menu)
             elif button == 'B':
                 handle_b_button(self.player, self.menu, self.save_menu,
-                                 self.inventory_menu, self.settings_menu)
+                                 self.inventory_menu, self.settings_menu, self.shop_menu,
+                                 self.dialogue, self.npcs, self.game_state,
+                                 wrap_pages=self._wrap_dialogue_pages)
             elif button == 'A':
                 # Menu confirm (SAVE writes self.active_slot to disk and
                 # closes back to the start menu; INVENTORY/SETTINGS open
                 # their overlays; PARTY still stubbed) / dialogue
                 # advance-close (no-op while still typing in) / open a
-                # dialogue by facing an interactable sign or NPC, or a
-                # container (grants its `contents` item + sets its flag the
-                # first time, inert after that — see engine.input).
+                # dialogue by facing an interactable sign, NPC, or shopkeeper
+                # (a shop is a person -- greeting first, buy/sell screen
+                # opens once that closes, see engine.menu.ShopMenu.
+                # pending_shop), or a container (grants its `contents` item
+                # + sets its flag the first time, inert after that -- see
+                # engine.input) / confirms a buy/sell row while the shop
+                # screen itself is open -- see engine.input.handle_a_button.
                 handle_a_button(self.player, self.menu, self.save_menu, self.inventory_menu,
-                                 self.settings_menu,
+                                 self.settings_menu, self.shop_menu,
                                  self.dialogue, self.npcs, self.objects,
                                  wrap_pages=self._wrap_dialogue_pages,
                                  game_state=self.game_state, inventory=self.inventory,
+                                 roster=self.roster,
                                  item_defs=self.item_defs, map_name=self.map_path.stem,
                                  active_slot=self.active_slot)
-        elif event.type == pygame.KEYUP:
-            direction = _DIR_KEY.get(event.key)
-            if direction:
-                self._input.release(direction)
-            button = _BUTTON_KEY.get(event.key)
-            if button:
-                self._held_buttons.discard(button)
 
     # ── update ───────────────────────────────────────────────────────────────
 
     def update(self, dt_ms: int) -> None:
+        if self._battle_transition_phase is not None:
+            # Entering battle -- highest-priority gate, same reasoning as
+            # battle_scene below (battle_scene is still None throughout
+            # this, see start_battle/_tick_battle_transition).
+            self._tick_battle_transition(dt_ms)
+            return
+
+        if self.battle_scene is not None:
+            # A battle owns input/update/draw entirely while active -- see
+            # start_battle/_end_battle. Highest-priority gate: nothing else
+            # in this method (warps, dialogue, menus, enemy/player movement)
+            # should tick underneath a battle.
+            self.battle_scene.update(dt_ms)
+            if self.battle_scene.finished:
+                self._end_battle()
+            return
+
+        if self._game_over:
+            return   # full pause -- A-press-only, see handle_event/_reload_last_save
+
         if self._transition_phase is not None:
             # A warp is fading out/holding/fading in — full gameplay pause,
             # same idea as dialogue/menu below, just driven by elapsed time
@@ -1378,8 +1590,27 @@ class OverworldScene:
             self.dialogue.tick(dt_ms, ms_per_char)
             return
 
-        if self.menu.is_open:
-            return   # start menu is a full pause — no gameplay ticks while open
+        if self.menu.is_open or self.shop_menu.is_open:
+            # start menu / shop screen are both a full pause -- no gameplay
+            # ticks while open. Unlike save/inventory/settings (which
+            # overlay atop an already-open self.menu), a shop opens
+            # directly from the overworld with self.menu.is_open staying
+            # False the whole time, so it needs its own check here.
+            return
+
+        # Only ticks once the player actually has control again (past every
+        # full-pause gate above) -- an item-drop win opens a "Found X!"
+        # dialogue in the same beat immunity starts, and ticking it down
+        # while that's still open would burn the window before the player
+        # can even move, defeating the point of it.
+        if self._battle_immunity_ms > 0:
+            self._battle_immunity_ms -= dt_ms
+            self._immunity_blink_elapsed += dt_ms
+            if self._immunity_blink_elapsed >= _BATTLE_IMMUNITY_BLINK_MS:
+                self._immunity_blink_elapsed -= _BATTLE_IMMUNITY_BLINK_MS
+                self._immunity_blink_visible = not self._immunity_blink_visible
+        else:
+            self._immunity_blink_visible = True   # self-heal if immunity expires mid-blink-off
 
         self._anim_timer += dt_ms
         if self._anim_timer >= _NPC_ANIM_MS:
@@ -1391,7 +1622,8 @@ class OverworldScene:
             self._npc_move_timer -= _NPC_MOVE_MS
             self._update_npc_wander()
 
-        self._update_enemies(dt_ms)
+        if self._update_enemies(dt_ms):
+            return   # a battle just started this frame -- see _update_enemies
 
         vertical, horizontal = self._input.tick(dt_ms)
         self._player_moving = vertical is not None or horizontal is not None
@@ -1571,22 +1803,211 @@ class OverworldScene:
         t = min(tw['elapsed'] / _NPC_MOVE_MS, 1.0)
         return _lerp(tw['src'][0], tw['dst'][0], t), _lerp(tw['src'][1], tw['dst'][1], t)
 
-    def _update_enemies(self, dt_ms: int) -> None:
+    def _update_enemies(self, dt_ms: int) -> bool:
         """One frame of enemy movement. Unlike NPCs, there's no tween step
         here — engine.enemy.update_enemy mutates Enemy.row/col continuously
         in place, so the position it leaves behind is already what draw()
         reads. Enemies never block or are blocked by the player (see
-        README/CLAUDE.md) — check_overlap is a no-op today, just marking
-        where a future battle-trigger-on-touch + post-battle blink-immunity
-        window will hook in."""
+        README/CLAUDE.md) — touching one starts a battle instead, gated by
+        `_battle_immunity_ms` (see __init__/update) so the player isn't
+        instantly regrabbed on the same tile a battle just ended on.
+
+        Returns True the instant a battle starts, so update() can bail out
+        of the rest of that frame's processing (player movement, warp
+        checks) rather than keep advancing gameplay underneath the battle
+        that just began."""
         for enemy in self.enemies:
             edef = self.enemy_defs.get(enemy.enemy_id)
             if edef is None:
                 continue
             update_enemy(enemy, edef, self.passable, self.player.row, self.player.col,
                          dt_ms, self._enemy_rng)
-            if check_overlap(enemy, self.player.row, self.player.col):
-                pass   # no-op placeholder — see docstring above
+            if self._battle_immunity_ms <= 0 and check_overlap(enemy, self.player.row, self.player.col):
+                self.start_battle(enemy.enemy_id, level=enemy.level, source_enemy=enemy)
+                return True
+        return False
+
+    def start_battle(self, enemy_id: str, level: int | None = None,
+                      source_enemy: 'Enemy | None' = None) -> None:
+        """Launch a battle against `enemy_id`. `level`, if given, is used
+        as-is instead of re-rolling EnemyDef.level's range -- the touch-
+        trigger path (_update_enemies) passes the already-resolved
+        Enemy.level, so what the player *saw* on the overworld is what they
+        *fight*, not a fresh independent roll. `source_enemy`, if given, is
+        removed from self.enemies on a win (see _end_battle) -- it respawns
+        for free the next time _load_map runs (leaving and re-entering the
+        map), same mechanism `spawner` objects already use every reload; no
+        flag, nothing persisted. Omit `source_enemy` for a scripted
+        encounter with no overworld Enemy instance behind it (see
+        trigger_scripted_encounter).
+
+        Doesn't build BattleScene directly -- kicks off the battle-entry
+        transition instead (see _tick_battle_transition), which builds it
+        the instant the transition completes. `battle_scene` stays None for
+        the whole 2.5s of the transition; `player.state` flips to IN_BATTLE
+        immediately though, so movement/interaction are already gated the
+        same as during the battle itself."""
+        self._pending_battle = {"enemy_id": enemy_id, "level": level, "source_enemy": source_enemy}
+        # min() so a random pick can never exceed however many rows the file
+        # actually has, even if _BATTLE_TRANSITION_ANIM_COUNT drifts ahead of
+        # it (e.g. the constant bumped before the sheet's actually updated).
+        usable_rows = min(_BATTLE_TRANSITION_ANIM_COUNT, len(self.transition_frames))
+        self._battle_transition_frames = self.transition_frames[self._enemy_rng.randrange(usable_rows)]
+        self._battle_transition_phase = "anim"
+        self._battle_transition_elapsed = 0
+        self._battle_transition_frame_idx = 0
+        self.player.set_state(PlayerState.IN_BATTLE)
+
+    def _tick_battle_transition(self, dt_ms: int) -> None:
+        """Advance the battle-entry transition (see start_battle). "anim"
+        cycles self._battle_transition_frames over _BATTLE_TRANSITION_ANIM_MS
+        (see _draw_battle_transition_overlay for how a frame gets drawn);
+        once that completes, "hold" is a plain solid-black pause for
+        _BATTLE_TRANSITION_HOLD_MS -- the moment that ends, BattleScene
+        actually gets constructed from _pending_battle, exactly the call
+        start_battle used to make directly, fully hidden behind that black
+        hold the same way _swap_map's map-load is hidden behind the warp
+        fade's black."""
+        self._battle_transition_elapsed += dt_ms
+        if self._battle_transition_phase == "anim":
+            frame_ms = _BATTLE_TRANSITION_ANIM_MS / len(self._battle_transition_frames)
+            self._battle_transition_frame_idx = min(
+                int(self._battle_transition_elapsed / frame_ms),
+                len(self._battle_transition_frames) - 1,
+            )
+            if self._battle_transition_elapsed >= _BATTLE_TRANSITION_ANIM_MS:
+                self._battle_transition_phase = "hold"
+                self._battle_transition_elapsed = 0
+        elif self._battle_transition_phase == "hold":
+            if self._battle_transition_elapsed >= _BATTLE_TRANSITION_HOLD_MS:
+                pending = self._pending_battle
+                self.battle_scene = BattleScene(pending["enemy_id"], rng=self._enemy_rng,
+                                                 roster=self.roster, level_override=pending["level"])
+                self._battle_source_enemy = pending["source_enemy"]
+                self._pending_battle = None
+                self._battle_transition_phase = None
+                self._battle_transition_frames = None
+
+    def trigger_scripted_encounter(self, enemy_id: str, level: int | None = None) -> None:
+        """Stub hook for a future Event System action (e.g. `then: [battle:
+        enemy_id]`) -- the general if/then/else executor isn't built yet
+        (see README's Event System section), so nothing can author this
+        from YAML today. Not called from anywhere yet; exists so a later
+        scripted "boss appears after dialogue" flow has one obvious place to
+        wire into, without duplicating start_battle's setup inline wherever
+        that turns out to be triggered from."""
+        self.start_battle(enemy_id, level=level, source_enemy=None)
+
+    def _end_battle(self) -> None:
+        """Tear down self.battle_scene once it reports `finished` (see
+        BattleScene's docstring) and apply the outcome. A win credits
+        rewards and drops the defeated enemy from this session's list; a
+        successful RUN ("fled") credits nothing and leaves the enemy on the
+        map, since it was never defeated -- either way MELVIN's post-battle
+        hp/mp (a failed run still costs a free enemy attack) get written
+        back to the roster and the post-battle immunity window starts. A
+        loss goes to the game-over screen instead -- see _start_game_over --
+        since reverting to the last save replaces self.roster wholesale,
+        there's nothing to write back."""
+        battle = self.battle_scene.battle
+        if battle.phase == "win":
+            melvin = self.roster.get("MELVIN")
+            melvin.hp, melvin.mp = battle.party.hp, battle.party.mp
+            if self._battle_source_enemy in self.enemies:
+                self.enemies.remove(self._battle_source_enemy)
+                # Only removed from this session's in-memory list -- respawns
+                # for free next _load_map, same as spawner objects already do.
+                # FUTURE (see README roadmap): an Earthbound-style "respawn
+                # only once the defeated tile scrolls off-camera" refinement
+                # is explicitly deferred, not implemented here.
+            self._return_to_overworld_after_battle()
+            # Last, so an item-drop dialogue box (see _credit_battle_rewards)
+            # is the state that actually sticks, not overwritten back to IDLE.
+            self._credit_battle_rewards(battle)
+        elif battle.phase == "fled":
+            melvin = self.roster.get("MELVIN")
+            melvin.hp, melvin.mp = battle.party.hp, battle.party.mp
+            # source enemy is NOT removed -- a successful RUN isn't a defeat,
+            # it just stays on the map exactly where it was.
+            self._return_to_overworld_after_battle()
+        else:
+            self._start_game_over()
+
+    def _return_to_overworld_after_battle(self) -> None:
+        """Shared teardown for both a win and a successful RUN -- clears the
+        battle scene, resets to IDLE, and starts the post-battle immunity
+        window (see _update_enemies/_draw_entities for how that's used)."""
+        self.battle_scene = None
+        self._battle_source_enemy = None
+        self._battle_immunity_ms = _BATTLE_IMMUNITY_MS
+        self._immunity_blink_elapsed = 0
+        self._immunity_blink_visible = True   # always starts visible, never mid-blink
+        self.player.set_state(PlayerState.IDLE)
+
+    def _credit_battle_rewards(self, battle: BattleState) -> None:
+        """Apply a battle win's resolved rewards (already rolled inside
+        BattleState on its own seeded rng, per CLAUDE.md's RNG rule) to real
+        game state -- gold/XP/item, mirroring engine.input._open_container's
+        grant shape. XP accumulates only -- no leveling formula exists yet,
+        so PartyMember.lvl is untouched (see README roadmap)."""
+        if battle.gold_reward:
+            self.game_state.add_gold(battle.gold_reward)
+        if battle.xp_reward:
+            self.roster.get("MELVIN").xp += battle.xp_reward
+        if battle.item_reward:
+            self.inventory.add(battle.item_reward)
+            item_def = self.item_defs.get(battle.item_reward)
+            name = item_def.name if item_def else battle.item_reward
+            self.dialogue.open(self._wrap_dialogue_pages([f"Found {name}!"]))
+            self.player.set_state(PlayerState.IN_DIALOGUE)
+
+    def _start_game_over(self) -> None:
+        """A battle loss: drop the battle scene, show GAME OVER, and wait
+        for an A press (see handle_event) before reverting to the last
+        save -- see _reload_last_save. No penalty beyond that reversion
+        (discards everything since the last manual save, same as any
+        roguelike-style death)."""
+        self.battle_scene = None
+        self._battle_source_enemy = None
+        self._game_over = True
+
+    def _reload_last_save(self) -> None:
+        """Revert to `self.active_slot`'s last save, exactly the way a warp
+        lands the player on another map (_swap_map) -- goes through
+        _load_map with the *saved* map's own path, since the player may
+        have warped to a different map since they last saved, not just
+        reset position on whatever's currently loaded.
+
+        If there's no save to revert to at all (e.g. a fresh maptest.py
+        map-picker boot that was never saved), the closest reasonable
+        approximation of "start over" is a fresh Player/Inventory/
+        GameState/Roster on the map already loaded -- there's nothing to
+        revert to."""
+        if not slot_exists(self.active_slot):
+            self.player = Player.default()
+            self.inventory = Inventory()
+            self.game_state = GameState()
+            self.roster = Roster.fresh()
+            self._load_map(self.map_path)
+        else:
+            map_name, player, inventory, game_state, roster = load_from_slot(self.active_slot)
+            self.player, self.inventory, self.game_state, self.roster = \
+                player, inventory, game_state, roster
+            map_path = _MAPS_DIR / map_name / f'{map_name}.json'
+            self._load_map(map_path, spawn=(player.row, player.col), facing=player.facing)
+        self._game_over = False
+        self.player.set_state(PlayerState.IDLE)
+
+    def _draw_game_over(self, surface: pygame.Surface) -> None:
+        """Full-screen black, dialogue_font only -- same "no art yet"
+        approach as every other alpha-pass screen in this class."""
+        surface.fill((0, 0, 0))
+        title = self.dialogue_font.render("GAME OVER", False, _GAME_OVER_TEXT_COLOR)
+        surface.blit(title, ((surface.get_width() - title.get_width()) // 2,
+                              (surface.get_height() - title.get_height()) // 2))
+        prompt = self.dialogue_font.render("Press A to continue", False, _GAME_OVER_TEXT_COLOR)
+        surface.blit(prompt, ((surface.get_width() - prompt.get_width()) // 2,
+                               surface.get_height() // 2 + title.get_height() + 8))
 
     def _wrap_dialogue_pages(self, raw_pages: list[str]) -> list[str]:
         """Expand each hand-authored YAML page into one or more on-screen
@@ -1632,6 +2053,18 @@ class OverworldScene:
         where the map author put it in Tiled — nothing here hardcodes which
         layer index is "the ground."
         """
+        if self._battle_transition_phase == "hold":
+            surface.fill((0, 0, 0))   # "the battle 'loads'" -- see start_battle
+            return
+
+        if self.battle_scene is not None:
+            self.battle_scene.draw(surface)
+            return
+
+        if self._game_over:
+            self._draw_game_over(surface)
+            return
+
         surface.fill((0, 0, 0))
         cam_x, cam_y = self._camera_offset_px()
 
@@ -1647,6 +2080,9 @@ class OverworldScene:
             # but a map authored without one shouldn't hide the player.
             self._draw_entities(surface, cam_x, cam_y)
 
+        if self._battle_transition_phase == "anim":
+            self._draw_battle_transition_overlay(surface, cam_x, cam_y)
+
         if self.menu.is_open:
             self._draw_start_menu(surface)
 
@@ -1659,11 +2095,34 @@ class OverworldScene:
         if self.settings_menu.is_open:
             self._draw_settings_menu(surface)
 
+        if self.shop_menu.is_open:
+            self._draw_shop_menu(surface)
+
         if self.dialogue.is_open:
             self._draw_dialogue_box(surface)
 
         if self._transition_phase is not None:
             self._draw_transition(surface)
+
+    def _draw_battle_transition_overlay(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
+        """Battle-entry transition, "anim" phase only (see start_battle):
+        the map+entities are already drawn (normal draw() pipeline, just
+        above); this tiles the chosen animation's current frame across the
+        whole screen on top of that, screen-locked (ignores camera scroll --
+        this is a full-screen effect, not a world-space one), then redraws
+        entities once more on top of *that* so the player/NPCs/enemies stay
+        visible while the environment dissolves underneath them, per "overlay
+        on ALL tiles, leaving only the currently on screen sprites visible."
+        The frames themselves carry real per-pixel alpha (see
+        load_transition_frames) -- early frames are mostly transparent,
+        later ones opaque black, so this blit is a gradual reveal->black,
+        not an instant swap."""
+        frame = self._battle_transition_frames[self._battle_transition_frame_idx]
+        view_w, view_h = surface.get_size()
+        for y in range(0, view_h, self.tile_px):
+            for x in range(0, view_w, self.tile_px):
+                surface.blit(frame, (x, y))
+        self._draw_entities(surface, cam_x, cam_y)
 
     def _draw_transition(self, surface: pygame.Surface) -> None:
         """Solid black overlay on top of everything else, alpha ramping
@@ -1693,6 +2152,18 @@ class OverworldScene:
         cursor_y = _MENU_ROW_Y[selected_label]
         surface.blit(self.menu_assets['cursor'], (_MENU_X, cursor_y))
 
+        self._draw_gold(surface)
+
+    def _draw_gold(self, surface: pygame.Surface) -> None:
+        """Right-aligned gold readout, bottom-right of the native surface —
+        shared by the start menu and inventory screen (see callers)."""
+        font = self.dialogue_font
+        text = f"${self.game_state.gold}"
+        w = font.size(text)[0]
+        x = cfg.view_cols * self.tile_px - w - _INV_MARGIN
+        y = cfg.view_rows * self.tile_px - font.get_linesize() - _INV_MARGIN
+        surface.blit(font.render(text, False, _INV_TEXT_COLOR), (x, y))
+
     def _draw_save_menu(self, surface: pygame.Surface) -> None:
         """Save-confirm overlay on top of the start menu: static bg, cursor
         at a fixed spot per option (YES/NO) — nothing else moves."""
@@ -1714,6 +2185,7 @@ class OverworldScene:
         category = self.inventory_menu.selected_category()
         header = f"< {CATEGORY_LABELS[category]} >"
         surface.blit(font.render(header, False, _INV_TEXT_COLOR), (_INV_LIST_LEFT_X, _INV_HEADER_Y))
+        self._draw_gold(surface)
 
         view_h = cfg.view_rows * self.tile_px
         for row in range((view_h - _INV_LIST_TOP_Y) // line_h):
@@ -1800,6 +2272,64 @@ class OverworldScene:
             cursor = "> " if selected else "  "
             surface.blit(font.render(f"{cursor}{label}", False, color), (_SET_LABEL_X, y))
             surface.blit(font.render(f"< {values[i]} >", False, _SET_TEXT_COLOR), (_SET_VALUE_X, y))
+
+    def _draw_shop_menu(self, surface: pygame.Surface) -> None:
+        """Alpha placeholder shop screen: solid black, dialogue_font only —
+        same "no art yet" approach as inventory/settings. The shopkeeper's
+        greeting/farewell are separate dialogue-box beats (see
+        engine.input.handle_a_button/handle_b_button, engine.menu.
+        ShopMenu.pending_shop) — this screen itself opens straight on a
+        BUY/SELL mode header (E/W toggles, same "< X >" idiom as the
+        inventory screen's category header), the current mode's scrollable
+        list (N/S, clamped, cursor-highlighted like the inventory list), an
+        "x{amount} TOTAL" line while a quantity's being picked, the current
+        gold total, and a one-line result message after a transaction (see
+        engine.input._confirm_shop_transaction).
+        """
+        surface.fill((0, 0, 0))
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+
+        shop = self._resolve_shop()
+        if shop is None:
+            return   # defensive -- handle_a_button closes the menu itself if this happens
+
+        mode_label = "BUY" if self.shop_menu.mode == BUY else "SELL"
+        surface.blit(font.render(f"< {mode_label} >", False, _SHOP_TEXT_COLOR),
+                     (_SHOP_LIST_LEFT_X, _SHOP_HEADER_Y))
+
+        if self.shop_menu.mode == BUY:
+            rows = [(self.item_defs[e["item"]].name if e["item"] in self.item_defs else e["item"], e["price"])
+                    for e in shop.stock]
+        else:
+            sellable = self.inventory.sellable_items(self.item_defs)
+            rows = [(self.item_defs[item_id].name, self.item_defs[item_id].value) for item_id in sellable]
+
+        if not rows:
+            surface.blit(font.render("(nothing here)", False, _SHOP_DIM_COLOR),
+                         (_SHOP_LIST_LEFT_X, _SHOP_LIST_TOP_Y))
+        else:
+            cursor = self.shop_menu.cursor
+            for i, (name, price) in enumerate(rows):
+                prefix = "> " if i == cursor else "  "
+                color = _SHOP_TEXT_COLOR if i == cursor else _SHOP_DIM_COLOR
+                line = f"{prefix}{name}  ${price}"
+                surface.blit(font.render(line, False, color),
+                             (_SHOP_LIST_LEFT_X, _SHOP_LIST_TOP_Y + i * line_h))
+
+        if self.shop_menu.picking_amount and rows:
+            _, price = rows[self.shop_menu.cursor]
+            amount = self.shop_menu.amount
+            y = cfg.view_rows * self.tile_px - line_h * 3 - _SHOP_MARGIN
+            surface.blit(font.render(f"x{amount}  TOTAL ${price * amount}", False, _SHOP_TEXT_COLOR),
+                         (_SHOP_LIST_LEFT_X, y))
+
+        if self.shop_menu.message:
+            y = cfg.view_rows * self.tile_px - line_h - _SHOP_MARGIN
+            surface.blit(font.render(self.shop_menu.message, False, _SHOP_TEXT_COLOR),
+                         (_SHOP_LIST_LEFT_X, y))
+
+        self._draw_gold(surface)
 
     def _player_screen_row(self) -> float:
         """Player sprite's current top-edge y position on screen, in pixels."""
@@ -1895,21 +2425,25 @@ class OverworldScene:
                                           round(enemy.row * self.tile_px) - cam_y - y_overhang))
 
         player_surf = get_party_frame(self.sprites, 'melvin', self.player.facing, self._player_anim)
-        if player_surf:
+        # During the post-battle immunity window, blink the player sprite
+        # on/off (_immunity_blink_visible, toggled in update()) so the
+        # window actually reads as "briefly safe" instead of being invisible.
+        if player_surf and (self._battle_immunity_ms <= 0 or self._immunity_blink_visible):
             vr, vc = self._player_vis
             surface.blit(player_surf, (round(vc * self.tile_px) - cam_x, round(vr * self.tile_px) - cam_y))
 
 
 # ── Battle scene ──────────────────────────────────────────────────────────
 #
-# Debug/graphical-test battle screen — see maptest.py's "battles" mode.
-# First pass, scoped deliberately narrow (see engine.battle's module
-# docstring): MELVIN vs. one enemy, auto-attack only, no player-driven
-# action menu wired up yet. The 4-option list at the bottom is drawn so the
-# layout's blocked out, but it's cosmetic — nothing routes input to it, and
-# ATTACK is the only option actually happening. When ITEM/SPECIAL become
-# real, their exact scope needs to be nailed down first — don't wire either
-# up based on a guess.
+# Graphical battle screen — wired into real play via OverworldScene.
+# start_battle (touching an enemy on the overworld), and also reachable
+# standalone via maptest.py's isolated "battles" debug mode. Scoped
+# deliberately narrow (see engine.battle's module docstring): MELVIN vs.
+# one enemy, no full party. The 4-option ATTACK/ITEM/DEFEND/RUN row is
+# player-driven (N/S cursor + A confirm); ATTACK and RUN both do something
+# when confirmed, ITEM/DEFEND are still selectable rows with no effect
+# wired in yet. When they become real, their exact scope needs to be
+# nailed down first — don't wire either up based on a guess.
 
 _BATTLE_TOP_H     = 40      # top textbox height, px — battle text
 _BATTLE_BOTTOM_H  = 56      # bottom textbox height, px — party status + stub menu
@@ -1917,8 +2451,13 @@ _BATTLE_MARGIN    = 8
 _BATTLE_TEXT_COLOR = (255, 255, 255)
 _BATTLE_DIM_COLOR  = (110, 110, 110)   # stub menu options other than ATTACK
 _BATTLE_MENU_X    = 160     # bottom-right pane start — same split as the start menu's _MENU_X
-_BATTLE_MENU_OPTIONS = ("ATTACK", "ITEM", "SPECIAL", "RUN")
 _BATTLE_HOLD_MS   = 700     # pause after a line's fully typed before the next action fires
+_BATTLE_PRE_MENU_HOLD_MS = 3000   # pause after the enemy's turn message (or the
+                                   # intro line) fully types before the party's
+                                   # action menu replaces it -- long enough to
+                                   # actually read what just happened; A/B
+                                   # skips straight to the menu, see handle_event
+_BATTLE_TEXT_W    = cfg.view_cols * cfg.tile_px - 2 * _BATTLE_MARGIN   # top-box word-wrap width, px
 
 _EFFECTS_BY_NAME = {name: cls for name, cls in EFFECTS.values()}   # procgen.visualizer effects, by name
 
@@ -1937,48 +2476,123 @@ def load_battle_art(art_dir: Path, filename: str) -> pygame.Surface | None:
 
 
 class BattleScene:
-    """Debug battle screen — MELVIN vs. one enemy, auto-attack only.
+    """Graphical battle screen — MELVIN vs. one enemy.
 
     Implements the handle_event/update/draw protocol expected by
-    engine.renderer.run(), same as OverworldScene. Not reachable from normal
-    play yet — booted directly by maptest.py's "battles" mode, which prompts
-    for an enemy id from data/enemy/enemies.yaml.
+    engine.renderer.run(), same as OverworldScene. Reachable from real play
+    via OverworldScene.start_battle (touching an enemy on the overworld),
+    and also standalone via maptest.py's isolated "battles" debug mode,
+    which prompts for an enemy id from data/enemy/enemies.yaml.
+
+    The party's turn is player-driven: the ATTACK/ITEM/DEFEND/RUN row (see
+    engine.battle.BattleMenu) is only shown while it's actually waiting on a
+    choice (`self._awaiting_choice`) — N/S moves the cursor, A confirms.
+    ATTACK and RUN both do something when confirmed; ITEM/DEFEND are real
+    rows with no effect wired in yet (see engine.battle's module docstring).
+    The enemy's turn stays auto-resolved on the same hold-then-step timer as
+    before — there's no choice to make there.
+
+    `roster`/`level_override`, if given, are how a real (overworld-
+    triggered) battle threads in live party HP/MP and the already-resolved
+    overworld Enemy.level, via engine.renderer.OverworldScene.start_battle
+    — both default to None so maptest.py's isolated "battles" debug mode
+    (no save, no overworld Enemy) keeps working exactly as before: fresh
+    stats off data/party/melvin.json, a fresh level roll off EnemyDef.level.
+    Once `self.phase` (via `self.battle`) reaches "win"/"loss" and the final
+    message is fully typed, `awaiting_dismiss` goes True; one more A press
+    sets `finished` — the caller (OverworldScene) polls that to know when to
+    tear this scene down and credit/apply the outcome. Nothing polls it in
+    maptest.py's debug mode, so an extra A press there is a harmless no-op.
     """
 
-    def __init__(self, enemy_id: str, rng: random.Random | None = None):
+    def __init__(self, enemy_id: str, rng: random.Random | None = None,
+                 roster: 'Roster | None' = None, level_override: int | None = None):
         self.dialogue_font = pygame.font.Font(str(_DIALOGUE_FONT_PATH), _DIALOGUE_FONT_PT)
         self.rng = rng or random.Random()
 
         edef = load_enemy_defs()[enemy_id]
-        level = resolve_level(edef.level, self.rng)
+        level = level_override if level_override is not None else resolve_level(edef.level, self.rng)
         enemy = Fighter(name=edef.name, iq=edef.iq, weight=edef.weight,
                         sweat=edef.sweat, hair=edef.hair, level=level, is_enemy=True)
-        party = load_fighter(_PARTY_DIR / 'melvin.json')
-        self.battle = BattleState(party=party, enemy=enemy, rng=self.rng)
+        if roster is not None:
+            party = fighter_from_roster(_PARTY_DIR / 'melvin.json', roster.get('MELVIN'))
+        else:
+            party = load_fighter(_PARTY_DIR / 'melvin.json')
+        self.battle = BattleState(party=party, enemy=enemy, rng=self.rng, enemy_gold=edef.gold,
+                                   enemy_xp=edef.xp, enemy_drop_item=edef.drop_item,
+                                   enemy_drop_chance=edef.drop_chance)
 
         self.battle_art = load_battle_art(_BATTLE_ART_DIR, edef.battle_art) if edef.battle_art else None
         if self.battle_art is None:
             print(f'WARNING: no battle_art for enemy {enemy_id!r} -- it will render as nothing', flush=True)
 
-        # battle_bg pins a specific procgen.visualizer effect by name;
-        # null/omitted (the common case today) picks one at random per battle.
-        effect_cls = _EFFECTS_BY_NAME.get(edef.battle_bg) if edef.battle_bg else None
-        if effect_cls is None:
-            effect_name, effect_cls = self.rng.choice(list(EFFECTS.values()))
-        else:
-            effect_name = edef.battle_bg
+        # battle_bg is required per-enemy -- see EnemyDef.battle_bg / the
+        # enemies.yaml template. No random fallback: a missing/invalid name
+        # raises a KeyError, same as any other required enemies.yaml field.
+        effect_name = edef.battle_bg
+        effect_cls = _EFFECTS_BY_NAME[effect_name]
         self._effect = effect_cls()
         self._effect_canvas = pygame.Surface((256, 240))
         self._effect_t = 0.0
 
         self.text_box = DialogueBox()
-        self.text_box.open([f"A wild {enemy.name} (LVL {enemy.level}) appeared!"])
+        self.text_box.open([self._wrap_battle_text(f"A wild {enemy.name} (LVL {enemy.level}) appeared!")])
         self._hold_elapsed = 0
+        self.menu = BattleMenu()
+        self._awaiting_choice = False   # True once it's the party's turn and the message is fully typed
+        self.awaiting_dismiss = False   # True once phase is win/loss and the final message is fully typed
+        self.finished = False           # True once the player dismisses a win/loss screen -- see docstring
 
         print(f'Battle: MELVIN vs {enemy.name} (LVL {enemy.level})  |  background: {effect_name}', flush=True)
 
     def handle_event(self, event: pygame.event.Event) -> None:
-        pass   # auto-attack only -- nothing to route yet, see class docstring
+        if event.type != pygame.KEYDOWN:
+            return
+        if self.awaiting_dismiss:
+            if _BUTTON_KEY.get(event.key) == 'A':
+                self.finished = True
+            return
+        if self._awaiting_pre_menu_hold():
+            # Reading the enemy's (or the intro's) message -- A or B skips
+            # straight to the menu instead of waiting out
+            # _BATTLE_PRE_MENU_HOLD_MS. Only live once that message is
+            # fully typed; doesn't fast-forward the typewriter itself.
+            if _BUTTON_KEY.get(event.key) in ('A', 'B'):
+                self._show_battle_menu()
+            return
+        if not self._awaiting_choice:
+            return
+        direction = _DIR_KEY.get(event.key)
+        if direction:
+            self.menu.move_cursor(direction)
+            return
+        if _BUTTON_KEY.get(event.key) == 'A':
+            self._confirm_choice()
+
+    def _awaiting_pre_menu_hold(self) -> bool:
+        """True while the party's action menu is about to appear but hasn't
+        yet -- the message that just finished typing (the enemy's move, or
+        the intro line) is still held on screen for _BATTLE_PRE_MENU_HOLD_MS
+        first, see update(). Used so handle_event can let A/B skip it."""
+        return (self.battle.phase == "party_turn" and not self._awaiting_choice
+                and self.text_box.is_fully_revealed())
+
+    def _show_battle_menu(self) -> None:
+        self.text_box.close()   # clear the last message -- see _draw_top_box
+        self._awaiting_choice = True
+        self._hold_elapsed = 0
+
+    def _confirm_choice(self) -> None:
+        option = self.menu.selected_option()
+        if option == "ATTACK":
+            action = self.battle.step
+        elif option == "RUN":
+            action = self.battle.attempt_run
+        else:
+            return   # ITEM/DEFEND are real rows, just no-ops for now -- see class docstring
+        self._awaiting_choice = False
+        self._hold_elapsed = 0
+        self.text_box.open([self._wrap_battle_text(action())])
 
     def update(self, dt_ms: int) -> None:
         self._effect_t += dt_ms / 1000
@@ -1987,13 +2601,32 @@ class BattleScene:
         if not self.text_box.is_fully_revealed():
             return
 
+        if self.battle.phase == "party_turn":
+            if self._awaiting_choice:
+                return   # already showing the menu, nothing more to do
+            self._hold_elapsed += dt_ms
+            if self._hold_elapsed < _BATTLE_PRE_MENU_HOLD_MS:
+                return   # giving the player time to read -- see handle_event for the A/B skip
+            self._show_battle_menu()
+            return
+
         self._hold_elapsed += dt_ms
         if self._hold_elapsed < _BATTLE_HOLD_MS:
             return
-        if self.battle.phase in ("win", "loss"):
-            return   # final message stays on screen -- no return-to-map flow yet
+        if self.battle.phase in ("win", "loss", "fled"):
+            self.awaiting_dismiss = True   # final message held on screen -- A dismisses, see handle_event
+            return
         self._hold_elapsed = 0
-        self.text_box.open([self.battle.step()])
+        self.text_box.open([self._wrap_battle_text(self.battle.step())])
+
+    def _wrap_battle_text(self, text: str) -> str:
+        """Word-wrap one line of battle flavor text to the top box's width,
+        so a long line (e.g. a crit + a gold-reward line combined) breaks
+        onto multiple lines instead of running off the right edge. Passed
+        a tall rect_h so this always comes back as a single screen -- see
+        _wrap_text_to_screens -- update() opens one page per battle.step()
+        call and doesn't page through multi-screen text."""
+        return _wrap_text_to_screens(self.dialogue_font, text, _BATTLE_TEXT_W, 9999)[0]
 
     def draw(self, surface: pygame.Surface) -> None:
         self._draw_background(surface)
@@ -2038,7 +2671,16 @@ class BattleScene:
         status = f"{party.name}   HP {max(0, party.hp)}/{party.max_hp}   MP {max(0, party.mp)}/{party.max_mp}"
         surface.blit(font.render(status, False, _BATTLE_TEXT_COLOR), (_BATTLE_MARGIN, top + _BATTLE_MARGIN))
 
-        # Stub action menu -- drawn, not interactive (see class docstring).
-        for i, option in enumerate(_BATTLE_MENU_OPTIONS):
-            color = _BATTLE_TEXT_COLOR if option == "ATTACK" else _BATTLE_DIM_COLOR
-            surface.blit(font.render(option, False, color), (_BATTLE_MENU_X, top + _BATTLE_MARGIN + i * line_h))
+        if not self._awaiting_choice:
+            return   # only shown while it's actually the player's turn to pick -- see class docstring
+
+        # Own black panel behind the options, same idea as the start menu's
+        # overlay -- covers the status line's right edge so long HP/MP text
+        # can't bleed into the option column (exact position is a later tweak).
+        pygame.draw.rect(surface, (0, 0, 0), pygame.Rect(_BATTLE_MENU_X, top, view_w - _BATTLE_MENU_X, _BATTLE_BOTTOM_H))
+
+        for i, option in enumerate(BATTLE_MENU_OPTIONS):
+            prefix = "> " if i == self.menu.selected else "  "
+            color = _BATTLE_TEXT_COLOR if option in ("ATTACK", "RUN") else _BATTLE_DIM_COLOR
+            surface.blit(font.render(f"{prefix}{option}", False, color),
+                         (_BATTLE_MENU_X, top + _BATTLE_MARGIN + i * line_h))

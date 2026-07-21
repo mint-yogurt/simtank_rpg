@@ -101,6 +101,13 @@ class Inventory:
         return [item_id for item_id, item_def in defs.items()
                 if item_def.category == category and self.has(item_id)]
 
+    def sellable_items(self, defs: dict[str, ItemDef]) -> list[str]:
+        """Owned item ids with a nonzero shop value (value: 0 = unsellable,
+        per items.yaml's convention) — what a shop's SELL page lists, in
+        items.yaml's authored order."""
+        return [item_id for item_id, item_def in defs.items()
+                if item_def.value > 0 and self.has(item_id)]
+
     def to_dict(self) -> dict:
         return dict(self.counts)
 

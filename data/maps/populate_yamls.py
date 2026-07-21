@@ -9,19 +9,39 @@ argument, this script walks every subfolder of data/maps/ looking for a
 npcs_<map>.yaml / obj_<map>.yaml get written -- output always lands next to
 the map that produced it, never in data/maps/ itself.
 
-Objects are split into NPCs (type == "npc") -> npcs_<map>.yaml and
-everything else (containers, signs, warps, ...) -> obj_<map>.yaml.
+Objects are split into NPCs (type == "npc" or "shop") -> npcs_<map>.yaml and
+everything else (containers, signs, warps, ...) -> obj_<map>.yaml. A shop is
+a person first -- built from the same sprite/behavior/npc_id pipeline as any
+other NPC (see engine.renderer.NPC) -- so it's synced alongside them, not
+with the static objects.
 
 id/name/type are synced from the map on every run. New entries also get
-stub fields seeded by type (container: contents/dialogue, sign: dialogue,
-npc: dialogue/event/sprite/behavior/npc_id, warp: destination_map/
-destination_warp/facing/distance, enemy: enemy_id/level, spawner: enemies/
-spawn_chance/level) so there's a place to hand-fill them. Once you've
-filled in a field, it's yours -- re-running never overwrites or removes it,
-as long as that object's id still exists in the map's object layer.
+stub fields seeded by type (container: contents/gold/dialogue, sign:
+dialogue, healer: dialogue, npc: dialogue/event/sprite/behavior/npc_id,
+warp: destination_map/destination_warp/facing/distance, enemy:
+enemy_id/level, spawner: enemies/spawn_chance/level, shop:
+dialogue/event/sprite/behavior/npc_id/stock/farewell) so there's a place to
+hand-fill them. Once you've filled in a field, it's yours -- re-running
+never overwrites or removes it, as long as that object's id still exists in
+the map's object layer.
 
-`npc_id`, if filled in, is a key into data/npcs/npc.yaml (the master NPC
-list, loaded by engine.npc.load_npc_defs()) -- that placement's own
+`container` loot has two independent fields: `contents`, a single item id
+from data/items/items.yaml (or `null` for no item), and `gold`, a flat
+amount credited to the party's wallet on open (or `null` for no gold). A
+container can grant an item, gold, both, or neither (pure flavor text) --
+either way, opening one is single-use, same as a container with no loot at
+all.
+
+`healer` (e.g. a map's saladbar) is a full-party-heal-for-free interactable,
+Pokemon-Center style -- repeatable every visit, no flag, no cost. Its
+`dialogue` works exactly like a sign's (a flat page list, always shown);
+mechanically it's currently identical to a sign too, since party HP isn't
+live runtime state yet -- see engine.input.handle_a_button's
+TODO(party-hp) for where the actual heal gets wired in once it is.
+
+`npc_id`, if filled in (on an `npc` or `shop` object -- both share this
+field), is a key into data/npcs/npc.yaml (the master NPC list, loaded by
+engine.npc.load_npc_defs()) -- that placement's own
 `sprite`/`behavior`/`dialogue` then become optional overrides on top of the
 shared definition: set, they win for this one placement; left blank
 (null / []), they fall back to whatever npc.yaml's entry says. `event` is
@@ -61,6 +81,35 @@ Two fields, both mandatory for a spawner to ever produce anything:
 `level` on a spawner optionally overrides whichever enemy gets picked,
 same meaning as on a hardcoded `enemy` -- leave it `null` to use that
 enemy's own level.
+
+A `shop` object is a shopkeeper -- a person, not a static fixture -- so it
+lives here in npcs_<map>.yaml and uses the exact same `sprite`/`behavior`/
+`npc_id` fields any `npc` does (see the `npc_id` paragraph above). It adds
+two fields of its own:
+
+  stock: a list of `{item, price}` mappings -- `item` a key from
+    data/items/items.yaml, `price` the gold cost to buy one, e.g.:
+
+      stock:
+        - {item: forgotten_onion, price: 8}
+        - {item: bag_of_soup, price: 25}
+
+    `price` is independent of that item's own `value` in items.yaml (the
+    price a shop pays out when the player *sells* it something -- see
+    engine.inventory.ItemDef): a shop is free to mark an item up or down.
+
+  farewell: the shopkeeper's goodbye line(s), shown in a dialogue box after
+    the player backs all the way out of the buy/sell screen. Same shape as
+    `dialogue` (a flat page list, or a list of {when, unless, pages}
+    variants -- see the dialogue paragraph below) but with no npc.yaml-level
+    fallback -- it's authored per-placement only. Leave it `[]` for a shop
+    that just closes silently.
+
+Talking to a shopkeeper is talk-then-shop, same as talking to any NPC: A
+opens `dialogue` (the greeting) in a normal dialogue box first; the buy/sell
+screen only opens once that closes (see engine.menu.ShopMenu.pending_shop /
+engine.input.handle_a_button). A shop has no one-shot flag like a container
+-- both the greeting and the buy/sell screen are available every visit.
 
 Warps are one-way and hand-paired by you: place a `warp`-type object on each
 side of a door/exit, then fill in `destination_map` (the other map's folder/
@@ -113,8 +162,11 @@ def sync_map(map_path: Path) -> None:
         if layer.get("type") == "objectgroup":
             objects.extend(layer.get("objects", []))
 
-    npc_objects = [o for o in objects if o.get("type") == "npc"]
-    other_objects = [o for o in objects if o.get("type") != "npc"]
+    # A shop is a person first -- built from the exact same pipeline as any
+    # other NPC (sprite/behavior/npc_id, engine.renderer.NPC), not a
+    # separate static object -- so it's synced to npcs_<map>.yaml too.
+    npc_objects = [o for o in objects if o.get("type") in ("npc", "shop")]
+    other_objects = [o for o in objects if o.get("type") not in ("npc", "shop")]
 
     _sync_file(map_dir / f"npcs_{map_name}.yaml", npc_objects, map_name)
     _sync_file(map_dir / f"obj_{map_name}.yaml", other_objects, map_name)
@@ -123,8 +175,9 @@ def sync_map(map_path: Path) -> None:
 # Stub fields seeded onto new entries, keyed by Tiled object type. Only
 # applied when the field is missing -- never overwrites a hand-filled value.
 STUB_FIELDS = {
-    "container": {"contents": None, "dialogue": []},
+    "container": {"contents": None, "gold": None, "dialogue": []},
     "sign": {"dialogue": []},
+    "healer": {"dialogue": []},
     "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None, "npc_id": None},
     "warp": {"destination_map": None, "destination_warp": None, "facing": None, "distance": None},
     "enemy": {"enemy_id": None, "level": None},
@@ -133,6 +186,11 @@ STUB_FIELDS = {
     # stub hands you a copy-pasteable block to fill in and duplicate, rather
     # than making you remember the enemy_id/chance shape from scratch.
     "spawner": {"enemies": [{"enemy_id": None, "chance": None}], "spawn_chance": None, "level": None},
+    # A shop is a person first -- same stub shape as npc (dialogue/sprite/
+    # behavior/npc_id) plus stock (what it sells) and farewell (its goodbye
+    # line). See the `shop` doc block below for the full authoring rules.
+    "shop": {"dialogue": [], "event": None, "sprite": None, "behavior": None,
+             "npc_id": None, "stock": [], "farewell": []},
 }
 
 
@@ -156,13 +214,18 @@ def _sync_file(path: Path, objects: list, map_name: str) -> None:
     header = (
         f"# Auto-synced from {map_name}.json by populate_yamls.py.\n"
         f"# id/name/type are overwritten on every sync; missing stub fields\n"
-        f"# (dialogue, contents, event, sprite, behavior, npc_id,\n"
+        f"# (dialogue, contents, gold, event, sprite, behavior, npc_id,\n"
         f"# destination_map, destination_warp, facing, distance, enemy_id,\n"
-        f"# level, enemies, spawn_chance) are seeded per type but never\n"
-        f"# overwritten once filled in -- see STUB_FIELDS in the script.\n"
+        f"# level, enemies, spawn_chance, stock, farewell) are seeded per type\n"
+        f"# but never overwritten once filled in -- see STUB_FIELDS in the script.\n"
         f"#\n"
-        f"# npc: npc_id, if filled in, is a key into data/npcs/npc.yaml (the\n"
-        f"#   master NPC list, loaded by engine.npc.load_npc_defs()) -- this\n"
+        f"# container: contents (a single item id from data/items/items.yaml)\n"
+        f"#   and gold (a flat amount) are independent -- grant an item, gold,\n"
+        f"#   both, or neither (null/null = pure flavor text, dialogue only).\n"
+        f"#\n"
+        f"# npc: npc_id, if filled in (on an npc or shop object -- both share\n"
+        f"#   this field), is a key into data/npcs/npc.yaml (the master NPC\n"
+        f"#   list, loaded by engine.npc.load_npc_defs()) -- this\n"
         f"#   placement's own sprite/behavior/dialogue then become optional\n"
         f"#   overrides on top of that shared definition: set, they win for\n"
         f"#   this one placement; left blank (null / []), they fall back to\n"
@@ -235,7 +298,21 @@ def _sync_file(path: Path, objects: list, map_name: str) -> None:
         f"#\n"
         f"#   level (top-level, alongside spawn_chance/enemies -- not per\n"
         f"#   candidate) optionally overrides whichever enemy gets picked;\n"
-        f"#   leave it null to use that enemy's own level from enemies.yaml.\n\n"
+        f"#   leave it null to use that enemy's own level from enemies.yaml.\n"
+        f"#\n"
+        f"# shop: a shopkeeper -- a person, not a static fixture -- so it uses\n"
+        f"#   the same sprite/behavior/npc_id fields as npc above (see the\n"
+        f"#   npc paragraph). Two fields of its own: stock, a list of\n"
+        f"#   {{item, price}} mappings (item a key from data/items/items.yaml,\n"
+        f"#   price the gold cost to buy one, independent of that item's own\n"
+        f"#   sell value in items.yaml -- a shop can mark things up or down);\n"
+        f"#   and farewell, the goodbye line(s) shown in a dialogue box after\n"
+        f"#   the player backs out of the buy/sell screen (same shape as\n"
+        f"#   dialogue, but placement-only -- no npc.yaml-level fallback).\n"
+        f"#   Talking to a shopkeeper is talk-then-shop, same as any npc: A\n"
+        f"#   opens dialogue (the greeting) first; the buy/sell screen opens\n"
+        f"#   once that closes -- see engine.menu.ShopMenu.pending_shop.\n"
+        f"#   A shop has no one-shot flag -- both are available every visit.\n\n"
     )
     write_yaml(path, existing, header)
     print(f"wrote {path} ({len(objects)} objects)")

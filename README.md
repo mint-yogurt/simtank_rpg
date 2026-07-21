@@ -37,7 +37,7 @@ Warp    destination_map: castle_entrance   spawn: south_gate
 
 The engine loads the map, walks the object layer, and instantiates the right Python object per `type`. No gameplay logic is ever embedded in the map file itself.
 
-Each map lives in its own folder under `data/maps/` (e.g. `data/maps/hub_fronthouse/`), holding the Tiled JSON export plus the YAML files described next. `engine/renderer.py`'s `load_map_objects()` parses the object layer into `MapObject` records, merging in each object's `dialogue`/`sprite`/`behavior`/etc. from that folder's `obj_<map>.yaml`/`npcs_<map>.yaml`. Tile-stamp objects with a `gid` (containers/signs, placed with Tiled's tile tool) anchor at their **bottom-left** corner; objects with no `gid` (NPCs, enemies — placed with the rectangle/point tool) anchor **top-left** like a plain Tiled rectangle. `type == "sign"`, `"npc"`, and `"container"` are all interactable — face one and press A to open the Dialogue System on its `dialogue` pages (a container also grants its `contents` item, if any, and stops drawing its own `gid` once opened). `type == "warp"` objects aren't rendered or A-press interactable — they're invisible trigger tiles; walking onto one fires a transition instead (see Warps below).
+Each map lives in its own folder under `data/maps/` (e.g. `data/maps/hub_fronthouse/`), holding the Tiled JSON export plus the YAML files described next. `engine/renderer.py`'s `load_map_objects()` parses the object layer into `MapObject` records, merging in each object's `dialogue`/`sprite`/`behavior`/etc. from that folder's `obj_<map>.yaml`/`npcs_<map>.yaml`. Tile-stamp objects with a `gid` (containers/signs/healers/NPCs, placed with Tiled's tile tool) anchor at their **bottom-left** corner; objects with no `gid` (enemies/spawners — placed with the rectangle/point tool) anchor **top-left** like a plain Tiled rectangle. `type == "sign"`, `"healer"`, `"npc"`, `"shop"`, and `"container"` are all interactable — face one and press A to open the Dialogue System on its `dialogue` pages (a container also grants its `contents` item and/or `gold` amount, either or both if set, and stops drawing its own `gid` once opened). A `healer` (e.g. a map's saladbar) is meant to fully heal the party for free, every visit, no flag, Pokemon-Center style — for now it behaves exactly like a sign; party HP is live runtime state now (`engine.roster.Roster`), but the actual heal action isn't implemented yet (see `engine/input.py`'s `handle_a_button`, `TODO(party-hp)`, for where it gets wired in). A `shop` is a shopkeeper — a person, built from the exact same pipeline as `npc` (sprite/behavior/`npc_id`), not a static fixture — see the NPCs paragraph below for how its greeting/buy-sell-screen/farewell flow works. `type == "warp"` objects aren't rendered or A-press interactable — they're invisible trigger tiles; walking onto one fires a transition instead (see Warps below).
 
 **Warps.** A `warp`-type object is both a trigger tile (stepping onto it fires a map transition) and a possible landing spot (another map's warp can target it). Each warp is authored with `destination_map` (the destination map's folder/stem name) and `destination_warp` (the *name* of the warp object on that destination map to land on) — that name lookup is scoped to `destination_map`, so warp names only need to be unique within one map's object layer, never globally. `facing` (default south) and `distance` (default 0, in tiles) describe *this* warp's own landing spot whenever another warp points here — e.g. `facing: S, distance: 1` lands one tile south of the warp, so the player steps out of a doorway instead of standing on it. Warps are one-way and hand-paired: a two-way door is two separate warp objects, one on each map, each pointing at the other. A step onto a warp fades to black (`cfg.warp_fade_out_ms`), swaps the loaded map behind the fade, then fades back in (`cfg.warp_fade_in_ms`) on the destination map's landing tile — see `OverworldScene._begin_warp`/`_tick_transition`/`_swap_map`.
 
@@ -45,7 +45,7 @@ Booting into a map fresh (not via an in-game warp trip, e.g. `maptest.py`'s map 
 
 ### Map Object Sync (`data/maps/populate_yamls.py`)
 
-A dev-only script, never imported by the engine or run at runtime. It reads a map's Tiled object layer and, per object, writes a stub entry keyed by the object's Tiled `id` into either `npcs_<map>.yaml` (type `npc`) or `obj_<map>.yaml` (everything else — `container`, `sign`, `warp`, `enemy`, `spawner`) in that same map's folder. Only `id`/`name`/`type` are synced from Tiled; new entries also get type-specific stub fields to hand-fill. Re-running never overwrites a field you've already filled in — it only touches `id`/`name`/`type`, adds stubs for genuinely new objects, and warns (without deleting) if an object disappears from the map.
+A dev-only script, never imported by the engine or run at runtime. It reads a map's Tiled object layer and, per object, writes a stub entry keyed by the object's Tiled `id` into either `npcs_<map>.yaml` (type `npc` or `shop` — a shop is a person, synced alongside every other NPC) or `obj_<map>.yaml` (everything else — `container`, `sign`, `warp`, `enemy`, `spawner`) in that same map's folder. Only `id`/`name`/`type` are synced from Tiled; new entries also get type-specific stub fields to hand-fill. Re-running never overwrites a field you've already filled in — it only touches `id`/`name`/`type`, adds stubs for genuinely new objects, and warns (without deleting) if an object disappears from the map.
 
 ```
 python data/maps/populate_yamls.py                                          # syncs every map folder under data/maps/
@@ -59,6 +59,8 @@ This is how sign/container/NPC dialogue, container loot, enemy placement, and (l
 Everything that isn't map geometry is YAML under `data/`, keyed by ID and referenced from maps/other YAML — never embedded as inline logic.
 
 **NPCs.** The master list is `data/npcs/npc.yaml`, loaded by `engine.npc.load_npc_defs()`/`load_npc_sprite_specs()`. It's two sections: `sprites:` names each NPC sprite *strip* under `assets/sprites/npcs/` (`{file: <stem>, colors: [...]}` — `colors` the placeholder hex colors actually baked into that PNG); `npcs:` maps id → `sprite`/`behavior`/`facing`/`colors`/`dialogue`. A strip's width picks how it animates: 32×16 (2 frames) is a facing-less south-only idle loop; 128×16 (8 frames) is a full walk cycle and responds to `facing`. Any `npc`-type object's entry in `npcs_<map>.yaml` can set `npc_id` to reference a shared def — its own `sprite`/`behavior`/`dialogue` fields become optional overrides on top of it, filled in they win for that placement, left blank they fall back to the def. `npc_id` is additive, not required — an entry with none behaves fully inline, as before this existed.
+
+**Shops.** A `shop`-type entry lives in `npcs_<map>.yaml` right alongside `npc` ones and shares its `sprite`/`behavior`/`npc_id` fields — a shopkeeper is a person first, drawn and placed exactly like any other NPC (`engine.renderer.NPC`), not a static object. Talking to one is talk-then-shop: A opens the shopkeeper's `dialogue` (greeting) in a normal dialogue box first, same as any NPC; closing that greeting is what actually opens the buy/sell screen (`engine.menu.ShopMenu.pending_shop`, resolved in `engine.input.handle_a_button`). The buy/sell screen itself has two modes (BUY/SELL, E/W toggles) each with a scrollable, cursor-driven list — BUY shows `stock` (a list of `{item, price}` mappings, `price` independent of that item's own sell `value` in `items.yaml` — a shop can mark things up or down), SELL shows `Inventory.sellable_items()` (owned items with a nonzero `value`). Confirming a row (A) enters a quantity picker (E/W adjusts the amount, clamped to affordability/owned quantity) before actually transacting. Backing all the way out (B, not mid quantity-pick) closes the shop and, if the shopkeeper has a `farewell` line, shows it in a dialogue box too, the same paired way as the greeting — see `engine.input.handle_b_button`. A shop has no one-shot flag; both the greeting and the buy/sell screen are available every visit.
 
 **Recoloring.** An `npcs:` entry's own `colors`, if set, replaces its sprite's placeholder colors for that NPC specifically, position-matched against the sprite's own `colors` list — this is what lets two NPCs share one sprite strip but read as visually distinct characters (`engine.renderer.recolor_surface()`, computed once per unique NPC def at boot, not per frame). **Hex values must be quoted in `npc.yaml`** (`"000000"`, not `000000`) — YAML's implicit typing reads an unquoted all-digit scalar as a number, and for some digit patterns not even the *right* number (`001100` unquoted parses as octal, decimal 576) — silently wrong, no YAML error at all.
 
@@ -87,7 +89,7 @@ then:
 
 Built now (containers) or next in line: `set_flag`, `clear_flag`, `give_item`, `remove_item`, `dialogue`. Reserved for later, as more entries in this *same* list shape: `pan_camera`, `force_move`, `wait`.
 
-**Current state:** the flag store this all sits on is real and save-able (`GameState.flags`/`persistent_id`), and so is order-preserving layer compositing (see Maps above), which is what lets a triggered object's tile disappear into whatever's painted underneath it. What's actually built *on* that foundation is still one concrete case, not the general `if`/`then`/`else` evaluator sketched above: containers. Every container gets its flag for free via `persistent_id(map_name, object_name)` — no registry, no per-object declaration. Opening one sets that flag and is inert afterward, one open, ever; a container with `contents` set also grants it, appending a synthesized `"Received {item name}."` page — see `engine.input._open_container`.
+**Current state:** the flag store this all sits on is real and save-able (`GameState.flags`/`persistent_id`), and so is order-preserving layer compositing (see Maps above), which is what lets a triggered object's tile disappear into whatever's painted underneath it. What's actually built *on* that foundation is still one concrete case, not the general `if`/`then`/`else` evaluator sketched above: containers. Every container gets its flag for free via `persistent_id(map_name, object_name)` — no registry, no per-object declaration. Opening one sets that flag and is inert afterward, one open, ever; a container with `contents` set grants that item, appending a synthesized `"Received {item name}."` page, and a container with `gold` set independently credits that amount to the party's wallet (`GameState.add_gold`), appending a synthesized `"Found ${amount}."` page — a container can grant either, both, or neither — see `engine.input._open_container`.
 
 Still not built: the general `if`/`if_not` condition check and `then`/`else` action-list executor, conditional dialogue for signs (NPCs have their own narrower flag-variant mechanism now — see Dialogue above), locked warps, and the `pan_camera`/`force_move`/`wait` action kinds. Also scoped but not designed at all yet: **animated tiles** (frame-cycling GIDs — how that interacts with the current one-surface-per-GID tile lookup isn't decided).
 
@@ -99,7 +101,7 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 
 ### Content Pipeline (Tiled + YAML)
 - [x] Tiled JSON import — tile layers, tileset `walkable` property → passability grid, GID rendering, clamped camera; multiple tilesets per map, mirrored tiles
-- [x] Object layer → engine objects — `container`/`sign`/`npc`/`enemy`/`spawner`/`warp`, synced to editable YAML via `data/maps/populate_yamls.py`
+- [x] Object layer → engine objects — `container`/`sign`/`healer`/`npc`/`enemy`/`spawner`/`warp`, synced to editable YAML via `data/maps/populate_yamls.py`
 - [x] Order-preserving layer compositing — real Tiled layer order, not a hardcoded "first layer below" rule
 - [x] Warps — fade-to-black map transitions, landing-spot offset/facing
 - [x] Global game state / flags (`engine/game_state.py`) + `persistent_id()` per-object keys
@@ -112,6 +114,9 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [x] Conditional NPC dialogue — flag-gated `{when, unless, pages}` variants, inline on an NPC's def or placement (`engine.npc.DialogueVariant`/`resolve_dialogue`); narrower than the Event System below (conditions only, no actions), and signs don't have it yet
 - [ ] NPC logic YAML — richer scripted NPC behavior (actions, not just dialogue conditions) via the general Event System
 - [ ] Animated tiles — not designed yet
+- [ ] Healer object type (`healer`, e.g. a map's saladbar) — scaffolded (Tiled type, YAML stub, `engine.input` interact path), but the actual full-party heal is a stub — blocked on party HP becoming live runtime state (see Items & Abilities below); today it behaves exactly like a sign
+- [x] Currency — `GameState.gold`/`add_gold`/`spend_gold` (saves for free via `variables`), HUD readout on the start menu + inventory screen, container `gold` grants, battle win reward computed (`BattleState.gold_reward`) but not yet credited — see Visuals & UI below for the battle-crediting blocker
+- [x] Shops — `shop`-type object, a shopkeeper built from the same pipeline as `npc` (sprite/behavior/`npc_id`, `engine.renderer.NPC`), talk-then-shop dialogue flow (greeting → buy/sell screen → farewell, `engine.menu.ShopMenu`), quantity-picker BUY/SELL against `Inventory`/`GameState.gold`
 
 ### Input & Core Game Loop
 - [x] Keyboard input, held-key axis resolution (`engine/input.py`) — real 8-directional movement, tap-to-turn vs. hold-to-walk
@@ -143,11 +148,14 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [ ] Updated and expanded tilesets
 - [ ] Items in the world — pickup system, equip slots + stat effects
 - [ ] Named locations — towns, dungeons, overworld landmarks
+- [ ] Enemy respawn tuning — a defeated `enemy`/`spawner` placement currently respawns on any map reload (leaving and re-entering), the same mechanism spawners already use every reload; consider an Earthbound-style refinement where respawn only happens once the defeated tile has scrolled off-camera, since maps are large
 
 ### Visuals & UI
-- [x] Battle resolver (`engine/battle.py`, headless `Fighter`/`BattleState`) + graphical debug screen (`engine.renderer.BattleScene`) — MELVIN vs. one enemy, auto-attack only
+- [x] Battle resolver (`engine/battle.py`, headless `Fighter`/`BattleState`) + graphical debug screen (`engine.renderer.BattleScene`) — MELVIN vs. one enemy. Wired into real play: touching an enemy on the overworld starts a battle (`OverworldScene.start_battle`, gated by a post-battle immunity window so the player isn't instantly regrabbed); a win credits gold/XP/an item drop (`enemies.yaml`'s `xp`/`drop_item`/`drop_chance` fields) through `engine.roster.Roster`/`GameState`/`Inventory` and returns the player to their exact overworld spot; a loss shows a GAME OVER screen and reverts to the last save (discarding everything since, no other penalty). `maptest.py`'s isolated `battles` debug mode still works unchanged, for testing any enemy without a save. A scripted-encounter stub (`OverworldScene.trigger_scripted_encounter`) exists for a future cutscene/dialogue-triggered fight — not callable from anywhere yet, blocked on the general Event System below. Post-battle, the player gets a 2-second immunity window (blinking sprite) before touch-triggering another battle, so a win/flee doesn't instantly re-grab them.
+- [x] Battle-entry transition — touching an enemy no longer cuts straight to the battle screen. A randomly-picked 8-frame dissolve animation (`assets/fx/transitions.png`, one row per variant, `_BATTLE_TRANSITION_ANIM_COUNT` finished so far) tiles across the whole screen over 2 seconds while player/NPC/enemy sprites stay visible on top, then holds on solid black for 0.5 seconds before the battle screen actually appears (`OverworldScene._tick_battle_transition`/`_draw_battle_transition_overlay`). Fully pauses gameplay and swallows input throughout.
 - [ ] Battle screen overhaul — real art (currently plain textboxes + procgen backgrounds)
-- [ ] Player-driven battle action menu — ATTACK/ITEM/SPECIAL/RUN row is drawn but not interactive; ITEM/SPECIAL scope isn't decided, ask before implementing
+- [x] Player-driven battle action menu — ATTACK/ITEM/DEFEND/RUN row, N/S cursor + A confirm, hidden until the player's turn actually starts (a ~3s post-turn text hold, skippable with A/B, precedes it so results are readable before the menu reappears). ATTACK and RUN both do something when confirmed; ITEM/DEFEND are real selectable rows with no effect wired in yet — ask before implementing. SPECIAL isn't in the row at all — see the per-member specials table below, unlocked by a story flag or player level, not just by existing in the party
+- [x] RUN — level-scaled escape chance (`engine.battle.try_run`): 40% at equal average-party-vs-enemy level (currently just MELVIN's level, since battle is still 1v1 — becomes a real average once full-party battles exist), ±3%/level of difference, clamped to 5–95%, plus +15% per failed attempt this battle so a run always eventually succeeds. Success ends the battle with no rewards and leaves the enemy on the map (it wasn't defeated); failure costs the turn, same as a miss
 - [ ] Full party in battle (currently MELVIN-only, 1v1) — party specials are designed but not implemented:
 
   | Member | Special | Effect | MP cost |
@@ -157,9 +165,9 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
   | POOTS | SNACK | Heals a party member 15–25% max HP | 6 |
   | SMELTRUD | TICKLE | +15% ally damage for 2 turns | 5 |
 
-- [ ] Tile-swipe battle transition
 - [ ] Party status panel (HP, MP, level, XP per member)
 - [ ] Battle-speed config (separate from movement speed)
+- [ ] XP → level-up conversion — `engine.roster.PartyMember.xp` accumulates on a battle win now, but no formula/thresholds are designed yet; `lvl` stays exactly what `data/party/*.json` says until this is built
 
 ---
 
@@ -173,6 +181,7 @@ simtank_rpg/
 │   ├── menu.py             # StartMenu + SaveMenu + InventoryMenu — cursor state, no pygame
 │   ├── inventory.py        # ItemDef/load_item_defs() + Inventory (shared item-id → quantity pool)
 │   ├── game_state.py       # GameState (flags/variables) + persistent_id()
+│   ├── roster.py           # Roster/PartyMember — live party HP/MP/XP/level, save-round-trippable
 │   ├── save.py             # save_to_slot/load_from_slot/clear_slot/slot_exists — JSON under saves/
 │   ├── dialogue.py         # DialogueBox — paged, typewriter-revealed dialogue state
 │   ├── renderer.py         # THE renderer: app loop, Tiled map/tileset/object-layer loading,
@@ -215,7 +224,7 @@ simtank_rpg/
 │   │       interior_town1/, interior_wc_deptstore/, interior_hub_rearhouse/
 │   │       # all synced to obj_/npcs_ YAML except `town`, still fresh — see populate_yamls.py
 │   └── party/               # character sheet JSONs
-├── tests/                   # pytest suite — currently scaffolding only, no cases yet
+├── tests/                   # unittest suite (no pytest in .venv) — game_state/inventory/menu/battle/input coverage
 ├── saves/                   # gitignored — slot1.json.. written by engine/save.py, nothing checked in
 ├── maptest.py               # debug entry point — prompts map/battle/debug screen
 └── config.json               # pacing, display geometry, tunable params
@@ -226,9 +235,11 @@ simtank_rpg/
 - New tilesets → image + property export in `assets/tiles/`.
 - New items → `data/items/items.yaml`.
 - New enemies → add an entry to `data/enemy/enemies.yaml` and drop its overworld sprite strip in `assets/sprites/enemies/` (filename stem must match the entry's `sprite` field) and, for a battle-screen portrait, a full-size PNG in `assets/tiles/enemies/` (matched by the entry's `battle_art` field). Place it on a map by adding an `enemy`/`spawner` object in Tiled, then running `populate_yamls.py` to stub `obj_<map>.yaml` and hand-filling `enemy_id`/`level` (or `enemies`/`spawn_chance`/`level` for a spawner).
-- New container loot → set that container's `contents:` (in its map's `obj_<map>.yaml`, hand-filled after `populate_yamls.py` stubs it to `null`) to an item id from `data/items/items.yaml`. Leave it `null` for a container that's dialogue-only. To make it visually empty out on open, paint the "opened" tile on a tile layer beneath where the container object sits.
+- New container loot → in its map's `obj_<map>.yaml` (hand-filled after `populate_yamls.py` stubs both to `null`), set `contents:` to an item id from `data/items/items.yaml` and/or `gold:` to a flat amount — independent fields, set either, both, or leave both `null` for a container that's dialogue-only. To make it visually empty out on open, paint the "opened" tile on a tile layer beneath where the container object sits.
+- New healer (e.g. a saladbar) → place a `healer`-type object in Tiled, run `populate_yamls.py` to stub its `dialogue:` in `obj_<map>.yaml`, fill in the pages. Mechanically it's a stub — party HP is live state now (`engine.roster.Roster`), but the actual full-heal action isn't implemented yet (see Roadmap); today it just shows dialogue, same as a sign.
 - New NPC sprite → drop a strip PNG in `assets/sprites/npcs/` (32×16 south-only 2-frame idle, or 128×16 full 8-frame walk cycle), then add an entry under `sprites:` in `data/npcs/npc.yaml` pointing `file:` at its filename stem and listing its placeholder `colors:` (hex, **quoted**).
 - New reusable NPC → add an entry under `npcs:` in `data/npcs/npc.yaml` referencing one of those sprite ids, optionally its own `colors:`/`facing:`, then set `npc_id` to that entry's key on any placement's `npcs_<map>.yaml` entry. Leave a placement's own `sprite`/`behavior`/`dialogue` blank to inherit from the def, fill one in to override it for just that placement.
+- New shop → place a `shop`-type object in Tiled (a shopkeeper is a person — same sprite/behavior rules as any `npc`), run `populate_yamls.py` to stub it into `npcs_<map>.yaml`, then fill in `sprite`/`behavior`/`npc_id` same as an NPC, `dialogue:` for the greeting, `farewell:` for the goodbye line, and `stock:` (a list of `{item, price}` mappings) for what it sells.
 - New abilities → `data/abilities/` (not created yet — see Roadmap).
 
 ---
@@ -241,7 +252,9 @@ python maptest.py           # prompts: map / battles / debug screen (debug scree
                              # `map` lists every folder under data/maps/ — pick one to open it
                              # in the real game loop
                              # `battles` lists every enemy in data/enemy/enemies.yaml — pick
-                             # one to fight MELVIN 1v1 (auto-attack only, see Roadmap)
+                             # one to fight MELVIN 1v1 in an isolated debug battle, no
+                             # save/overworld involved (see Roadmap for the real, in-game
+                             # touch-trigger path via `map` mode)
 ```
 
 All dependencies (pygame, Pillow, PyYAML) are in `.venv/`.
