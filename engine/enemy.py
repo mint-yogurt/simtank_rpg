@@ -60,6 +60,16 @@ class EnemyDef:
                                           #   for the full list) -- this enemy's
                                           #   battle background. Required, no
                                           #   random fallback.
+    intro_text:     str                  # shown when the battle screen opens,
+                                          #   replacing the old generic "A wild
+                                          #   X appeared!" line. Plain flavor
+                                          #   text, no level/name interpolation.
+                                          #   Required, no fallback.
+    defeat_text:    str                  # appended to the fatal attack's flavor
+                                          #   line when this enemy dies (see
+                                          #   engine.battle.BattleState.
+                                          #   _step_party_attack). Required, no
+                                          #   fallback.
     iq:             int
     weight:         int
     sweat:          int
@@ -85,6 +95,8 @@ def load_enemy_defs(path: Path = _ENEMY_DEFS_PATH) -> dict[str, EnemyDef]:
             sprite        = entry["sprite"],
             battle_art    = entry.get("battle_art"),
             battle_bg     = entry["battle_bg"],
+            intro_text    = entry["intro_text"],
+            defeat_text   = entry["defeat_text"],
             iq            = entry["iq"],
             weight        = entry["weight"],
             sweat         = entry["sweat"],

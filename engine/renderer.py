@@ -2520,7 +2520,7 @@ class BattleScene:
             party = load_fighter(_PARTY_DIR / 'melvin.json')
         self.battle = BattleState(party=party, enemy=enemy, rng=self.rng, enemy_gold=edef.gold,
                                    enemy_xp=edef.xp, enemy_drop_item=edef.drop_item,
-                                   enemy_drop_chance=edef.drop_chance)
+                                   enemy_drop_chance=edef.drop_chance, enemy_defeat_text=edef.defeat_text)
 
         self.battle_art = load_battle_art(_BATTLE_ART_DIR, edef.battle_art) if edef.battle_art else None
         if self.battle_art is None:
@@ -2536,7 +2536,7 @@ class BattleScene:
         self._effect_t = 0.0
 
         self.text_box = DialogueBox()
-        self.text_box.open([self._wrap_battle_text(f"A wild {enemy.name} (LVL {enemy.level}) appeared!")])
+        self.text_box.open([self._wrap_battle_text(edef.intro_text)])
         self._hold_elapsed = 0
         self.menu = BattleMenu()
         self._awaiting_choice = False   # True once it's the party's turn and the message is fully typed

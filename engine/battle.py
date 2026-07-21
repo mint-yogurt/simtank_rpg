@@ -323,6 +323,9 @@ class BattleState:
     enemy_xp:    int | list[int] | None = None   # raw EnemyDef.xp, threaded in by the caller
     enemy_drop_item:   str | None = None          # raw EnemyDef.drop_item, threaded in by the caller
     enemy_drop_chance: float = 0.0                 # raw EnemyDef.drop_chance, threaded in by the caller
+    enemy_defeat_text: str | None = None           # raw EnemyDef.defeat_text, threaded in by the caller --
+                                                     #   appended to the fatal attack's flavor line, see
+                                                     #   _step_party_attack. None only in tests that don't set it.
     gold_reward: int | None = None                # resolved once the win fires; None until then
     xp_reward:   int | None = None                # resolved once the win fires; None until then
     item_reward: str | None = None                 # resolved item id, or None if no drop rolled/set
@@ -356,7 +359,7 @@ class BattleState:
         flavor = _fmt_attack(res)
         if not self.enemy.alive:
             self.phase = "win"
-            flavor += f" {self.enemy.name} is defeated!"
+            flavor += f" {self.enemy_defeat_text}" if self.enemy_defeat_text else f" {self.enemy.name} is defeated!"
             self.journal.log_event({"type": "ENEMY_KILLED", "tick": self.round,
                                      "enemy": self.enemy.name, "enemy_lvl": self.enemy.level})
             self.journal.log_event({"type": "BATTLE_WIN", "tick": self.round,

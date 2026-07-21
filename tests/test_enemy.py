@@ -9,6 +9,8 @@ some_enemy:
   name: "SOME ENEMY"
   sprite: some_enemy
   battle_bg: static
+  intro_text: "SOME ENEMY appears."
+  defeat_text: "SOME ENEMY is defeated."
   iq: 50
   weight: 100
   sweat: 5
@@ -23,6 +25,8 @@ some_enemy:
   name: "SOME ENEMY"
   sprite: some_enemy
   battle_bg: static
+  intro_text: "SOME ENEMY appears."
+  defeat_text: "SOME ENEMY is defeated."
   iq: 50
   weight: 100
   sweat: 5

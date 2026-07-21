@@ -33,14 +33,15 @@ class _AlwaysHitRNG:
         return lo
 
 
-def _make_battle(enemy_gold=None, enemy_xp=None, enemy_drop_item=None, enemy_drop_chance=0.0) -> BattleState:
+def _make_battle(enemy_gold=None, enemy_xp=None, enemy_drop_item=None, enemy_drop_chance=0.0,
+                  enemy_defeat_text=None) -> BattleState:
     party = Fighter(name="MELVIN", iq=100, weight=500, sweat=5, hair=10,
                      level=10, hp=100, max_hp=100)
     enemy = Fighter(name="RAT", iq=40, weight=90, sweat=1, hair=1,
                      level=1, is_enemy=True, hp=1, max_hp=1)
     return BattleState(party=party, enemy=enemy, rng=_AlwaysHitRNG(), enemy_gold=enemy_gold,
                         enemy_xp=enemy_xp, enemy_drop_item=enemy_drop_item,
-                        enemy_drop_chance=enemy_drop_chance)
+                        enemy_drop_chance=enemy_drop_chance, enemy_defeat_text=enemy_defeat_text)
 
 
 class TestGoldReward(unittest.TestCase):
@@ -103,6 +104,18 @@ class TestItemReward(unittest.TestCase):
         battle = _make_battle(enemy_drop_item=None, enemy_drop_chance=1.0)
         battle._step_party_attack()
         self.assertIsNone(battle.item_reward)
+
+
+class TestDefeatText(unittest.TestCase):
+    def test_custom_defeat_text_used_when_set(self):
+        battle = _make_battle(enemy_defeat_text="RAT explodes in a puff of glitter.")
+        flavor = battle._step_party_attack()
+        self.assertIn("RAT explodes in a puff of glitter.", flavor)
+
+    def test_falls_back_to_generic_line_when_unset(self):
+        battle = _make_battle(enemy_defeat_text=None)
+        flavor = battle._step_party_attack()
+        self.assertIn("RAT is defeated!", flavor)
 
 
 class TestRunChance(unittest.TestCase):
