@@ -16,113 +16,16 @@ other NPC (see engine.renderer.NPC) -- so it's synced alongside them, not
 with the static objects.
 
 id/name/type are synced from the map on every run. New entries also get
-stub fields seeded by type (container: contents/gold/dialogue, sign:
-dialogue, healer: dialogue, npc: dialogue/event/sprite/behavior/npc_id,
-warp: destination_map/destination_warp/facing/distance, enemy:
-enemy_id/level, spawner: enemies/spawn_chance/level, shop:
-dialogue/event/sprite/behavior/npc_id/stock/farewell) so there's a place to
+stub fields seeded by type (see STUB_FIELDS below) so there's a place to
 hand-fill them. Once you've filled in a field, it's yours -- re-running
 never overwrites or removes it, as long as that object's id still exists in
 the map's object layer.
 
-`container` loot has two independent fields: `contents`, a single item id
-from data/items/items.yaml (or `null` for no item), and `gold`, a flat
-amount credited to the party's wallet on open (or `null` for no gold). A
-container can grant an item, gold, both, or neither (pure flavor text) --
-either way, opening one is single-use, same as a container with no loot at
-all.
-
-`healer` (e.g. a map's saladbar) is a full-party-heal-for-free interactable,
-Pokemon-Center style -- repeatable every visit, no flag, no cost. Its
-`dialogue` works exactly like a sign's (a flat page list, always shown);
-mechanically it's currently identical to a sign too, since party HP isn't
-live runtime state yet -- see engine.input.handle_a_button's
-TODO(party-hp) for where the actual heal gets wired in once it is.
-
-`npc_id`, if filled in (on an `npc` or `shop` object -- both share this
-field), is a key into data/npcs/npc.yaml (the master NPC list, loaded by
-engine.npc.load_npc_defs()) -- that placement's own
-`sprite`/`behavior`/`dialogue` then become optional overrides on top of the
-shared definition: set, they win for this one placement; left blank
-(null / []), they fall back to whatever npc.yaml's entry says. `event` is
-unrelated -- still just a reserved stub, not wired to anything yet.
-
-`enemy` and `spawner` objects reference data/enemy/enemies.yaml (the
-master enemy list, loaded by engine.enemy.load_enemy_defs()). `enemy` is a
-hardcoded placement: `enemy_id` picks which entry (a key from
-data/enemy/enemies.yaml, e.g. `fat_guy2`), `level` optionally overrides
-that entry's own level/level-range for this one placement -- leave it
-`null` to just use the entry's own level.
-
-`spawner` rolls once every time the map loads (a fresh boot or any warp
-arrival/re-arrival -- see engine/renderer.py's OverworldScene._load_map).
-Two fields, both mandatory for a spawner to ever produce anything:
-
-  spawn_chance: a plain number from 0.0 to 1.0 -- the probability THIS
-    spawner produces an enemy at all on this load. 0.0 = never, 1.0 =
-    always, 0.3 = roughly 3 times in 10. Not a percentage (don't write 30).
-
-  enemies: a YAML list of mappings, each with an enemy_id (a key from
-    data/enemy/enemies.yaml) and a chance (any positive number -- a
-    RELATIVE WEIGHT against the other entries in this same list, not a
-    probability by itself). Once spawn_chance passes, exactly one enemy
-    from this list is picked, weighted by these numbers -- never zero,
-    never more than one. Example, two candidates weighted 3:1 (75%/25%
-    split of whichever enemy spawns), gated at a 40% chance to spawn
-    anything at all:
-
-      spawn_chance: 0.4
-      enemies:
-        - enemy_id: fat_guy2
-          chance: 3
-        - enemy_id: parkinglotguy
-          chance: 1
-
-`level` on a spawner optionally overrides whichever enemy gets picked,
-same meaning as on a hardcoded `enemy` -- leave it `null` to use that
-enemy's own level.
-
-A `shop` object is a shopkeeper -- a person, not a static fixture -- so it
-lives here in npcs_<map>.yaml and uses the exact same `sprite`/`behavior`/
-`npc_id` fields any `npc` does (see the `npc_id` paragraph above). It adds
-two fields of its own:
-
-  stock: a list of `{item, price}` mappings -- `item` a key from
-    data/items/items.yaml, `price` the gold cost to buy one, e.g.:
-
-      stock:
-        - {item: forgotten_onion, price: 8}
-        - {item: bag_of_soup, price: 25}
-
-    `price` is independent of that item's own `value` in items.yaml (the
-    price a shop pays out when the player *sells* it something -- see
-    engine.inventory.ItemDef): a shop is free to mark an item up or down.
-
-  farewell: the shopkeeper's goodbye line(s), shown in a dialogue box after
-    the player backs all the way out of the buy/sell screen. Same shape as
-    `dialogue` (a flat page list, or a list of {when, unless, pages}
-    variants -- see the dialogue paragraph below) but with no npc.yaml-level
-    fallback -- it's authored per-placement only. Leave it `[]` for a shop
-    that just closes silently.
-
-Talking to a shopkeeper is talk-then-shop, same as talking to any NPC: A
-opens `dialogue` (the greeting) in a normal dialogue box first; the buy/sell
-screen only opens once that closes (see engine.menu.ShopMenu.pending_shop /
-engine.input.handle_a_button). A shop has no one-shot flag like a container
--- both the greeting and the buy/sell screen are available every visit.
-
-Warps are one-way and hand-paired by you: place a `warp`-type object on each
-side of a door/exit, then fill in `destination_map` (the other map's folder/
-stem name) and `destination_warp` (the *name* of the warp object on that
-other map to land on). Names only need to be unique within a single map's
-object layer, not globally -- lookup is always scoped to destination_map
-first. `facing` is which way the player faces after spawning at this warp
-(used when something else's destination_warp points here); leave it blank
-to default to south. `distance` offsets the landing spot that many tiles
-from this warp's own tile, in the `facing` direction -- e.g. facing: S,
-distance: 1 lands one tile south of this warp, so the player visibly steps
-out of a doorway instead of standing on it. Leave it blank (or 0) to land
-exactly on this warp's tile.
+Every written file gets a generated header documenting only the object
+types actually present in that file -- see TYPE_DOCS below, the single
+source of truth for both the stub fields and the header text. Add a new
+object type to Tiled, run this script, and its docs appear in the header
+right along with the stub fields; nothing here needs updating by hand.
 
 Usage:
     python data/maps/populate_yamls.py data/maps/hub_fronthouse/hub_fronthouse.json
@@ -186,12 +89,145 @@ STUB_FIELDS = {
     # stub hands you a copy-pasteable block to fill in and duplicate, rather
     # than making you remember the enemy_id/chance shape from scratch.
     "spawner": {"enemies": [{"enemy_id": None, "chance": None}], "spawn_chance": None, "level": None},
-    # A shop is a person first -- same stub shape as npc (dialogue/sprite/
-    # behavior/npc_id) plus stock (what it sells) and farewell (its goodbye
-    # line). See the `shop` doc block below for the full authoring rules.
     "shop": {"dialogue": [], "event": None, "sprite": None, "behavior": None,
              "npc_id": None, "stock": [], "farewell": []},
 }
+
+# Canonical display order for whichever of these types show up in one file's
+# header -- not alphabetical, just a stable, readable order.
+_TYPE_ORDER = ["container", "sign", "healer", "warp", "enemy", "spawner", "npc", "shop"]
+
+# Per-type header block: a bare copy-pastable template (every field, no
+# values, no comments) followed by one filled-in example with a trailing
+# comment on each field. No prose -- if a field's meaning isn't obvious from
+# its example value + one comment, the comment needs fixing, not lengthening.
+TYPE_DOCS = {
+    "container": """\
+# container -- template:
+#   contents:
+#   gold:
+#   dialogue:
+#
+# container -- example:
+#   contents: forgotten_onion   # item id from data/items/items.yaml, or null for no item
+#   gold: 10                    # flat gold amount credited on open, or null for no gold
+#   dialogue: ["Whoa! Cool!"]   # always shown; contents/gold (if set) only grant on the first open
+""",
+    "sign": """\
+# sign -- template:
+#   dialogue:
+#
+# sign -- example:
+#   dialogue: ["Just a sign."]   # always shown, no side effect, every visit
+""",
+    "healer": """\
+# healer -- template:
+#   dialogue:
+#
+# healer -- example:
+#   dialogue: []   # shown before the auto-appended "HP/MP FULLY RESTORED." page, every visit, free, no flag
+""",
+    "warp": """\
+# warp -- template:
+#   destination_map:
+#   destination_warp:
+#   facing:
+#   distance:
+#
+# warp -- example:
+#   destination_map: hub_fronthouse   # the OTHER map's folder/stem name
+#   destination_warp: front_door      # name of the warp object THERE to land on
+#   facing: S                         # which way the player faces after landing on THIS warp (blank = S)
+#   distance: 1                       # tiles to offset the landing spot from THIS warp, toward `facing` (blank/0 = exact tile)
+""",
+    "enemy": """\
+# enemy -- template:
+#   enemy_id:
+#   level:
+#
+# enemy -- example:
+#   enemy_id: fat_guy2   # key from data/enemy/enemies.yaml
+#   level: null          # overrides that entry's own level -- null = use it as-is
+""",
+    "spawner": """\
+# spawner -- template:
+#   spawn_chance:
+#   enemies:
+#     - enemy_id:
+#       chance:
+#   level:
+#
+# spawner -- example:
+#   spawn_chance: 0.4          # odds (0.0-1.0) THIS spawner produces anything at all, per map load -- NOT a percentage
+#   enemies:                   # exactly one entry is picked if spawn_chance passes
+#     - enemy_id: fat_guy2       # key from data/enemy/enemies.yaml
+#       chance: 3                # weight vs the OTHER entries below (3 vs 1 = a 3:1, i.e. 75%/25%, split)
+#     - enemy_id: parkinglotguy
+#       chance: 1
+#   level: null                # overrides whichever enemy gets picked -- null = use its own
+""",
+    "npc": """\
+# npc -- template:
+#   npc_id:
+#   sprite:
+#   behavior:
+#   event:
+#   dialogue:
+#
+# npc -- example:
+#   npc_id: grocer      # key from data/npcs/npc.yaml, or null for a one-off character authored entirely here
+#   sprite: null         # overrides npc.yaml's sprite for this placement only -- null = inherit it
+#   behavior: null       # overrides npc.yaml's behavior ("static"/"wander") for this placement only -- null = inherit it
+#   event: null          # reserved, not wired to anything yet
+#   dialogue:            # flat page list, OR a list of variants gated on engine.game_state flags
+#     - unless: ["npc_met:grocer"]       # first time ever (before this flag is set)
+#       pages: ["First time seeing you!"]
+#     - pages: ["Hey again."]            # fallback -- checked top-to-bottom, first match wins
+""",
+    "shop": """\
+# shop -- template:
+#   npc_id:
+#   sprite:
+#   behavior:
+#   event:
+#   dialogue:
+#   stock:
+#     - item:
+#       price:
+#   farewell:
+#
+# shop -- example:
+#   npc_id: null
+#   sprite: pizza_cashier
+#   behavior: static
+#   event: null
+#   dialogue: ["Welcome to Pizza Hut!"]   # greeting -- opens before the buy/sell screen, every visit
+#   stock:
+#     - item: forgotten_onion   # key from data/items/items.yaml
+#       price: 8                # gold cost to BUY one -- independent of that item's own `value` (what selling it pays out)
+#     - item: bag_of_soup
+#       price: 25
+#   farewell: ["Come back soon!"]   # shown after backing all the way out of the buy/sell screen
+""",
+}
+
+
+def _build_header(map_name: str, objects: list) -> str:
+    types_present = sorted({o["type"] for o in objects if o["type"] in TYPE_DOCS},
+                            key=_TYPE_ORDER.index)
+    lines = [
+        f"# Auto-synced from {map_name}.json by populate_yamls.py.\n",
+        "# id/name/type refresh every run; every other field is seeded once per type\n",
+        "# (see below) and yours from then on -- re-running never overwrites or clears\n",
+        "# a field you've filled in, as long as this object's id still exists in the\n",
+        "# map's object layer.\n",
+        "#\n",
+    ]
+    for t in types_present:
+        lines.append(TYPE_DOCS[t])
+        lines.append("#\n")
+    lines.append("\n")
+    return "".join(lines)
 
 
 def _sync_file(path: Path, objects: list, map_name: str) -> None:
@@ -211,109 +247,7 @@ def _sync_file(path: Path, objects: list, map_name: str) -> None:
     if orphaned:
         print(f"{path.name}: entry ids no longer in the map (left in place): {orphaned}")
 
-    header = (
-        f"# Auto-synced from {map_name}.json by populate_yamls.py.\n"
-        f"# id/name/type are overwritten on every sync; missing stub fields\n"
-        f"# (dialogue, contents, gold, event, sprite, behavior, npc_id,\n"
-        f"# destination_map, destination_warp, facing, distance, enemy_id,\n"
-        f"# level, enemies, spawn_chance, stock, farewell) are seeded per type\n"
-        f"# but never overwritten once filled in -- see STUB_FIELDS in the script.\n"
-        f"#\n"
-        f"# container: contents (a single item id from data/items/items.yaml)\n"
-        f"#   and gold (a flat amount) are independent -- grant an item, gold,\n"
-        f"#   both, or neither (null/null = pure flavor text, dialogue only).\n"
-        f"#\n"
-        f"# npc: npc_id, if filled in (on an npc or shop object -- both share\n"
-        f"#   this field), is a key into data/npcs/npc.yaml (the master NPC\n"
-        f"#   list, loaded by engine.npc.load_npc_defs()) -- this\n"
-        f"#   placement's own sprite/behavior/dialogue then become optional\n"
-        f"#   overrides on top of that shared definition: set, they win for\n"
-        f"#   this one placement; left blank (null / []), they fall back to\n"
-        f"#   whatever npc.yaml's entry says. event is unrelated -- still\n"
-        f"#   just a reserved stub, not wired to anything yet.\n"
-        f"#\n"
-        f"#   dialogue is either a flat page list (always shown the same way)\n"
-        f"#   or a list of {{when, unless, pages}} variants that branch on\n"
-        f"#   engine.game_state flags, checked top-to-bottom, first match\n"
-        f"#   wins -- see data/npcs/npc.yaml's own dialogue comments for the\n"
-        f"#   exact shape. Every npc_id gets a free flag, npc_met:<npc_id>,\n"
-        f"#   set the instant it's ever talked to -- reference it in an\n"
-        f"#   unless to write a first-ever-meeting variant. A one-off named\n"
-        f"#   character (one placement only) usually belongs entirely here,\n"
-        f"#   not in npc.yaml, which is best kept for sprite/behavior plus\n"
-        f"#   any dialogue that's genuinely shared across placements.\n"
-        f"#\n"
-        f"# enemy (hardcoded placement): enemy_id is a key from\n"
-        f"#   data/enemy/enemies.yaml (e.g. fat_guy2); level optionally\n"
-        f"#   overrides that entry's own level -- leave null to use it as-is.\n"
-        f"#\n"
-        f"# spawner (rolls once each time the map loads): spawn_chance is a\n"
-        f"#   plain number from 0.0 to 1.0 -- the odds THIS spawner produces\n"
-        f"#   anything at all (0.3 = ~3 times in 10; NOT a percentage, don't\n"
-        f"#   write 30).\n"
-        f"#\n"
-        f"# A fresh spawner stub already seeds `enemies` with one blank\n"
-        f"#   candidate block (enemy_id: null / chance: null) -- fill in\n"
-        f"#   that enemy_id and chance, then copy the whole `- enemy_id: ...\n"
-        f"#   chance: ...` block again (indented the same as the first) for\n"
-        f"#   each additional enemy this spawner can produce. Left with\n"
-        f"#   enemy_id: null (or emptied out to `enemies: []`), this spawner\n"
-        f"#   can NEVER produce anything, no matter what spawn_chance says --\n"
-        f"#   there's nothing valid to pick from. Each block is two fields,\n"
-        f"#   an enemy_id (a key from data/enemy/enemies.yaml) and a chance\n"
-        f"#   (any positive number -- a WEIGHT relative to the other blocks\n"
-        f"#   in this same list, not a standalone probability, and it does\n"
-        f"#   NOT need to add up to anything in particular). One enemy from\n"
-        f"#   this list is picked -- weighted by these numbers -- every time\n"
-        f"#   spawn_chance itself passes.\n"
-        f"#\n"
-        f"#   With only one enemy allowed at a spawner, its chance value\n"
-        f"#   doesn't matter (nothing to weigh it against) -- e.g. \"only\n"
-        f"#   fat_guy2 ever spawns here, 40% of the time\":\n"
-        f"#\n"
-        f"#     spawn_chance: 0.4\n"
-        f"#     enemies:\n"
-        f"#       - enemy_id: fat_guy2\n"
-        f"#         chance: 1\n"
-        f"#\n"
-        f"#   With two-plus candidates, chance sets the split between them\n"
-        f"#   -- e.g. \"40% chance to spawn anything, and when it does, it's\n"
-        f"#   fat_guy2 three times out of four, parkinglotguy the other\n"
-        f"#   quarter\" (chance: 3 vs chance: 1 -> a 3:1, i.e. 75%/25%, split\n"
-        f"#   -- doubling both to 6 and 2 would mean the exact same thing):\n"
-        f"#\n"
-        f"#     spawn_chance: 0.4\n"
-        f"#     enemies:\n"
-        f"#       - enemy_id: fat_guy2\n"
-        f"#         chance: 3\n"
-        f"#       - enemy_id: parkinglotguy\n"
-        f"#         chance: 1\n"
-        f"#\n"
-        f"#   Every `- enemy_id: ...` line must line up under `enemies:`\n"
-        f"#   with the same indentation as the `-` above, and `chance:`\n"
-        f"#   lines up under its own `enemy_id:` line, indented one level\n"
-        f"#   further -- YAML reads structure from indentation, so a block\n"
-        f"#   nested at the wrong depth silently becomes a different\n"
-        f"#   (usually broken) structure instead of an error.\n"
-        f"#\n"
-        f"#   level (top-level, alongside spawn_chance/enemies -- not per\n"
-        f"#   candidate) optionally overrides whichever enemy gets picked;\n"
-        f"#   leave it null to use that enemy's own level from enemies.yaml.\n"
-        f"#\n"
-        f"# shop: a shopkeeper -- a person, not a static fixture -- so it uses\n"
-        f"#   the same sprite/behavior/npc_id fields as npc above (see the\n"
-        f"#   npc paragraph). Two fields of its own: stock, a list of\n"
-        f"#   {{item, price}} mappings (item a key from data/items/items.yaml,\n"
-        f"#   price the gold cost to buy one, independent of that item's own\n"
-        f"#   sell value in items.yaml -- a shop can mark things up or down);\n"
-        f"#   and farewell, the goodbye line(s) shown in a dialogue box after\n"
-        f"#   the player backs out of the buy/sell screen (same shape as\n"
-        f"#   dialogue, but placement-only -- no npc.yaml-level fallback).\n"
-        f"#   Talking to a shopkeeper is talk-then-shop, same as any npc: A\n"
-        f"#   opens dialogue (the greeting) first; the buy/sell screen opens\n"
-        f"#   once that closes -- see engine.menu.ShopMenu.pending_shop.\n"
-        f"#   A shop has no one-shot flag -- both are available every visit.\n\n"
-    )
+    header = _build_header(map_name, objects)
     write_yaml(path, existing, header)
     print(f"wrote {path} ({len(objects)} objects)")
 
