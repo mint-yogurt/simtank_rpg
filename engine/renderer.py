@@ -647,10 +647,9 @@ class MapObject:
     layer, merged with its hand-authored content from obj_<map>.yaml /
     npcs_<map>.yaml (see data/maps/populate_yamls.py). `dialogue` is a list
     of pages; `type == "sign"` opens it directly, `type == "healer"` (e.g. a
-    saladbar — full party heal for free, every visit, no flag) currently
-    opens the exact same way (see engine.input.handle_a_button's
-    TODO(party-hp) — party HP is live state now via engine.roster.Roster,
-    the heal action itself just isn't implemented yet),
+    saladbar) fully heals the active party (engine.roster.Roster) to max
+    HP/MP for free, every visit, no flag, then opens the same way with a
+    synthesized "restored" page appended (see engine.input.handle_a_button),
     `type == "container"` opens it via engine.input's container handling
     (dialogue plus an item grant — see `contents` below), and `type ==
     "npc"` entries hand theirs off to NPC (see below, built from these in

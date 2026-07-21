@@ -28,9 +28,8 @@ and _open_container for how a container's dialogue also grants its
 `contents` item and sets a flag (engine.game_state) the first time it's
 opened. An NPC's dialogue can branch on game_state flags the same way —
 see handle_a_button and engine.npc.resolve_dialogue/npc_met_flag. A
-"healer" (e.g. a saladbar) is meant to fully heal the party for free, every
-visit, no flag — the heal itself isn't implemented yet (see
-handle_a_button's TODO(party-hp)), though party HP is live state now.
+"healer" (e.g. a saladbar) fully heals the party for free, every visit, no
+flag — see handle_a_button's healer branch.
 SAVE's YES/NO overlay writes to disk via engine.save on YES — see
 handle_a_button.
 """
@@ -408,9 +407,10 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     containers do too, via `_open_container` above, which also handles the
     item grant and flag — `dialogue`/`DialogueBox` itself doesn't know
     containers exist, it's just shown whatever pages `_open_container`
-    returns. A healer (e.g. a saladbar) shares the sign branch verbatim for
-    now — see the TODO(party-hp) comment right there — since there's no
-    party HP yet to actually heal.
+    returns. A healer (e.g. a saladbar) fully heals the active party (see
+    engine.roster.Roster.current_party) to max HP/MP first, then opens its
+    dialogue with a synthesized "HP/MP FULLY RESTORED." page appended —
+    free, no flag, every visit.
 
     An NPC's pages come from resolving `target.dialogue_variants` (already
     merged from its placement's own npcs_<map>.yaml override or its
@@ -514,17 +514,18 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
 
     if player.can_interact():
         target = player.adjacent_interactable(npcs, objects)
-        if target is not None and target.type in ("sign", "healer"):
-            # TODO(party-hp): a "healer" (e.g. a map's saladbar -- full heal,
-            # Pokemon-Center style, no cost, no flag, works every visit) is
-            # otherwise identical to a sign today. Party HP *is* live runtime
-            # state now (engine.roster.Roster, threaded through battle) --
-            # implementing the actual heal is just unimplemented, not
-            # blocked. Once it's built, reset the roster's members to full
-            # HP/MP right here, before opening dialogue, and split this back
-            # into its own branch -- a sign must never gain a side effect
-            # the same way.
+        if target is not None and target.type == "sign":
             dialogue.open(wrap_pages(target.dialogue))
+            player.set_state(PlayerState.IN_DIALOGUE)
+        elif target is not None and target.type == "healer":
+            # Full party heal, Pokemon-Center style -- free, no flag, every
+            # visit. Applied before the dialogue opens so the appended
+            # "restored" page always reflects the post-heal state.
+            for member in roster.current_party(game_state):
+                member.hp = member.max_hp
+                member.mp = member.max_mp
+            pages = list(target.dialogue) + ["HP/MP FULLY RESTORED."]
+            dialogue.open(wrap_pages(pages))
             player.set_state(PlayerState.IN_DIALOGUE)
         elif target is not None and target.type == "npc":
             target.facing = OPPOSITE_DIR[player.facing]
