@@ -37,7 +37,7 @@ source .venv/bin/activate
 python maptest.py    # opens the pygame window, runs the real game loop
 ```
 
-All dependencies (pygame, Pillow, PyYAML) are installed in `.venv/`.
+All dependencies (pygame, NumPy, Pillow, PyYAML) are installed in `.venv/`.
 
 ## RNG
 

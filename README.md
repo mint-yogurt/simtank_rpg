@@ -257,4 +257,4 @@ python maptest.py           # prompts: map / battles / debug screen (debug scree
                              # touch-trigger path via `map` mode)
 ```
 
-All dependencies (pygame, Pillow, PyYAML) are in `.venv/`.
+All dependencies (pygame, NumPy, Pillow, PyYAML) are in `.venv/`.
