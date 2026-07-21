@@ -45,20 +45,26 @@ Controls:
   Arrow keys  — move player (MELVIN) / move start-menu cursor / move
                 save-confirm cursor / on the inventory screen: E-W switches
                 category (wraps), N-S scrolls the list (clamps) / on the
+                item-action popup: N-S moves its (usually one-row) option,
+                or scrolls the target-member picker (clamps) / on the
                 settings screen: N-S switches row (wraps), E-W changes the
-                highlighted row's value (wraps)
-  Enter       — START: open/close the start menu (no-op while save-confirm,
-                inventory, or settings screen is open)
+                highlighted row's value (wraps) / on the party screen: N-S
+                scrolls the member list (wraps)
+  Enter       — START: open/close the start menu (no-op while any overlay
+                is open)
   X           — A: confirm start-menu selection (SAVE opens the save-confirm
-                overlay, INVENTORY opens the inventory screen, SETTINGS
-                opens the settings screen; PARTY still stubbed) / confirm
-                YES-NO on the save-confirm overlay (YES is stubbed — see
-                engine.menu.SaveMenu.confirm) / no-op on the inventory and
-                settings screens (inventory is view-only; settings applies
-                changes immediately off E/W) / advance or close an open
-                dialogue box / open one by facing a sign or NPC
-  Z           — B: close whichever menu is on top (save-confirm, inventory,
-                or settings, then the start menu)
+                overlay, INVENTORY/SETTINGS/PARTY open their screens) /
+                confirm YES-NO on the save-confirm overlay (YES is stubbed
+                — see engine.menu.SaveMenu.confirm) / on the inventory
+                screen, opens the item-action popup for the selected row
+                (USE/EQUIP/UNEQUIP, see engine.input._item_action_options)
+                / no-op on the settings and party screens (settings applies
+                changes immediately off E/W; party is pure display) /
+                advance or close an open dialogue box / open one by facing
+                a sign or NPC
+  Z           — B: close whichever menu is on top (item-action popup first
+                if it's open, then save-confirm/inventory/settings/party,
+                then the start menu)
   Escape / Q  — quit
 """
 import json
@@ -72,7 +78,8 @@ import pygame
 import yaml
 
 from engine.battle import (
-    BATTLE_MENU_OPTIONS, BattleMenu, BattleState, Fighter, fighter_from_roster, load_fighter,
+    BATTLE_MENU_OPTIONS, BattleMenu, BattleState, Fighter, apply_level_ups, fighter_from_roster,
+    load_fighter, xp_to_next_level,
 )
 from engine.config import cfg
 from engine.dialogue import DialogueBox
@@ -93,10 +100,12 @@ from engine.input import (
 )
 from engine.game_state import GameState, persistent_id
 from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
-from engine.menu import BUY, InventoryMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu
+from engine.menu import (
+    BUY, InventoryMenu, ItemActionMenu, PartyMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu,
+)
 from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue
 from engine.player import Player, PlayerState
-from engine.roster import Roster
+from engine.roster import PartyMember, Roster
 from engine.save import load_from_slot, slot_exists
 from procgen.visualizer import EFFECTS
 
@@ -207,6 +216,29 @@ _SHOP_LIST_TOP_Y  = 40
 _SHOP_LIST_LEFT_X = _SHOP_MARGIN
 _SHOP_TEXT_COLOR  = (255, 255, 255)
 _SHOP_DIM_COLOR   = (110, 110, 110)
+
+# Item-action popup layout: a small box drawn on top of the inventory
+# screen (see _draw_item_action_menu), bottom-right corner so it never
+# covers the list/detail panes above it. Same "no art yet" idiom as
+# everything else -- solid rect + dialogue_font.
+_ITEMACT_W          = 96
+_ITEMACT_H          = 64
+_ITEMACT_MARGIN     = 6
+_ITEMACT_TEXT_COLOR = (255, 255, 255)
+_ITEMACT_DIM_COLOR  = (110, 110, 110)
+
+# Party-screen layout. Same split as the inventory screen: left pane lists
+# party members (N/S, wraps -- a fixed small roster, not an open-ended
+# list, so wrap reads fine here unlike the inventory's clamp), right pane
+# is the selected member's stat detail.
+_PARTY_MARGIN       = 8
+_PARTY_HEADER_Y     = _PARTY_MARGIN
+_PARTY_LIST_TOP_Y   = 24
+_PARTY_LIST_LEFT_X  = _PARTY_MARGIN
+_PARTY_DIVIDER_X    = 80   # column of "|" glyphs separating list from detail pane
+_PARTY_DETAIL_LEFT_X = _PARTY_DIVIDER_X + 12
+_PARTY_TEXT_COLOR   = (255, 255, 255)
+_PARTY_DIM_COLOR    = (110, 110, 110)
 
 # Dialogue box layout. dialogue_box.png is 256x240 — 16px taller than the
 # 256x224 game screen (view_cols/view_rows * tile_px) — so it docks to one
@@ -1192,6 +1224,8 @@ class OverworldScene:
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
         self.inventory_menu = InventoryMenu()   # opened from INVENTORY on self.menu
         self.settings_menu = SettingsMenu(scale=cfg.pygame_scale, fullscreen=cfg.start_fullscreen)   # opened from SETTINGS on self.menu
+        self.party_menu = PartyMenu()   # opened from PARTY on self.menu
+        self.item_action_menu = ItemActionMenu()   # opened from a row on self.inventory_menu
         self.shop_menu = ShopMenu()   # opened directly from the overworld by facing a `shop` object
         self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
         self.active_slot = active_slot
@@ -1508,7 +1542,8 @@ class OverworldScene:
                     shop_list_len, shop_max_amount = self._shop_amount_context(shop) if shop else (0, 0)
                     handle_menu_direction(direction, self.menu, self.save_menu,
                                            self.inventory_menu, self.settings_menu,
-                                           self.shop_menu, category_item_count,
+                                           self.shop_menu, self.item_action_menu, self.party_menu,
+                                           category_item_count, len(self.roster.current_party(self.game_state)),
                                            shop_list_len, shop_max_amount)
                 else:
                     # Turn-in-place (a tap that doesn't move, just faces the
@@ -1525,16 +1560,20 @@ class OverworldScene:
                 self._held_buttons.add(button)
             if button == 'START':
                 handle_start_button(self.player, self.menu, self.save_menu,
-                                     self.inventory_menu, self.settings_menu, self.shop_menu)
+                                     self.inventory_menu, self.settings_menu, self.shop_menu,
+                                     self.item_action_menu, self.party_menu)
             elif button == 'B':
                 handle_b_button(self.player, self.menu, self.save_menu,
                                  self.inventory_menu, self.settings_menu, self.shop_menu,
+                                 self.item_action_menu, self.party_menu,
                                  self.dialogue, self.npcs, self.game_state,
                                  wrap_pages=self._wrap_dialogue_pages)
             elif button == 'A':
                 # Menu confirm (SAVE writes self.active_slot to disk and
-                # closes back to the start menu; INVENTORY/SETTINGS open
-                # their overlays; PARTY still stubbed) / dialogue
+                # closes back to the start menu; INVENTORY/SETTINGS/PARTY
+                # open their overlays) / an inventory row opens the
+                # item-action popup (USE/EQUIP/UNEQUIP, see
+                # engine.input._item_action_options) / dialogue
                 # advance-close (no-op while still typing in) / open a
                 # dialogue by facing an interactable sign, NPC, or shopkeeper
                 # (a shop is a person -- greeting first, buy/sell screen
@@ -1545,6 +1584,7 @@ class OverworldScene:
                 # screen itself is open -- see engine.input.handle_a_button.
                 handle_a_button(self.player, self.menu, self.save_menu, self.inventory_menu,
                                  self.settings_menu, self.shop_menu,
+                                 self.item_action_menu, self.party_menu,
                                  self.dialogue, self.npcs, self.objects,
                                  wrap_pages=self._wrap_dialogue_pages,
                                  game_state=self.game_state, inventory=self.inventory,
@@ -1882,7 +1922,8 @@ class OverworldScene:
             if self._battle_transition_elapsed >= _BATTLE_TRANSITION_HOLD_MS:
                 pending = self._pending_battle
                 self.battle_scene = BattleScene(pending["enemy_id"], rng=self._enemy_rng,
-                                                 roster=self.roster, level_override=pending["level"])
+                                                 roster=self.roster, level_override=pending["level"],
+                                                 inventory=self.inventory, item_defs=self.item_defs)
                 self._battle_source_enemy = pending["source_enemy"]
                 self._pending_battle = None
                 self._battle_transition_phase = None
@@ -1948,17 +1989,27 @@ class OverworldScene:
         """Apply a battle win's resolved rewards (already rolled inside
         BattleState on its own seeded rng, per CLAUDE.md's RNG rule) to real
         game state -- gold/XP/item, mirroring engine.input._open_container's
-        grant shape. XP accumulates only -- no leveling formula exists yet,
-        so PartyMember.lvl is untouched (see README roadmap)."""
+        grant shape. XP crossing a threshold (see engine.battle.
+        xp_to_next_level/apply_level_ups) also grants a level, bumping
+        max_hp/max_mp -- current hp/mp aren't topped up to match. A level-up
+        and/or an item drop each add a synthesized page to the same
+        dialogue box, shown once control returns to the overworld."""
+        pages = []
         if battle.gold_reward:
             self.game_state.add_gold(battle.gold_reward)
         if battle.xp_reward:
-            self.roster.get("MELVIN").xp += battle.xp_reward
+            melvin = self.roster.get("MELVIN")
+            melvin.xp += battle.xp_reward
+            levels_gained = apply_level_ups(melvin)
+            if levels_gained:
+                pages.append(f"MELVIN reached LEVEL {melvin.lvl}!")
         if battle.item_reward:
             self.inventory.add(battle.item_reward)
             item_def = self.item_defs.get(battle.item_reward)
             name = item_def.name if item_def else battle.item_reward
-            self.dialogue.open(self._wrap_dialogue_pages([f"Found {name}!"]))
+            pages.append(f"Found {name}!")
+        if pages:
+            self.dialogue.open(self._wrap_dialogue_pages(pages))
             self.player.set_state(PlayerState.IN_DIALOGUE)
 
     def _start_game_over(self) -> None:
@@ -2092,8 +2143,14 @@ class OverworldScene:
         if self.inventory_menu.is_open:
             self._draw_inventory_menu(surface)
 
+        if self.item_action_menu.is_open:
+            self._draw_item_action_menu(surface)
+
         if self.settings_menu.is_open:
             self._draw_settings_menu(surface)
+
+        if self.party_menu.is_open:
+            self._draw_party_menu(surface)
 
         if self.shop_menu.is_open:
             self._draw_shop_menu(surface)
@@ -2200,12 +2257,23 @@ class OverworldScene:
 
         list_w = _INV_DIVIDER_X - _INV_LIST_LEFT_X - 4   # keep clear of the divider column
         selected = self.inventory_menu.selected
+        current_party = self.roster.current_party(self.game_state)
         for i, item_id in enumerate(item_ids):
             item_def = self.item_defs[item_id]
             qty = self.inventory.counts.get(item_id, 0)
             suffix = f" x{qty}" if item_def.stackable and qty > 1 else ""
             cursor = "> " if i == selected else "  "
-            color = _INV_TEXT_COLOR if i == selected else _INV_DIM_COLOR
+            # A weapon/armour piece currently worn by anyone always renders
+            # dim, even while the cursor is on it -- still fully selectable
+            # (its detail/description still show, and A still opens the
+            # UNEQUIP popup), just visually marked as "already in use". This
+            # is derived here each frame, never stored on the item itself --
+            # see engine.roster.Roster.current_party.
+            equipped = item_def.category in ("weapon", "armour") and any(
+                m.equipped_weapon == item_id or m.equipped_armour == item_id
+                for m in current_party
+            )
+            color = _INV_DIM_COLOR if equipped else (_INV_TEXT_COLOR if i == selected else _INV_DIM_COLOR)
             line = _fit_text(font, f"{cursor}{item_def.name}{suffix}", list_w)
             surface.blit(font.render(line, False, color),
                          (_INV_LIST_LEFT_X, _INV_LIST_TOP_Y + i * line_h))
@@ -2244,6 +2312,92 @@ class OverworldScene:
         if not effect:
             return ""
         return "  ".join(f"{key.upper()} +{value}" for key, value in effect.items())
+
+    def _draw_item_action_menu(self, surface: pygame.Surface) -> None:
+        """Small popup on top of the inventory screen for whichever row's A
+        press opened it (see engine.input.handle_a_button/
+        _item_action_options). Bottom-right corner box, dialogue_font + the
+        same "> "/dim-color list idiom as everywhere else. Shows either
+        this item's own (usually length-1) options row, or -- once USE/
+        EQUIP is confirmed and picking_target kicks in (see
+        engine.menu.ItemActionMenu) -- a scrollable list of current party
+        members to apply it to."""
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+        view_w, view_h = cfg.view_cols * self.tile_px, cfg.view_rows * self.tile_px
+        x, y = view_w - _ITEMACT_W, view_h - _ITEMACT_H
+        pygame.draw.rect(surface, (0, 0, 0), pygame.Rect(x, y, _ITEMACT_W, _ITEMACT_H))
+        pygame.draw.rect(surface, _ITEMACT_TEXT_COLOR, pygame.Rect(x, y, _ITEMACT_W, _ITEMACT_H), width=1)
+
+        text_x, text_y = x + _ITEMACT_MARGIN, y + _ITEMACT_MARGIN
+        menu = self.item_action_menu
+        if menu.picking_target:
+            for i, member in enumerate(self.roster.current_party(self.game_state)):
+                cursor = "> " if i == menu.target_cursor else "  "
+                color = _ITEMACT_TEXT_COLOR if i == menu.target_cursor else _ITEMACT_DIM_COLOR
+                surface.blit(font.render(f"{cursor}{member.name}", False, color),
+                             (text_x, text_y + i * line_h))
+            return
+
+        for i, option in enumerate(menu.options):
+            cursor = "> " if i == menu.selected else "  "
+            color = _ITEMACT_TEXT_COLOR if i == menu.selected else _ITEMACT_DIM_COLOR
+            surface.blit(font.render(f"{cursor}{option}", False, color),
+                         (text_x, text_y + i * line_h))
+
+    def _draw_party_menu(self, surface: pygame.Surface) -> None:
+        """PARTY status screen: solid black, dialogue_font -- left pane
+        lists current party members (N/S, wraps), right pane shows the
+        selected member's level/HP/MP/XP-to-next-level/equipment. Pure
+        display -- no A-driven action, see engine.menu.PartyMenu."""
+        surface.fill((0, 0, 0))
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+
+        surface.blit(font.render("< PARTY >", False, _PARTY_TEXT_COLOR),
+                     (_PARTY_LIST_LEFT_X, _PARTY_HEADER_Y))
+        self._draw_gold(surface)
+
+        view_h = cfg.view_rows * self.tile_px
+        for row in range((view_h - _PARTY_LIST_TOP_Y) // line_h):
+            surface.blit(font.render("|", False, _PARTY_DIM_COLOR),
+                         (_PARTY_DIVIDER_X, _PARTY_LIST_TOP_Y + row * line_h))
+
+        members = self.roster.current_party(self.game_state)
+        selected = self.party_menu.selected
+        for i, member in enumerate(members):
+            cursor = "> " if i == selected else "  "
+            color = _PARTY_TEXT_COLOR if i == selected else _PARTY_DIM_COLOR
+            surface.blit(font.render(f"{cursor}{member.name}", False, color),
+                         (_PARTY_LIST_LEFT_X, _PARTY_LIST_TOP_Y + i * line_h))
+
+        self._draw_party_detail(surface, members[selected])
+
+    def _draw_party_detail(self, surface: pygame.Surface, member: 'PartyMember') -> None:
+        """Right-half detail pane for whichever member is currently
+        highlighted on the party screen."""
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+        x, y = _PARTY_DETAIL_LEFT_X, _PARTY_LIST_TOP_Y
+
+        lines = [
+            f"LVL {member.lvl}",
+            f"HP  {member.hp}/{member.max_hp}",
+            f"MP  {member.mp}/{member.max_mp}",
+            f"XP  {member.xp}/{xp_to_next_level(member.lvl)}",
+            "",
+            f"WEAPON: {self._equip_item_name(member.equipped_weapon)}",
+            f"ARMOUR: {self._equip_item_name(member.equipped_armour)}",
+        ]
+        for line in lines:
+            surface.blit(font.render(line, False, _PARTY_TEXT_COLOR), (x, y))
+            y += line_h
+
+    def _equip_item_name(self, item_id: str | None) -> str:
+        if item_id is None:
+            return "NONE"
+        item_def = self.item_defs.get(item_id)
+        return item_def.name if item_def is not None else item_id
 
     def _draw_settings_menu(self, surface: pygame.Surface) -> None:
         """Alpha placeholder settings screen: solid black, dialogue_font
@@ -2464,16 +2618,16 @@ class OverworldScene:
 # standalone via maptest.py's isolated "battles" debug mode. Scoped
 # deliberately narrow (see engine.battle's module docstring): MELVIN vs.
 # one enemy, no full party. The 4-option ATTACK/ITEM/DEFEND/RUN row is
-# player-driven (N/S cursor + A confirm); ATTACK and RUN both do something
-# when confirmed, ITEM/DEFEND are still selectable rows with no effect
-# wired in yet. When they become real, their exact scope needs to be
-# nailed down first — don't wire either up based on a guess.
+# player-driven (N/S cursor + A confirm); ATTACK, ITEM, and RUN all do
+# something when confirmed, DEFEND is still a selectable row with no effect
+# wired in yet. When it becomes real, its exact scope needs to be nailed
+# down first — don't wire it up based on a guess.
 
 _BATTLE_TOP_H     = 40      # top textbox height, px — battle text
-_BATTLE_BOTTOM_H  = 56      # bottom textbox height, px — party status + stub menu
+_BATTLE_BOTTOM_H  = 56      # bottom textbox height, px — party status + action menu
 _BATTLE_MARGIN    = 8
 _BATTLE_TEXT_COLOR = (255, 255, 255)
-_BATTLE_DIM_COLOR  = (110, 110, 110)   # stub menu options other than ATTACK
+_BATTLE_DIM_COLOR  = (110, 110, 110)   # DEFEND (only remaining no-op row) / unselected item-pick rows
 _BATTLE_MENU_X    = 160     # bottom-right pane start — same split as the start menu's _MENU_X
 _BATTLE_HOLD_MS   = 700     # pause after a line's fully typed before the next action fires
 _BATTLE_PRE_MENU_HOLD_MS = 3000   # pause after the enemy's turn message (or the
@@ -2511,8 +2665,12 @@ class BattleScene:
     The party's turn is player-driven: the ATTACK/ITEM/DEFEND/RUN row (see
     engine.battle.BattleMenu) is only shown while it's actually waiting on a
     choice (`self._awaiting_choice`) — N/S moves the cursor, A confirms.
-    ATTACK and RUN both do something when confirmed; ITEM/DEFEND are real
-    rows with no effect wired in yet (see engine.battle's module docstring).
+    ATTACK, ITEM, and RUN all do something when confirmed; DEFEND is still
+    a real row with no effect wired in yet (see engine.battle's module
+    docstring). Confirming ITEM doesn't act immediately -- it opens a
+    scrollable list of usable consumables (`self.menu.picking_item`, see
+    `usable_battle_items`); confirming one of those applies it to the party
+    Fighter and removes it from `inventory` (see `_confirm_item_choice`).
     The enemy's turn stays auto-resolved on the same hold-then-step timer as
     before — there's no choice to make there.
 
@@ -2522,6 +2680,11 @@ class BattleScene:
     — both default to None so maptest.py's isolated "battles" debug mode
     (no save, no overworld Enemy) keeps working exactly as before: fresh
     stats off data/party/melvin.json, a fresh level roll off EnemyDef.level.
+    `inventory`/`item_defs`, likewise, are how a real battle's ITEM row
+    (and equipped weapon/armour bonuses, via `fighter_from_roster`) see the
+    shared bag -- both default to None, in which case the ITEM row stays
+    effectively inert (see `usable_battle_items`) and equip bonuses are 0,
+    the same debug-mode behavior as before this existed.
     Once `self.phase` (via `self.battle`) reaches "win"/"loss" and the final
     message is fully typed, `awaiting_dismiss` goes True; one more A press
     sets `finished` — the caller (OverworldScene) polls that to know when to
@@ -2530,16 +2693,19 @@ class BattleScene:
     """
 
     def __init__(self, enemy_id: str, rng: random.Random | None = None,
-                 roster: 'Roster | None' = None, level_override: int | None = None):
+                 roster: 'Roster | None' = None, level_override: int | None = None,
+                 inventory: 'Inventory | None' = None, item_defs: dict | None = None):
         self.dialogue_font = pygame.font.Font(str(_DIALOGUE_FONT_PATH), _DIALOGUE_FONT_PT)
         self.rng = rng or random.Random()
+        self.inventory = inventory
+        self.item_defs = item_defs
 
         edef = load_enemy_defs()[enemy_id]
         level = level_override if level_override is not None else resolve_level(edef.level, self.rng)
         enemy = Fighter(name=edef.name, iq=edef.iq, weight=edef.weight,
                         sweat=edef.sweat, hair=edef.hair, level=level, is_enemy=True)
         if roster is not None:
-            party = fighter_from_roster(_PARTY_DIR / 'melvin.json', roster.get('MELVIN'))
+            party = fighter_from_roster(_PARTY_DIR / 'melvin.json', roster.get('MELVIN'), item_defs)
         else:
             party = load_fighter(_PARTY_DIR / 'melvin.json')
         self.battle = BattleState(party=party, enemy=enemy, rng=self.rng, enemy_gold=edef.gold,
@@ -2586,12 +2752,36 @@ class BattleScene:
             return
         if not self._awaiting_choice:
             return
+        if self.menu.picking_item:
+            direction = _DIR_KEY.get(event.key)
+            if direction:
+                self.menu.move_item_cursor(direction, len(self.usable_battle_items()))
+                return
+            button = _BUTTON_KEY.get(event.key)
+            if button == 'A':
+                self._confirm_item_choice()
+            elif button == 'B':
+                self.menu.cancel_item_pick()
+            return
         direction = _DIR_KEY.get(event.key)
         if direction:
             self.menu.move_cursor(direction)
             return
         if _BUTTON_KEY.get(event.key) == 'A':
             self._confirm_choice()
+
+    def usable_battle_items(self) -> list[str]:
+        """Item ids the ITEM row can offer right now -- consumables with an
+        hp/mp effect that the party actually owns. Empty (ITEM stays
+        effectively inert, same as DEFEND) if `self.inventory`/
+        `self.item_defs` weren't given -- maptest.py's debug "battles" mode
+        has neither."""
+        if self.inventory is None or self.item_defs is None:
+            return []
+        return [item_id for item_id, item_def in self.item_defs.items()
+                if item_def.category == "consumables" and item_def.effect
+                and ("hp" in item_def.effect or "mp" in item_def.effect)
+                and self.inventory.has(item_id)]
 
     def _awaiting_pre_menu_hold(self) -> bool:
         """True while the party's action menu is about to appear but hasn't
@@ -2612,11 +2802,29 @@ class BattleScene:
             action = self.battle.step
         elif option == "RUN":
             action = self.battle.attempt_run
+        elif option == "ITEM":
+            if self.usable_battle_items():
+                self.menu.start_item_pick()
+            return   # nothing usable -- ITEM stays inert, same as DEFEND
         else:
-            return   # ITEM/DEFEND are real rows, just no-ops for now -- see class docstring
+            return   # DEFEND is a real row, just a no-op for now -- see class docstring
         self._awaiting_choice = False
         self._hold_elapsed = 0
         self.text_box.open([self._wrap_battle_text(action())])
+
+    def _confirm_item_choice(self) -> None:
+        """Resolve whichever consumable is highlighted on the ITEM row's
+        item-pick list -- applies it to the party Fighter (see
+        BattleState.step_item), removes it from `inventory`, and ends the
+        turn, same as confirming ATTACK."""
+        item_id = self.usable_battle_items()[self.menu.item_cursor]
+        item_def = self.item_defs[item_id]
+        self.menu.cancel_item_pick()
+        self._awaiting_choice = False
+        self._hold_elapsed = 0
+        flavor = self.battle.step_item(item_def.name, item_def.effect)
+        self.inventory.remove(item_id)
+        self.text_box.open([self._wrap_battle_text(flavor)])
 
     def update(self, dt_ms: int) -> None:
         self._effect_t += dt_ms / 1000
@@ -2703,8 +2911,27 @@ class BattleScene:
         # can't bleed into the option column (exact position is a later tweak).
         pygame.draw.rect(surface, (0, 0, 0), pygame.Rect(_BATTLE_MENU_X, top, view_w - _BATTLE_MENU_X, _BATTLE_BOTTOM_H))
 
+        if self.menu.picking_item:
+            self._draw_item_pick_list(surface, top)
+            return
+
         for i, option in enumerate(BATTLE_MENU_OPTIONS):
             prefix = "> " if i == self.menu.selected else "  "
-            color = _BATTLE_TEXT_COLOR if option in ("ATTACK", "RUN") else _BATTLE_DIM_COLOR
+            color = _BATTLE_TEXT_COLOR if option != "DEFEND" else _BATTLE_DIM_COLOR
             surface.blit(font.render(f"{prefix}{option}", False, color),
+                         (_BATTLE_MENU_X, top + _BATTLE_MARGIN + i * line_h))
+
+    def _draw_item_pick_list(self, surface: pygame.Surface, top: int) -> None:
+        """Usable-consumable list shown in place of the ATTACK/ITEM/DEFEND/
+        RUN row while self.menu.picking_item -- same "> "/dim-color idiom,
+        name + owned qty per row."""
+        font = self.dialogue_font
+        line_h = font.get_linesize()
+        item_ids = self.usable_battle_items()
+        for i, item_id in enumerate(item_ids):
+            item_def = self.item_defs[item_id]
+            qty = self.inventory.counts.get(item_id, 0)
+            prefix = "> " if i == self.menu.item_cursor else "  "
+            color = _BATTLE_TEXT_COLOR if i == self.menu.item_cursor else _BATTLE_DIM_COLOR
+            surface.blit(font.render(f"{prefix}{item_def.name} x{qty}", False, color),
                          (_BATTLE_MENU_X, top + _BATTLE_MARGIN + i * line_h))

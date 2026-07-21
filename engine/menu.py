@@ -3,9 +3,10 @@
 Mirrors the player/input split: this module only tracks whether the menu is
 open and which option is highlighted. engine.input decides *when* to call
 into it (START/B/A presses, direction routing while open); engine.renderer
-decides how it looks on screen. Sub-screens for PARTY/SETTINGS aren't built
-yet — confirm() is still a stub for those. SAVE opens SaveMenu; INVENTORY
-opens InventoryMenu, both below.
+decides how it looks on screen. SAVE opens SaveMenu; INVENTORY opens
+InventoryMenu; SETTINGS opens SettingsMenu; PARTY opens PartyMenu — all
+below. confirm() itself just returns whichever option is highlighted;
+engine.input.handle_a_button is what actually opens the right one.
 """
 
 from dataclasses import dataclass, field
@@ -42,7 +43,8 @@ class StartMenu:
         return OPTIONS[self.selected]
 
     def confirm(self) -> str:
-        """Return the highlighted option. Sub-screens aren't wired up yet."""
+        """Return the highlighted option -- engine.input.handle_a_button
+        decides which overlay that opens."""
         return OPTIONS[self.selected]
 
 
@@ -180,6 +182,102 @@ class InventoryMenu:
             self.selected = max(0, self.selected - 1)
         elif direction == "S":
             self.selected = min(max(list_len - 1, 0), self.selected + 1)
+
+
+@dataclass
+class ItemActionMenu:
+    """A-button popup for one inventory row -- opened from InventoryMenu
+    (see engine.input.handle_a_button/_item_action_options), drawn on top
+    of it, same tier as the other overlays but nested one level deeper.
+
+    `options` is whatever the caller resolved for this specific item
+    ("USE",) for a consumable, ("EQUIP",) or ("UNEQUIP",) for a weapon/
+    armour depending on whether anyone currently has it equipped, or ()
+    for a key item (caller just doesn't open this at all in that case).
+    Modeled as a real list (even though it's length 1 today) rather than a
+    single confirm, so a future row option doesn't need a new class.
+
+    USE and EQUIP both need a target party member -- `picking_target` is a
+    nested sub-state, same idiom as engine.menu.ShopMenu.picking_amount:
+    confirming the row's only option doesn't act immediately, it opens a
+    scrollable list of current party members (see
+    engine.roster.Roster.current_party) instead. UNEQUIP needs no target
+    (see engine.input._confirm_item_action) and resolves straight from the
+    row's own confirm.
+    """
+    is_open:        bool = False
+    item_id:        str | None = None
+    options:        tuple[str, ...] = field(default_factory=tuple)
+    selected:        int = 0
+    picking_target: bool = False
+    target_cursor:  int = 0
+
+    def open(self, item_id: str, options: tuple[str, ...]) -> None:
+        self.is_open = True
+        self.item_id = item_id
+        self.options = options
+        self.selected = 0
+        self.picking_target = False
+        self.target_cursor = 0
+
+    def close(self) -> None:
+        self.is_open = False
+        self.item_id = None
+        self.options = ()
+        self.picking_target = False
+
+    def selected_option(self) -> str:
+        return self.options[self.selected]
+
+    def start_target_pick(self) -> None:
+        self.picking_target = True
+        self.target_cursor = 0
+
+    def cancel_target_pick(self) -> None:
+        self.picking_target = False
+        self.target_cursor = 0
+
+    def move_cursor(self, direction: str, target_count: int = 0) -> None:
+        """While picking a target: N/S scrolls the party-member list,
+        clamped (not wrapped), same idiom as InventoryMenu's list scroll.
+        Otherwise: N/S wraps over this item's own (usually length-1)
+        options row, same idiom as BattleMenu's action row."""
+        if self.picking_target:
+            if direction == "N":
+                self.target_cursor = max(0, self.target_cursor - 1)
+            elif direction == "S":
+                self.target_cursor = min(max(target_count - 1, 0), self.target_cursor + 1)
+            return
+        if direction == "N":
+            self.selected = (self.selected - 1) % len(self.options)
+        elif direction == "S":
+            self.selected = (self.selected + 1) % len(self.options)
+
+
+@dataclass
+class PartyMenu:
+    """PARTY status screen overlay, opened from PARTY on the start menu --
+    same tier as InventoryMenu/SettingsMenu (see engine.input for how B
+    picks whichever overlay is on top). Pure display: a vertical list of
+    current party members (N/S move + wrap, same as StartMenu) with no
+    A-driven action of its own -- equip changes happen from the inventory
+    screen instead (see ItemActionMenu), not from here.
+    """
+    is_open:  bool = False
+    selected: int  = field(default=0)
+
+    def open(self) -> None:
+        self.is_open = True
+        self.selected = 0
+
+    def close(self) -> None:
+        self.is_open = False
+
+    def move_cursor(self, direction: str, member_count: int) -> None:
+        if direction == "N":
+            self.selected = (self.selected - 1) % member_count
+        elif direction == "S":
+            self.selected = (self.selected + 1) % member_count
 
 
 BUY, SELL = "buy", "sell"

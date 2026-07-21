@@ -122,11 +122,10 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [x] Keyboard input, held-key axis resolution (`engine/input.py`) — real 8-directional movement, tap-to-turn vs. hold-to-walk
 - [x] Player entity (`engine/player.py`) — state machine, continuous movement against a passable grid
 - [x] Config-driven movement/dialogue pacing (`config.json`)
-- [x] Start menu shell, save-confirm overlay, inventory screen (view-only) (`engine/menu.py`)
+- [x] Start menu shell, save-confirm overlay, settings screen, inventory screen (USE/EQUIP/UNEQUIP via an A-button item-action popup), party status screen (HP/MP/level/XP-to-next/equipment, view-only) (`engine/menu.py`)
 - [x] Save through menu (`engine/save.py`)
 - [ ] Bluetooth / USB controller support
 - [ ] Title screen
-- [ ] Start menu sub-screens — PARTY/SETTINGS still just highlight, no screen behind them
 - [ ] Load through menu (mid-game — slot picking at boot via `maptest.py` is built)
 
 ### Debug & Testing Screens
@@ -139,14 +138,15 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 
 ### Items & Abilities
 - [x] Item YAML (`data/items/items.yaml`) + loader/inventory (`engine/inventory.py`) + inventory screen
-- [ ] Pickup system (nothing currently adds items to `Inventory`), equip slots, stat effects in battle, USE action
+- [x] Equip slots (`engine.roster.PartyMember.equipped_weapon`/`equipped_armour`) + stat effects in battle (flat `attack`/`defense` bonus off the equipped item's `effect`, see `engine.battle.fighter_from_roster`) + USE action (heals a chosen party member from the inventory screen, or a consumable off the battle ITEM row)
+- [ ] Pickup system — nothing currently adds items to `Inventory` from the overworld (battle drops and container grants are the only sources)
 - [ ] Special abilities YAML (`data/abilities/`)
 
 ### World & Content
 - [ ] Rethink procgen scope — decide what stays procedural vs. hand-authored in Tiled
 - [ ] Procgen output → Tiled-compatible JSON, so generated and hand-authored maps share one loader
 - [ ] Updated and expanded tilesets
-- [ ] Items in the world — pickup system, equip slots + stat effects
+- [ ] Items in the world — pickup system (equip slots + stat effects are done, see Items & Abilities above)
 - [ ] Named locations — towns, dungeons, overworld landmarks
 - [ ] Enemy respawn tuning — a defeated `enemy`/`spawner` placement currently respawns on any map reload (leaving and re-entering), the same mechanism spawners already use every reload; consider an Earthbound-style refinement where respawn only happens once the defeated tile has scrolled off-camera, since maps are large
 
@@ -154,7 +154,7 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [x] Battle resolver (`engine/battle.py`, headless `Fighter`/`BattleState`) + graphical debug screen (`engine.renderer.BattleScene`) — MELVIN vs. one enemy. Wired into real play: touching an enemy on the overworld starts a battle (`OverworldScene.start_battle`, gated by a post-battle immunity window so the player isn't instantly regrabbed); a win credits gold/XP/an item drop (`enemies.yaml`'s `xp`/`drop_item`/`drop_chance` fields) through `engine.roster.Roster`/`GameState`/`Inventory` and returns the player to their exact overworld spot; a loss shows a GAME OVER screen and reverts to the last save (discarding everything since, no other penalty). `maptest.py`'s isolated `battles` debug mode still works unchanged, for testing any enemy without a save. A scripted-encounter stub (`OverworldScene.trigger_scripted_encounter`) exists for a future cutscene/dialogue-triggered fight — not callable from anywhere yet, blocked on the general Event System below. Post-battle, the player gets a 2-second immunity window (blinking sprite) before touch-triggering another battle, so a win/flee doesn't instantly re-grab them.
 - [x] Battle-entry transition — touching an enemy no longer cuts straight to the battle screen. A randomly-picked 8-frame dissolve animation (`assets/fx/transitions.png`, one row per variant, `_BATTLE_TRANSITION_ANIM_COUNT` finished so far) tiles across the whole screen over 2 seconds while player/NPC/enemy sprites stay visible on top, then holds on solid black for 0.5 seconds before the battle screen actually appears (`OverworldScene._tick_battle_transition`/`_draw_battle_transition_overlay`). Fully pauses gameplay and swallows input throughout.
 - [ ] Battle screen overhaul — real art (currently plain textboxes + procgen backgrounds)
-- [x] Player-driven battle action menu — ATTACK/ITEM/DEFEND/RUN row, N/S cursor + A confirm, hidden until the player's turn actually starts (a ~3s post-turn text hold, skippable with A/B, precedes it so results are readable before the menu reappears). ATTACK and RUN both do something when confirmed; ITEM/DEFEND are real selectable rows with no effect wired in yet — ask before implementing. SPECIAL isn't in the row at all — see the per-member specials table below, unlocked by a story flag or player level, not just by existing in the party
+- [x] Player-driven battle action menu — ATTACK/ITEM/DEFEND/RUN row, N/S cursor + A confirm, hidden until the player's turn actually starts (a ~3s post-turn text hold, skippable with A/B, precedes it so results are readable before the menu reappears). ATTACK, ITEM, and RUN all do something when confirmed (ITEM opens a scrollable list of usable consumables); DEFEND is still a real selectable row with no effect wired in yet — ask before implementing. SPECIAL isn't in the row at all — see the per-member specials table below, unlocked by a story flag or player level, not just by existing in the party
 - [x] RUN — level-scaled escape chance (`engine.battle.try_run`): 40% at equal average-party-vs-enemy level (currently just MELVIN's level, since battle is still 1v1 — becomes a real average once full-party battles exist), ±3%/level of difference, clamped to 5–95%, plus +15% per failed attempt this battle so a run always eventually succeeds. Success ends the battle with no rewards and leaves the enemy on the map (it wasn't defeated); failure costs the turn, same as a miss
 - [ ] Full party in battle (currently MELVIN-only, 1v1) — party specials are designed but not implemented:
 
@@ -165,9 +165,9 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
   | POOTS | SNACK | Heals a party member 15–25% max HP | 6 |
   | SMELTRUD | TICKLE | +15% ally damage for 2 turns | 5 |
 
-- [ ] Party status panel (HP, MP, level, XP per member)
+- [x] Party status panel (HP, MP, level, XP-to-next-level per member) — start menu's PARTY option, view-only
 - [ ] Battle-speed config (separate from movement speed)
-- [ ] XP → level-up conversion — `engine.roster.PartyMember.xp` accumulates on a battle win now, but no formula/thresholds are designed yet; `lvl` stays exactly what `data/party/*.json` says until this is built
+- [x] XP → level-up conversion — `engine.battle.xp_to_next_level`/`apply_level_ups`: a simple `base * level^exponent` curve, checked after every battle win's XP award; each level crossed bumps `max_hp`/`max_mp` by the same per-level step a fresh Fighter uses, current HP/MP unchanged
 
 ---
 

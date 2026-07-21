@@ -100,14 +100,7 @@
 #   once that closes -- see engine.menu.ShopMenu.pending_shop.
 #   A shop has no one-shot flag -- both are available every visit.
 
-2:
-  behavior: static
-  dialogue: []
-  event: null
-  name: pizza_cashier_parkinglot
-  npc_id: null
-  sprite: pizza_cashier
-  type: npc
+
 5:
   behavior: static
   dialogue: []
@@ -116,3 +109,15 @@
   npc_id: null
   sprite: flies
   type: npc
+7:
+  behavior: null
+  dialogue: 
+  - Welcome to Pizza House! What can I getcha?
+  event: null
+  farewell: 
+  - Sit anywhere you like.
+  name: pizza_cashier
+  npc_id: null
+  sprite: pizza_cashier
+  stock: {boiled_hotdog,15}
+  type: shop

@@ -122,6 +122,14 @@
   name: fh_frontdoor
   type: warp
 8:
-  dialogue: []
+  dialogue:
+  - Gaming time can wait.
   name: pc_1
   type: sign
+9:
+  contents: null
+  dialogue:
+  - Finders keepers!
+  gold: 10
+  name: cash_trash
+  type: container

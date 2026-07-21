@@ -12,16 +12,20 @@ Only MELVIN fights right now (engine.battle's module docstring -- battle
 stays 1v1, single-Fighter scope), but every data/party/*.json already
 exists fully authored, so fresh() loads all of them -- costs nothing extra,
 and matches engine.player.Player.sheet_name's own "swap the lead character
-in future" framing without inventing any new mechanic.
+in future" framing without inventing any new mechanic. Loading everyone
+into this Roster is not the same as being in the active party, though --
+see current_party() below -- so screens that list "the party" (equip
+targets, the PARTY status screen) never iterate self.members directly.
 
-No leveling formula lives here or anywhere else yet -- xp accumulates as a
-tracked stat, lvl stays exactly what data/party/<name>.json says until a
-future pass designs the actual curve/thresholds.
+Leveling (engine.battle.xp_to_next_level/apply_level_ups) increments
+lvl/max_hp/max_mp in place on a PartyMember once xp crosses a threshold.
 """
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from engine.game_state import GameState
 
 _PARTY_DIR = Path(__file__).parent.parent / "data" / "party"
 
@@ -35,6 +39,8 @@ class PartyMember:
     xp:      int
     mp:      int
     max_mp:  int
+    equipped_weapon: str | None = None
+    equipped_armour: str | None = None
 
 
 def _load_member(path: Path) -> PartyMember:
@@ -61,9 +67,25 @@ class Roster:
     def get(self, name: str) -> PartyMember:
         return self.members[name]
 
+    def current_party(self, game_state: GameState) -> list[PartyMember]:
+        """Every member currently in the active party -- filtered against
+        engine.game_state.GameState.party_members, since every
+        data/party/*.json loads into this roster regardless of whether
+        that character has actually joined yet (see fresh()). This is the
+        one place equip-target/heal-target pickers, the inventory's
+        equipped-item greying check, and the PARTY screen's member list
+        all go through, so a future recruit mechanic (adding a name to
+        game_state.party_members) is reflected everywhere without
+        touching any of those call sites. MELVIN is always present in the
+        default, so this list is never empty today -- callers (e.g.
+        PartyMenu's modulo wrap) rely on that."""
+        return [self.members[name] for name in game_state.party_members if name in self.members]
+
     def to_dict(self) -> dict:
         return {name: {"lvl": m.lvl, "hp": m.hp, "max_hp": m.max_hp,
-                        "xp": m.xp, "mp": m.mp, "max_mp": m.max_mp}
+                        "xp": m.xp, "mp": m.mp, "max_mp": m.max_mp,
+                        "equipped_weapon": m.equipped_weapon,
+                        "equipped_armour": m.equipped_armour}
                 for name, m in self.members.items()}
 
     @classmethod
@@ -71,7 +93,10 @@ class Roster:
         """Starts from fresh() and overlays whatever `d` has on top, so a
         save file predating a new party member (or missing the whole
         "roster" key, for saves written before this existed) doesn't
-        KeyError -- the missing member just keeps their fresh() defaults."""
+        KeyError -- the missing member just keeps their fresh() defaults.
+        Same reasoning covers equipped_weapon/equipped_armour, which didn't
+        exist in earlier saves -- .get(..., None) leaves those members
+        unequipped rather than erroring."""
         roster = cls.fresh()
         for name, fields in d.items():
             if name not in roster.members:
@@ -83,4 +108,6 @@ class Roster:
             member.xp     = fields.get("xp", member.xp)
             member.mp     = fields.get("mp", member.mp)
             member.max_mp = fields.get("max_mp", member.max_mp)
+            member.equipped_weapon = fields.get("equipped_weapon", member.equipped_weapon)
+            member.equipped_armour = fields.get("equipped_armour", member.equipped_armour)
         return roster

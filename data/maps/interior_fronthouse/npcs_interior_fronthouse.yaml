@@ -116,6 +116,8 @@
   behavior: wander
   dialogue:
   - You guys really tied one on last night!
+  - Your t-shirt's in that trash can over there if you need it...
+  - You look like you could use the help.
   event: null
   name: roach
   npc_id: roach

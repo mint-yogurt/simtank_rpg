@@ -157,6 +157,19 @@
                  "width":16,
                  "x":384,
                  "y":192
+                }, 
+                {
+                 "gid":1133,
+                 "height":16,
+                 "id":9,
+                 "name":"cash_trash",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"container",
+                 "visible":true,
+                 "width":16,
+                 "x":512,
+                 "y":256
                 }],
          "opacity":1,
          "type":"objectgroup",
@@ -208,7 +221,7 @@
          "y":0
         }],
  "nextlayerid":5,
- "nextobjectid":9,
+ "nextobjectid":10,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.2",

@@ -6,7 +6,9 @@
 #   name:        display name
 #   category:    consumables | weapon | armour | key
 #   description: flavour text for the item screen
-#   effect:      {hp: N} and/or {mp: N} and/or other keys as new effect types show up; omit for non-consumables
+#   effect:      {hp: N} and/or {mp: N} for consumables; {attack: N} for weapons, {defense: N}
+#                for armour (flat bonus while equipped -- see engine.battle.fighter_from_roster);
+#                omit entirely for key items
 #   slot:        for weapon/armour — which equipment slot this fills
 #   stackable:   true for consumables, false for equipment/key items
 #   value:       shop sell price in whatever currency unit we settle on (0 = unsellable)
@@ -81,6 +83,7 @@ weapons:
     name: Broken Q-Tip
     category: weapon
     description: It still has some reach.
+    effect: {attack: 1}
     slot: weapon
     stackable: false
     value: 1
@@ -89,31 +92,35 @@ weapons:
     name: Plastic Bat
     category: weapon
     description: End-game power. It's hollow but your form is immaculate.
+    effect: {attack: 6}
     slot: weapon
     stackable: false
     value: 0
 
 armour:
-  - id: nascar_jacket
-    name: NASCAR Jacket
+  - id: jascar_jacket
+    name: JASCAR Jacket
     category: armour
     description: Covered in sponsor patches. Surprisingly protective.
+    effect: {defense: 5}
     slot: armour
     stackable: false
-    value: 15
+    value: 75
 
   - id: rags
-    name: Rags
+    name: Tattered Rags
     category: armour
-    description: Used to be a t-shirt.
+    description: It USED to be a t-shirt.
+    effect: {defense: 2}
     slot: armour
     stackable: false
-    value: 0
+    value: 1
 
   - id: feline_leggings
     name: Feline Leggings
     category: armour
-    description: Cat print. Provides comfort and minor defense.
+    description: Cat print. Provides comfort and decent defense.
+    effect: {defense: 10}
     slot: armour
     stackable: false
     value: 10
@@ -122,9 +129,10 @@ armour:
     name: Electric Mammal Medallion
     category: armour
     description: Vibrates faintly.
+    effect: {defense: 20}
     slot: armour
     stackable: false
-    value: 20
+    value: 200
 
 key:
   - id: shopping_cart

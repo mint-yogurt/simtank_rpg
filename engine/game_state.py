@@ -56,6 +56,20 @@ class GameState:
         self.variables["gold"] = self.gold - n
         return True
 
+    @property
+    def party_members(self) -> list[str]:
+        """Roster names actually in the active party right now -- distinct
+        from the full roster (engine.roster.Roster loads every
+        data/party/*.json unconditionally, since a character's sheet
+        exists whether or not they've joined yet). Defaults to just
+        MELVIN -- the only one confirmed recruited/playable so far (see
+        engine.battle's module docstring) -- until a real recruit
+        mechanic calls set_party_members with more."""
+        return self.variables.get("party_members", ["MELVIN"])
+
+    def set_party_members(self, names: list[str]) -> None:
+        self.variables["party_members"] = list(names)
+
     def to_dict(self) -> dict:
         return {"flags": dict(self.flags), "variables": dict(self.variables)}
 

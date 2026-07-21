@@ -107,19 +107,20 @@
   facing: S
   name: pizza_door
   type: warp
-3:
-  dialogue:
-  - Scoop up some mint yogurt with your bare stinky hands?
-  name: saladbar_L
-  type: sign
-4:
-  dialogue:
-  - Gobble a big glob of mint yogurt?
-  name: saladbar_R
-  type: sign
 6:
   contents: null
-  dialogue: []
+  dialogue:
+  - Whoa! Cool!
   gold: null
   name: pizza_trash1
   type: container
+8:
+  dialogue:
+  - That thick and minty Mint Yogurt heals your wounds.
+  name: saladbarL
+  type: healer
+9:
+  dialogue: 
+  - A big ole scoop of this refreshing Mint Yogurt heals your wounds.
+  name: saladbarR
+  type: healer

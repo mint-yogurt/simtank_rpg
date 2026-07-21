@@ -196,6 +196,19 @@
                  "width":16,
                  "x":224,
                  "y":256
+                }, 
+                {
+                 "gid":1133,
+                 "height":16,
+                 "id":11,
+                 "name":"trashcan_roach",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"container",
+                 "visible":true,
+                 "width":16,
+                 "x":576,
+                 "y":272
                 }],
          "opacity":1,
          "type":"objectgroup",
@@ -247,7 +260,7 @@
          "y":0
         }],
  "nextlayerid":5,
- "nextobjectid":11,
+ "nextobjectid":12,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.2",

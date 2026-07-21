@@ -20,12 +20,12 @@ Stats never change; LVL/HP/XP do. Damage scales with level ("dinging").
 
 Scope note (first graphical wire-up, see README): this is a single Fighter
 (MELVIN) vs. a single enemy. The party's turn is now player-driven -- see
-BattleMenu below -- and ATTACK/RUN both actually do something when
-confirmed (see BattleState.step/attempt_run); ITEM/DEFEND are still real,
-choosable rows with no effect wired in yet, and SPECIAL isn't in the row at
-all (each party member gets their own special, unlocked by a story flag or
-player level -- see README roadmap's SING/LAUGH/SNACK/TICKLE table -- not
-by just existing in the party). Don't guess at ITEM/DEFEND's effects when
+BattleMenu below -- and ATTACK/ITEM/RUN all actually do something when
+confirmed (see BattleState.step/step_item/attempt_run); DEFEND is still a
+real, choosable row with no effect wired in yet, and SPECIAL isn't in the
+row at all (each party member gets their own special, unlocked by a story
+flag or player level -- see README roadmap's SING/LAUGH/SNACK/TICKLE table
+-- not by just existing in the party). Don't guess at DEFEND's effect when
 the time comes -- ask first.
 """
 
@@ -109,6 +109,12 @@ ENEMY_HP_PER_LEVEL = 3
 PARTY_MP_BASE = 20
 PARTY_MP_PER_LEVEL = 1
 
+# --- xp / leveling ---------------------------------------------
+# level 1->2: 20, 2->3: ~57, 3->4: ~104, 4->5: ~160 ... tune freely, no other
+# code depends on the exact curve.
+XP_TO_NEXT_BASE = 20
+XP_TO_NEXT_EXPONENT = 1.5
+
 
 # =============================================================================
 # ENTITIES
@@ -127,6 +133,8 @@ class Fighter:
     mp: int = field(default=0)
     max_mp: int = field(default=0)
     defending: bool = False
+    attack_bonus: int = 0    # flat, from an equipped weapon's effect.attack -- see fighter_from_roster
+    defense_bonus: int = 0   # flat, from an equipped armour's effect.defense -- see fighter_from_roster
 
     def __post_init__(self):
         if self.max_hp == 0:
@@ -164,19 +172,57 @@ def load_fighter(path: Path) -> Fighter:
     )
 
 
-def fighter_from_roster(path: Path, member: PartyMember) -> Fighter:
+def fighter_from_roster(path: Path, member: PartyMember, item_defs: dict | None = None) -> Fighter:
     """One party member's Fighter for a real (non-debug) battle: static
     combat stats (iq/weight/sweat/hair) from data/party/<name>.json, live
     hp/max_hp/mp/max_mp/level from `member` (engine.roster.Roster) instead
     of the file -- a battle that leaves this member hurt carries that HP
     back into the overworld and across saves, rather than resetting fresh
-    from disk every time the way load_fighter's debug path does."""
+    from disk every time the way load_fighter's debug path does.
+
+    `item_defs` (engine.inventory.load_item_defs()'s id -> ItemDef map), if
+    given, resolves member.equipped_weapon/equipped_armour into flat
+    attack_bonus/defense_bonus off each ItemDef's effect dict -- 0 for
+    either if unequipped, or if item_defs itself is omitted (maptest.py's
+    debug "battles" mode has no roster/equipment concept at all)."""
     s = json.loads(Path(path).read_text())
+    attack_bonus = defense_bonus = 0
+    if item_defs is not None:
+        weapon_def = item_defs.get(member.equipped_weapon) if member.equipped_weapon else None
+        armour_def = item_defs.get(member.equipped_armour) if member.equipped_armour else None
+        if weapon_def is not None and weapon_def.effect:
+            attack_bonus = weapon_def.effect.get("attack", 0)
+        if armour_def is not None and armour_def.effect:
+            defense_bonus = armour_def.effect.get("defense", 0)
     return Fighter(
         name=s["name"], iq=s["iq"], weight=s["weight"], sweat=s["sweat"], hair=s["hair"],
         level=member.lvl, hp=member.hp, max_hp=member.max_hp,
         mp=member.mp, max_mp=member.max_mp,
+        attack_bonus=attack_bonus, defense_bonus=defense_bonus,
     )
+
+
+def xp_to_next_level(level: int) -> int:
+    return round(XP_TO_NEXT_BASE * level ** XP_TO_NEXT_EXPONENT)
+
+
+def apply_level_ups(member: PartyMember) -> int:
+    """Mutates member in place; returns how many levels were gained (0 if
+    none). xp is per-level progress, not a cumulative total (every
+    data/party/*.json starts at xp: 0) -- each level crossed subtracts that
+    level's threshold and increments max_hp/max_mp by the same
+    PARTY_HP_PER_LEVEL/PARTY_MP_PER_LEVEL step a fresh Fighter uses, so the
+    authored data/party/*.json max_hp stays the baseline rather than being
+    recomputed wholesale. Current hp/mp are left exactly as they are -- a
+    level-up doesn't also fully heal you."""
+    levels_gained = 0
+    while member.xp >= xp_to_next_level(member.lvl):
+        member.xp -= xp_to_next_level(member.lvl)
+        member.lvl += 1
+        member.max_hp += PARTY_HP_PER_LEVEL
+        member.max_mp += PARTY_MP_PER_LEVEL
+        levels_gained += 1
+    return levels_gained
 
 
 # =============================================================================
@@ -210,7 +256,7 @@ def raw_damage(attacker, defender):
     raw = DMG_BASE + _frac(attacker.weight, WEIGHT_RANGE) * DMG_WEIGHT
     scaled = raw * (1 + (attacker.level - 1) * GROWTH)
     resist = _frac(defender.sweat, SWEAT_RANGE) * RESIST
-    return max(1, round(scaled - resist))
+    return max(1, round(scaled - resist) + attacker.attack_bonus)
 
 
 def defend_reduction(fighter):
@@ -260,9 +306,26 @@ def resolve_attack(attacker, defender, rng=None):
     if defender.defending:
         dmg = max(1, round(dmg * (1 - defend_reduction(defender))))
 
+    dmg = max(1, dmg - defender.defense_bonus)
+
     defender.hp -= dmg
     res["damage"] = dmg
     return res
+
+
+def resolve_item_use(fighter, effect: dict) -> dict:
+    """Apply a consumable's hp/mp effect to `fighter` (clamped to max_hp/
+    max_mp) -- the in-battle ITEM row's target is always the single Fighter
+    present, unlike the overworld's USE flow, which lets the player pick
+    which party member (engine.input._confirm_item_action). Returns the
+    amounts actually applied (may be less than `effect` says, if already
+    near full), for _fmt_item_use."""
+    hp_before, mp_before = fighter.hp, fighter.mp
+    if "hp" in effect:
+        fighter.hp = min(fighter.max_hp, fighter.hp + effect["hp"])
+    if "mp" in effect:
+        fighter.mp = min(fighter.max_mp, fighter.mp + effect["mp"])
+    return {"hp_applied": fighter.hp - hp_before, "mp_applied": fighter.mp - mp_before}
 
 
 def try_run(party_level, enemy_level, run_attempts, rng=None):
@@ -295,14 +358,24 @@ def _fmt_attack(res: dict) -> str:
     return f"{a} hits {d} for {res['damage']}.{crit}"
 
 
+def _fmt_item_use(fighter_name: str, item_name: str, res: dict) -> str:
+    parts = []
+    if res["hp_applied"]:
+        parts.append(f"+{res['hp_applied']} HP")
+    if res["mp_applied"]:
+        parts.append(f"+{res['mp_applied']} MP")
+    gained = "  ".join(parts) if parts else "no effect"
+    return f"{fighter_name} uses {item_name}. {gained}."
+
+
 # =============================================================================
 # BATTLE STATE MACHINE
 # =============================================================================
 @dataclass
 class BattleState:
-    """One Fighter vs. one Fighter (see module docstring). ATTACK and RUN
-    are wired to actually do something -- see BattleMenu below; ITEM/DEFEND
-    are still no-ops.
+    """One Fighter vs. one Fighter (see module docstring). ATTACK, ITEM, and
+    RUN are wired to actually do something -- see BattleMenu below; DEFEND
+    is still a no-op.
 
     A single `step()` resolves whichever side's turn it currently is and
     returns the flavor text for it -- the caller (BattleScene) decides
@@ -385,6 +458,19 @@ class BattleState:
             self.phase = "enemy_turn"
         return flavor
 
+    def step_item(self, item_name: str, effect: dict) -> str:
+        """Resolve using a consumable on the party's turn -- called instead
+        of step() when the player confirms an item off the ITEM row (see
+        BattleMenu.picking_item / BattleScene._confirm_choice). Unlike an
+        attack, this can never end the battle, so it always burns the turn
+        and hands off to the enemy, same as a DEFEND would if that were
+        wired up."""
+        res = resolve_item_use(self.party, effect)
+        self.phase = "enemy_turn"
+        self.journal.log_event({"type": "ITEM_USED", "tick": self.round,
+                                 "item": item_name, **res})
+        return _fmt_item_use(self.party.name, item_name, res)
+
     def _step_enemy_attack(self) -> str:
         res = resolve_attack(self.enemy, self.party, self.rng)
         flavor = _fmt_attack(res)
@@ -410,14 +496,23 @@ BATTLE_MENU_OPTIONS: tuple[str, ...] = ("ATTACK", "ITEM", "DEFEND", "RUN")
 @dataclass
 class BattleMenu:
     """Cursor state for the party turn's action row -- mirrors
-    engine.menu.StartMenu: a vertical list, N/S move + wrap. ATTACK and RUN
-    both do something when confirmed right now (see
-    BattleScene._confirm_choice) -- ITEM/DEFEND are real choosable rows,
-    just no-ops until their effects are designed. This class only tracks
+    engine.menu.StartMenu: a vertical list, N/S move + wrap. ATTACK, ITEM,
+    and RUN all do something when confirmed right now (see
+    BattleScene._confirm_choice) -- DEFEND is still a real choosable row,
+    just a no-op until its effect is designed. This class only tracks
     the cursor itself; whether the row is even shown is BattleScene's call
     (only during the party's turn, while it's actually waiting on a
-    choice)."""
+    choice).
+
+    Also carries the ITEM row's own sub-state (`picking_item`), mirroring
+    engine.menu.ShopMenu.picking_amount's nested-sub-state shape: confirming
+    ITEM doesn't act immediately, it opens a scrollable list of usable
+    consumables. This class holds no item data itself (same split as
+    InventoryMenu not knowing about engine.inventory) -- BattleScene passes
+    the list length in per call."""
     selected: int = 0
+    picking_item: bool = False
+    item_cursor: int = 0
 
     def move_cursor(self, direction: str) -> None:
         if direction == "N":
@@ -427,3 +522,19 @@ class BattleMenu:
 
     def selected_option(self) -> str:
         return BATTLE_MENU_OPTIONS[self.selected]
+
+    def start_item_pick(self) -> None:
+        self.picking_item = True
+        self.item_cursor = 0
+
+    def cancel_item_pick(self) -> None:
+        self.picking_item = False
+        self.item_cursor = 0
+
+    def move_item_cursor(self, direction: str, list_len: int) -> None:
+        """N/S scrolls the usable-item list, clamped (not wrapped) -- same
+        idiom as InventoryMenu.move_cursor's list scroll."""
+        if direction == "N":
+            self.item_cursor = max(0, self.item_cursor - 1)
+        elif direction == "S":
+            self.item_cursor = min(max(list_len - 1, 0), self.item_cursor + 1)

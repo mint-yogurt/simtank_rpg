@@ -6,13 +6,17 @@ which direction, if any, should be stepped this frame, and what a button
 press (START/A/B) or a direction press means given the player's current
 state. No pygame dependency, so it's independently testable.
 
-The start menu (engine.menu.StartMenu) and the two overlays it can open —
-engine.menu.SaveMenu (from SAVE) and engine.menu.InventoryMenu (from
-INVENTORY) — never read input themselves — they only expose state mutators
-(open/close/move_cursor/confirm). This module is the one place that decides
-when to call them, including which one is "on top" (whichever of SaveMenu /
-InventoryMenu is open, since only one ever is at a time — both only ever
-open from the start menu) and should receive input first.
+The start menu (engine.menu.StartMenu) and the overlays it can open —
+engine.menu.SaveMenu (from SAVE), engine.menu.InventoryMenu (from
+INVENTORY), engine.menu.SettingsMenu (from SETTINGS), engine.menu.PartyMenu
+(from PARTY) — never read input themselves — they only expose state
+mutators (open/close/move_cursor/confirm). This module is the one place
+that decides when to call them, including which one is "on top" (only one
+of these ever open at a time — all only ever open from the start menu) and
+should receive input first. engine.menu.ItemActionMenu is the one overlay
+that nests a level deeper — it opens from a row on InventoryMenu (see
+handle_a_button/_item_action_options) and sits on top of it, checked before
+InventoryMenu at every input entry point.
 
 engine.dialogue.DialogueBox follows the same rule: it never reads input
 itself, only open()/close()/advance(). A pressed while a dialogue box is
@@ -32,7 +36,9 @@ handle_a_button.
 from engine.dialogue import DialogueBox
 from engine.game_state import GameState, persistent_id
 from engine.inventory import Inventory
-from engine.menu import BUY, InventoryMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu
+from engine.menu import (
+    BUY, InventoryMenu, ItemActionMenu, PartyMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu,
+)
 from engine.movement import OPPOSITE_DIR
 from engine.npc import npc_met_flag, resolve_dialogue
 from engine.player import Player, PlayerState
@@ -123,14 +129,16 @@ class HeldDirectionInput:
 
 def handle_start_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
                          inventory_menu: InventoryMenu, settings_menu: SettingsMenu,
-                         shop_menu: ShopMenu) -> None:
+                         shop_menu: ShopMenu, item_action_menu: ItemActionMenu,
+                         party_menu: PartyMenu) -> None:
     """START opens the menu from IDLE, or closes it if already open.
 
-    Ignored while the save-confirm, inventory, settings, or shop overlay is
-    open — those own B/A until dismissed, same as any other confirm dialog /
-    sub-screen.
+    Ignored while the save-confirm, inventory, settings, shop, item-action,
+    or party overlay is open — those own B/A until dismissed, same as any
+    other confirm dialog / sub-screen.
     """
-    if save_menu.is_open or inventory_menu.is_open or settings_menu.is_open or shop_menu.is_open:
+    if (save_menu.is_open or inventory_menu.is_open or settings_menu.is_open
+            or shop_menu.is_open or item_action_menu.is_open or party_menu.is_open):
         return
     if menu.is_open:
         menu.close()
@@ -142,15 +150,22 @@ def handle_start_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
 
 def handle_b_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
                      inventory_menu: InventoryMenu, settings_menu: SettingsMenu,
-                     shop_menu: ShopMenu, dialogue: DialogueBox, npcs: list,
+                     shop_menu: ShopMenu, item_action_menu: ItemActionMenu,
+                     party_menu: PartyMenu, dialogue: DialogueBox, npcs: list,
                      game_state: GameState, wrap_pages) -> None:
-    """B closes whichever menu is on top: the save-confirm, inventory, or
-    settings overlay first (only one of the three is ever open at a time —
-    all three only ever open from the start menu), otherwise the start menu
-    itself.
+    """B closes whichever menu is on top: the save-confirm, item-action,
+    inventory, settings, or party overlay first (only one of these is ever
+    open at a time — all only ever open from the start menu, except
+    item-action, which opens from inventory and sits one level deeper),
+    otherwise the start menu itself.
+
+    item_action_menu is the one two-level close here besides shop: B first
+    backs out of an in-progress target pick (see
+    engine.menu.ItemActionMenu.picking_target) without acting, a second
+    press closes the popup back to plain inventory browsing.
 
     The shop overlay (opened directly from the overworld, not from the
-    start menu) is the one genuinely two-level close here: B first backs
+    start menu) is the other genuinely two-level close: B first backs
     out of an in-progress quantity pick without transacting; a second press
     closes the shop screen itself and, if the shopkeeper (resolved from
     `npcs` by `shop_menu.shop_name`) has a `farewell_variants` line that
@@ -160,11 +175,20 @@ def handle_b_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     if save_menu.is_open:
         save_menu.close()
         return
+    if item_action_menu.is_open:
+        if item_action_menu.picking_target:
+            item_action_menu.cancel_target_pick()
+        else:
+            item_action_menu.close()
+        return
     if inventory_menu.is_open:
         inventory_menu.close()
         return
     if settings_menu.is_open:
         settings_menu.close()
+        return
+    if party_menu.is_open:
+        party_menu.close()
         return
     if shop_menu.is_open:
         if shop_menu.picking_amount:
@@ -257,9 +281,83 @@ def _confirm_shop_transaction(shop_menu: ShopMenu, shop, game_state: GameState,
     shop_menu.cancel_amount()
 
 
+def _item_action_options(item_def, roster: Roster, game_state: GameState) -> tuple[str, ...]:
+    """What A on this inventory row should offer -- see
+    engine.menu.ItemActionMenu. A consumable with an hp/mp effect offers
+    USE; a weapon/armour offers EQUIP if nobody currently in the party has
+    it equipped, or UNEQUIP if someone does -- mutually exclusive, so the
+    popup can never point one item at two members (equipping requires an
+    unequipped item, and there's nothing to unequip until something's
+    equipped). Anything else (a key item, or a consumable with no hp/mp
+    effect) offers nothing -- A stays a no-op on that row, same as this
+    whole screen was before this existed."""
+    if item_def.category == "consumables":
+        if item_def.effect and ("hp" in item_def.effect or "mp" in item_def.effect):
+            return ("USE",)
+        return ()
+    if item_def.category in ("weapon", "armour"):
+        equipped_by_someone = any(
+            m.equipped_weapon == item_def.id or m.equipped_armour == item_def.id
+            for m in roster.current_party(game_state)
+        )
+        return ("UNEQUIP",) if equipped_by_someone else ("EQUIP",)
+    return ()
+
+
+def _confirm_item_action(item_action_menu: ItemActionMenu, inventory: Inventory,
+                          item_defs: dict, roster: Roster, game_state: GameState) -> None:
+    """Resolve whatever's confirmed on the item-action popup -- called by
+    handle_a_button while item_action_menu.is_open.
+
+    USE and EQUIP both need a target party member and go through
+    picking_target first (see ItemActionMenu.start_target_pick) rather than
+    acting on this same press. UNEQUIP needs no target -- only one member
+    can plausibly have a given item equipped (see _item_action_options'
+    mutual-exclusion rule) -- so it resolves straight off the row's own
+    confirm, clearing whichever member's pointer matches.
+
+    Equipping never touches `inventory` at all -- item ownership and equip
+    state are fully decoupled (see engine.roster.PartyMember), so an
+    equipped item stays visible (dimmed) in its bag category rather than
+    disappearing. USE is the one action that actually consumes the item.
+    Always leaves item_action_menu closed once the action completes."""
+    item_id = item_action_menu.item_id
+    item_def = item_defs[item_id]
+    option = item_action_menu.selected_option()
+
+    if option in ("USE", "EQUIP") and not item_action_menu.picking_target:
+        item_action_menu.start_target_pick()
+        return
+
+    party = roster.current_party(game_state)
+    if option == "USE":
+        member = party[item_action_menu.target_cursor]
+        effect = item_def.effect or {}
+        if "hp" in effect:
+            member.hp = min(member.max_hp, member.hp + effect["hp"])
+        if "mp" in effect:
+            member.mp = min(member.max_mp, member.mp + effect["mp"])
+        inventory.remove(item_id)
+    elif option == "EQUIP":
+        member = party[item_action_menu.target_cursor]
+        if item_def.slot == "weapon":
+            member.equipped_weapon = item_id
+        elif item_def.slot == "armour":
+            member.equipped_armour = item_id
+    elif option == "UNEQUIP":
+        for member in party:
+            if member.equipped_weapon == item_id:
+                member.equipped_weapon = None
+            if member.equipped_armour == item_id:
+                member.equipped_armour = None
+
+    item_action_menu.close()
+
+
 def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
                      inventory_menu: InventoryMenu, settings_menu: SettingsMenu,
-                     shop_menu: ShopMenu,
+                     shop_menu: ShopMenu, item_action_menu: ItemActionMenu,
+                     party_menu: PartyMenu,
                      dialogue: DialogueBox,
                      npcs: list, objects: list, wrap_pages,
                      game_state: GameState, inventory: Inventory, roster: Roster,
@@ -272,11 +370,19 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     writes `player`/`inventory`/`game_state`/`roster` to `active_slot` (see
     engine.save) and also closes back to the start menu. On the start menu:
     SAVE opens the save-confirm overlay, INVENTORY opens the inventory
-    screen, SETTINGS opens the settings screen; PARTY is still stubbed — no
-    sub-screen exists yet. The inventory and settings screens don't consume
-    A at all — inventory is view-only for this alpha pass, and settings
+    screen, SETTINGS opens the settings screen, PARTY opens the party
+    status screen. Settings and party don't consume A at all — settings
     applies its changes immediately off E/W (see engine.menu.SettingsMenu),
-    so A is a no-op on both while they're open.
+    and party is pure display (see engine.menu.PartyMenu) — so A is a no-op
+    on both while they're open.
+
+    The inventory screen does consume A now: pressing it on a row with a
+    real item opens `item_action_menu` with whatever options apply to that
+    item (see `_item_action_options`) — USE for a consumable, EQUIP/UNEQUIP
+    for a weapon or armour piece, nothing for a key item. While
+    `item_action_menu` is open, A resolves it instead (see
+    `_confirm_item_action`) — the popup sits one level on top of the
+    inventory screen, checked first.
 
     Dialogue takes over once open: each press turns the page, and closes the
     box (returning the player to IDLE) on the last one. Signs, healers, and
@@ -333,11 +439,25 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
             save_menu.close()
         return option
 
+    if item_action_menu.is_open:
+        _confirm_item_action(item_action_menu, inventory, item_defs, roster, game_state)
+        return None
+
     if inventory_menu.is_open:
-        return None   # view-only for now — no USE/EQUIP action yet
+        category = inventory_menu.selected_category()
+        item_ids = inventory.items_in(category, item_defs)
+        if item_ids:
+            item_id = item_ids[inventory_menu.selected]
+            options = _item_action_options(item_defs[item_id], roster, game_state)
+            if options:
+                item_action_menu.open(item_id, options)
+        return None
 
     if settings_menu.is_open:
         return None   # E/W applies changes immediately — no confirm step
+
+    if party_menu.is_open:
+        return None   # pure display — no A-driven action, see engine.menu.PartyMenu
 
     if shop_menu.is_open:
         shop = next((n for n in npcs if n.name == shop_menu.shop_name), None)
@@ -361,6 +481,8 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
             inventory_menu.open()
         elif option == "SETTINGS":
             settings_menu.open()
+        elif option == "PARTY":
+            party_menu.open()
         return option
 
     if dialogue.is_open:
@@ -415,7 +537,9 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
 
 def handle_menu_direction(direction: str, menu: StartMenu, save_menu: SaveMenu,
                            inventory_menu: InventoryMenu, settings_menu: SettingsMenu,
-                           shop_menu: ShopMenu, category_item_count: int,
+                           shop_menu: ShopMenu, item_action_menu: ItemActionMenu,
+                           party_menu: PartyMenu, category_item_count: int,
+                           party_count: int = 0,
                            shop_list_len: int = 0, shop_max_amount: int = 0) -> None:
     """Route a direction press to whichever menu is on top.
 
@@ -425,13 +549,22 @@ def handle_menu_direction(direction: str, menu: StartMenu, save_menu: SaveMenu,
     which owns the scene's Inventory + item defs) computes it beforehand.
     Only read when inventory_menu is actually the one on top; harmless to
     pass 0 otherwise.
+
+    `party_count` is `len(roster.current_party(game_state))` — used both by
+    item_action_menu (to clamp its target-member picker) and by party_menu
+    (to wrap its member list). Same "caller computes it, this module has no
+    roster of its own" split as category_item_count above.
     """
     if save_menu.is_open:
         save_menu.move_cursor(direction)
+    elif item_action_menu.is_open:
+        item_action_menu.move_cursor(direction, party_count)
     elif inventory_menu.is_open:
         inventory_menu.move_cursor(direction, category_item_count)
     elif settings_menu.is_open:
         settings_menu.move_cursor(direction)
+    elif party_menu.is_open:
+        party_menu.move_cursor(direction, party_count)
     elif shop_menu.is_open:
         shop_menu.move_cursor(direction, shop_list_len, shop_max_amount)
     elif menu.is_open:
