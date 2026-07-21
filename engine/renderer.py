@@ -2367,13 +2367,37 @@ class OverworldScene:
     def _draw_tile_layer(self, surface: pygame.Surface, layer: 'TiledLayer', cam_x: int, cam_y: int) -> None:
         """Blit one tile layer's GID grid, offset by the camera. See draw()
         for how this and _draw_entities are interleaved in Tiled's real
-        layer order."""
-        for r, row in enumerate(layer.grid):
-            y = r * self.tile_px - cam_y
-            for c, gid in enumerate(row):
-                surf = get_tile_by_gid(self.tile_surfaces, gid)
+        layer order.
+
+        Only walks the rows/cols actually inside the camera's view (plus a
+        2-tile margin, since cam_x/cam_y are sub-tile pixel values, not
+        tile-aligned -- without it, a partially-scrolled-in tile at the
+        view's trailing edge would get skipped, popping in a frame late).
+        A map far bigger than the viewport (e.g. town.json at 166x85) is
+        mostly off-screen at any given moment; walking every cell of every
+        layer every frame regardless of camera position was the actual
+        per-frame cost on slow hardware, not the blit itself -- pygame
+        clips an off-screen dest for free, but the wasted Python-level
+        loop iterations to get there weren't free.
+        """
+        tile_px = self.tile_px
+        grid = layer.grid
+        height = len(grid)
+        width = len(grid[0]) if height else 0
+        view_w, view_h = surface.get_size()
+
+        row_start = max(0, cam_y // tile_px)
+        row_end = min(height, row_start + view_h // tile_px + 2)
+        col_start = max(0, cam_x // tile_px)
+        col_end = min(width, col_start + view_w // tile_px + 2)
+
+        for r in range(row_start, row_end):
+            y = r * tile_px - cam_y
+            row = grid[r]
+            for c in range(col_start, col_end):
+                surf = get_tile_by_gid(self.tile_surfaces, row[c])
                 if surf:
-                    surface.blit(surf, (c * self.tile_px - cam_x, y))
+                    surface.blit(surf, (c * tile_px - cam_x, y))
 
     def _draw_entities(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
         """Blit containers/signs, NPCs, enemies, and the player as one bundle
