@@ -11,7 +11,8 @@
     "dialogue_char_ms": 25,
     "dialogue_char_fast_ms": 6,
     "warp_fade_out_ms": 500,
-    "warp_fade_in_ms": 350
+    "warp_fade_in_ms": 350,
+    "run_speed_multiplier": 1.7
   },
 
   "battle": {

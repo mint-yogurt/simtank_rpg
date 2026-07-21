@@ -28,6 +28,7 @@ def _load() -> SimpleNamespace:
         dialogue_char_fast_ms    = pacing["dialogue_char_fast_ms"],
         warp_fade_out_ms         = pacing["warp_fade_out_ms"],
         warp_fade_in_ms          = pacing["warp_fade_in_ms"],
+        run_speed_multiplier     = pacing["run_speed_multiplier"],  # dimensionless, not ms
         screen_cross_ms          = pacing["screen_cross_ms"],
         interior_entry_ms        = pacing["interior_entry_ms"],
         interior_exit_prepare_ms = pacing["interior_exit_prepare_ms"],

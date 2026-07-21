@@ -139,7 +139,7 @@
   name: bottles1
   type: sign
 11:
-  contents: rags
+  contents: rags # change this to be an actual trash can in Tiled, invisible rn
   dialogue:
   - It's better than nothing. I need to EQUIP this in the MENU.
   gold: null

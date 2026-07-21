@@ -97,6 +97,7 @@ from engine.input import (
     handle_b_button,
     handle_menu_direction,
     handle_start_button,
+    held_button_speed_multiplier,
 )
 from engine.game_state import GameState, persistent_id
 from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
@@ -1252,8 +1253,11 @@ class OverworldScene:
         # independent per-key OS repeats landing in the same frame.
         self._input = HeldDirectionInput()
 
-        # A/B held state, tracked independently of HeldDirectionInput — used
-        # only to type the dialogue box in faster, not for repeat-stepping.
+        # A/B held state, tracked independently of HeldDirectionInput —
+        # read for two things: typing an open dialogue box in faster (see
+        # update()'s dialogue branch), and hold-B-to-run via
+        # engine.input.held_button_speed_multiplier (see
+        # _update_player_movement) — not for repeat-stepping.
         self._held_buttons: set[str] = set()
 
         # Warp transition state — see _begin_warp/_tick_transition/_swap_map.
@@ -1683,7 +1687,8 @@ class OverworldScene:
                 tw['elapsed'] = min(tw['elapsed'] + dt_ms, _NPC_MOVE_MS)
 
     def _update_player_movement(self, dt_ms: int, vertical: str | None, horizontal: str | None) -> None:
-        self.player.move(dt_ms, vertical, horizontal, self.player_speed, self._passable_with_npcs())
+        speed = self.player_speed * held_button_speed_multiplier(self.inventory, self._held_buttons)
+        self.player.move(dt_ms, vertical, horizontal, speed, self._passable_with_npcs())
         self._player_vis = (self.player.row, self.player.col)
 
         # Warps auto-trigger the instant the player's current tile becomes

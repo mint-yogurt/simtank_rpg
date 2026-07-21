@@ -155,3 +155,10 @@ key:
     description: You should probably find the rest of him.
     stackable: false
     value: 0
+
+  - id: running_shoes
+    name: Running Shoes
+    category: key
+    description: Hold B to run.
+    stackable: false
+    value: 0

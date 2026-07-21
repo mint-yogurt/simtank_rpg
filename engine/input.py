@@ -4,7 +4,9 @@ Renderers own raw key polling (pygame key codes → direction strings/button
 names) and visual tweening; this module owns the actual decision logic —
 which direction, if any, should be stepped this frame, and what a button
 press (START/A/B) or a direction press means given the player's current
-state. No pygame dependency, so it's independently testable.
+state, and what holding B does given current inventory (see
+held_button_speed_multiplier). No pygame dependency, so it's independently
+testable.
 
 The start menu (engine.menu.StartMenu) and the overlays it can open —
 engine.menu.SaveMenu (from SAVE), engine.menu.InventoryMenu (from
@@ -33,6 +35,7 @@ SAVE's YES/NO overlay writes to disk via engine.save on YES — see
 handle_a_button.
 """
 
+from engine.config import cfg
 from engine.dialogue import DialogueBox
 from engine.game_state import GameState, persistent_id
 from engine.inventory import Inventory
@@ -44,6 +47,21 @@ from engine.npc import npc_met_flag, resolve_dialogue
 from engine.player import Player, PlayerState
 from engine.roster import Roster
 from engine.save import save_to_slot
+
+
+def held_button_speed_multiplier(inventory: Inventory, held_buttons: set[str]) -> float:
+    """Overworld movement-speed multiplier from currently-held buttons +
+    inventory, applied to Player.move's speed argument every frame.
+
+    Today this is the one case: holding B while carrying Running Shoes
+    (config.json's pacing.run_speed_multiplier) runs. B is meant to grow
+    other item-gated behaviors later — add further branches here, keyed off
+    whatever item/flag each one needs, rather than replacing this function's
+    shape.
+    """
+    if "B" in held_buttons and inventory.has("running_shoes"):
+        return cfg.run_speed_multiplier
+    return 1.0
 
 
 class HeldDirectionInput:

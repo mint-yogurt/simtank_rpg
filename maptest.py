@@ -24,6 +24,7 @@ from pathlib import Path
 
 from engine.config import cfg
 from engine.enemy import load_enemy_defs
+from engine.inventory import Inventory
 from engine.renderer import BattleScene, OverworldScene, run
 from engine.save import SLOT_COUNT, clear_slot, load_from_slot, slot_exists
 
@@ -143,6 +144,14 @@ def main():
             map_path = _MAPS_DIR / map_name / f"{map_name}.json"
             print(f"Loaded slot {slot}: {map_name}, player at "
                   f"({player.row},{player.col})", flush=True)
+
+        # DEV-ONLY: Running Shoes aren't earned via story yet -- grant them
+        # to every debug session so B-to-run is testable without a
+        # pickup/container. Cut this once the real story pickup exists.
+        if inventory is None:
+            inventory = Inventory()
+        if not inventory.has("running_shoes"):
+            inventory.add("running_shoes")
 
         run(
             partial(OverworldScene, map_path=map_path, player=player,

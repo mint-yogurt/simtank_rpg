@@ -111,7 +111,7 @@
   contents: null
   dialogue:
   - Whoa! Cool!
-  gold: null
+  gold: 1
   name: pizza_trash1
   type: container
 8:
