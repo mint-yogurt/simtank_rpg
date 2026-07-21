@@ -318,7 +318,7 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
     pygame.init()
     view_w, view_h = view_size
     current_scale = scale
-    current_fullscreen = False
+    current_fullscreen = cfg.start_fullscreen
     window, win_w, win_h = _set_display_mode(view_w, view_h, current_scale, current_fullscreen)
     pygame.display.set_caption(title)
     screen = pygame.Surface((view_w, view_h))  # native-res render target
@@ -1191,7 +1191,7 @@ class OverworldScene:
         self.menu = StartMenu()
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
         self.inventory_menu = InventoryMenu()   # opened from INVENTORY on self.menu
-        self.settings_menu = SettingsMenu(scale=cfg.pygame_scale)   # opened from SETTINGS on self.menu
+        self.settings_menu = SettingsMenu(scale=cfg.pygame_scale, fullscreen=cfg.start_fullscreen)   # opened from SETTINGS on self.menu
         self.shop_menu = ShopMenu()   # opened directly from the overworld by facing a `shop` object
         self.dialogue = DialogueBox()   # opened by facing a sign and pressing A
         self.active_slot = active_slot

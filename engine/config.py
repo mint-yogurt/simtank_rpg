@@ -42,6 +42,7 @@ def _load() -> SimpleNamespace:
         pygame_scale             = display["pygame_scale"],
         view_cols                = display["view_cols"],
         view_rows                = display["view_rows"],
+        start_fullscreen         = display["start_fullscreen"],
 
         # Interior navigation
         interior_max_explore_dist= interior["max_explore_dist"],
