@@ -11,8 +11,8 @@ class TestRosterFresh(unittest.TestCase):
     def test_fresh_melvin_matches_data_party_json(self):
         melvin = Roster.fresh().get("MELVIN")
         self.assertEqual(melvin.lvl, 1)
-        self.assertEqual(melvin.hp, 25)
-        self.assertEqual(melvin.max_hp, 25)
+        self.assertEqual(melvin.hp, 26)
+        self.assertEqual(melvin.max_hp, 26)
         self.assertEqual(melvin.xp, 0)
         self.assertEqual(melvin.mp, 20)
         self.assertEqual(melvin.max_mp, 20)
@@ -40,13 +40,13 @@ class TestRosterRoundTrip(unittest.TestCase):
 
     def test_from_dict_empty_means_every_member_is_fresh(self):
         restored = Roster.from_dict({})
-        self.assertEqual(restored.get("MELVIN").hp, 25)
+        self.assertEqual(restored.get("MELVIN").hp, 26)
 
     def test_from_dict_partial_fields_only_overrides_given_ones(self):
         restored = Roster.from_dict({"MELVIN": {"xp": 99}})
         member = restored.get("MELVIN")
         self.assertEqual(member.xp, 99)
-        self.assertEqual(member.hp, 25)   # not in the dict -- stays fresh() default
+        self.assertEqual(member.hp, 26)   # not in the dict -- stays fresh() default
 
 
 class TestPartyMember(unittest.TestCase):

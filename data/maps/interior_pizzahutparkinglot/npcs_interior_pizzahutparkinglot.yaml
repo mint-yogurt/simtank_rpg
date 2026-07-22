@@ -65,6 +65,6 @@
   npc_id: null
   sprite: pizza_cashier
   stock:
-    boiled_hotdog: null
-    15: null
+  - item: boiled_hotdog
+    price: 15
   type: shop

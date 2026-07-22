@@ -17,16 +17,16 @@ consumables:
   - id: forgotten_onion
     name: Forgotten Onion
     category: consumables
-    description: A source of much crying. Restores 15 HP.
-    effect: {hp: 15}
+    description: A source of much crying. Restores 10 HP.
+    effect: {hp: 10}
     stackable: true
-    value: 5
+    value: 3
 
   - id: large_meatball
     name: Large Meatball
     category: consumables
-    description: Mystery meat. Restores 10 HP
-    effect: {hp: 10}
+    description: Mystery meat. Only a couple hairs on it. Restores 15 HP
+    effect: {hp: 15}
     stackable: true
     value: 3
 
@@ -53,6 +53,14 @@ consumables:
     effect: {hp: 20}
     stackable: true
     value: 4
+  
+  - id: pizza_slice
+    name: Slice of Pizza
+    category: consumables
+    description: Greasy and dried out. Heals 30 HP
+    effect: {hp: 30}
+    stackable: true
+    value: 10
 
   - id: goo
     name: Goo
@@ -160,5 +168,19 @@ key:
     name: Running Shoes
     category: key
     description: Hold B to run.
+    stackable: false
+    value: 0
+
+  - id: shovel # TODO: wire up switching these items/binding them to b/dig animation/
+    name: Shovel
+    category: key
+    description: Press B to dig on grass or dirt.
+    stackable: false
+    value: 0
+
+  - id: fishingrod
+    name: Fishing Rod
+    category: key
+    description: Try your luck in any water you find.
     stackable: false
     value: 0

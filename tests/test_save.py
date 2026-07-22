@@ -56,7 +56,7 @@ class TestSaveRoundTrip(unittest.TestCase):
 
         map_name, player, inventory, game_state, roster = self.save.load_from_slot(2)
         self.assertEqual(map_name, "town")
-        self.assertEqual(roster.get("MELVIN").hp, 25)   # falls back to fresh() defaults
+        self.assertEqual(roster.get("MELVIN").hp, 26)   # falls back to fresh() defaults
 
 
 if __name__ == "__main__":

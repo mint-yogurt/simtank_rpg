@@ -273,3 +273,22 @@
   name: spawner_parkinglot4
   spawn_chance: 0.4
   type: spawner
+29:
+  dialogue:
+  - EAST - FISHIN' HOLE & HIGHWAY
+  - WEST - BEMMY FACTORY
+  - NORTH - BALD-MART 
+  name: sign_navL
+  type: sign
+30:
+  dialogue:
+  - EAST - FISHIN' HOLE & HIGHWAY
+  - WEST - BEMMY FACTORY
+  - NORTH - BALD-MART 
+  name: sign_nav
+  type: sign
+31:
+  dialogue:
+  - SMUGCHUD TUNNEL
+  name: sign_tunnel
+  type: sign

@@ -2384,6 +2384,15 @@ class OverworldScene:
         line_h = font.get_linesize()
         x, y = _PARTY_DETAIL_LEFT_X, _PARTY_LIST_TOP_Y
 
+        # TODO: show ATTACK/DEFENSE alongside the stats below. Neither is
+        # stored on PartyMember today -- they're derived at battle start
+        # (engine.battle.fighter_from_roster -> Fighter, from the member's
+        # iq/weight/sweat/hair via raw_damage/defend_reduction's formulas,
+        # plus the flat equipped_weapon/equipped_armour bonus) and thrown
+        # away once the battle ends. Showing them here means either
+        # building a Fighter off-battle just to read the numbers back off
+        # it, or pulling the relevant formula math out of engine.battle so
+        # both call sites can share it -- decide which before touching this.
         lines = [
             f"LVL {member.lvl}",
             f"HP  {member.hp}/{member.max_hp}",

@@ -1,22 +1,39 @@
 """Combat resolver + battle state machine for simtank_rpg — pure logic, no
 pygame. Mirrors the player/input split: this module knows stats, hit/crit/
-parry/damage math, and how one round of a fight advances; engine.renderer's
+damage math, and how one round of a fight advances; engine.renderer's
 BattleScene (see maptest.py's "battles" mode) owns pacing, drawing, and
 feeding dt into it.
 
 Formerly two files (this one + engine/combat.py) — combat.py's resolver
-(Fighter, hit/crit/parry/damage math) is merged in here, since the split
-between "battle loop" and "battle math" wasn't pulling its weight once the
-loop itself got this small. combat.py no longer exists.
+(Fighter, hit/crit/damage math) is merged in here, since the split between
+"battle loop" and "battle math" wasn't pulling its weight once the loop
+itself got this small. combat.py no longer exists.
 
-Attack chain:
-  1. to-hit      (SWEAT + level)          -> miss wastes the turn
-  2. crit check  (attacker level)          -> flags +bonus damage
-  3. parry check (defender level, rare)    -> reflect half, defender takes none
-  4. saving throw(multi-stat contest)      -> glance (tiny dmg) vs full
-  5. damage      (WEIGHT + level - resist)
+Stats (IQ/WEIGHT/SWEAT/HAIR, see README's "Stats" paragraph) are fixed per
+character/enemy and never change -- LEVEL is what's meant to dominate a
+fight's outcome, with stats acting as smaller fixed modifiers layered on
+top of a level-driven baseline, not the thing that decides who wins. This
+covers the PHYSICAL track only (WEIGHT = power/toughness, SWEAT =
+accuracy/evasion) -- IQ (magic/special power) and HAIR (magic/special
+resist) are reserved for the SPECIAL/magic track and untouched here; don't
+guess at those formulas ahead of SPECIAL actually being scoped, same as
+DEFEND below.
 
-Stats never change; LVL/HP/XP do. Damage scales with level ("dinging").
+Attack chain (redesigned from an earlier 3-gate version -- to-hit, then a
+separate glance/save roll, then parry -- which stacked enough independent
+"nothing happened" chances that fights dragged and felt miss-heavy even
+against a basic enemy):
+  1. to-hit  (attacker SWEAT+LEVEL vs. defender SWEAT+LEVEL, contested) -> miss wastes the turn
+  2. crit    (attacker level only)                                      -> +bonus damage
+  3. damage  (LEVEL-driven base +/- WEIGHT modifiers, floored)
+
+Parry is intentionally not in this chain -- it's slated to become a
+timing/button-press mechanic (a real skill check) rather than a passive
+RNG roll, so there's nothing to tune here until that's built as its own
+system in engine.renderer.BattleScene.
+# TODO: PARRY QUICK TIME EVENT + ANIMATION -- see engine.renderer.BattleScene,
+# this is where the old passive parry chance used to hook in, right before
+# the enemy's attack resolves.
 
 Scope note (first graphical wire-up, see README): this is a single Fighter
 (MELVIN) vs. a single enemy. The party's turn is now player-driven -- see
@@ -24,9 +41,9 @@ BattleMenu below -- and ATTACK/ITEM/RUN all actually do something when
 confirmed (see BattleState.step/step_item/attempt_run); DEFEND is still a
 real, choosable row with no effect wired in yet, and SPECIAL isn't in the
 row at all (each party member gets their own special, unlocked by a story
-flag or player level -- see README roadmap's SING/LAUGH/SNACK/TICKLE table
--- not by just existing in the party). Don't guess at DEFEND's effect when
-the time comes -- ask first.
+flag or player level -- see README roadmap's party-role table -- not by
+just existing in the party). Don't guess at DEFEND's effect when the time
+comes -- ask first.
 """
 
 import json
@@ -41,6 +58,8 @@ from engine.roster import PartyMember
 # =============================================================================
 # STAT NORMALIZATION  --  reference ranges. raw stat -> 0..1 fraction.
 # =============================================================================
+# IQ_RANGE/HAIR_RANGE are reserved for the magic/special track (SPECIAL isn't
+# built yet -- see module docstring) -- not read by anything below.
 IQ_RANGE = (40, 200)
 WEIGHT_RANGE = (0, 900)
 SWEAT_RANGE = (0, 10)
@@ -55,36 +74,28 @@ def _frac(value, lo_hi):
 # =============================================================================
 # KNOBS
 # =============================================================================
-# --- to-hit --------------------------------------------------
-HIT_BASE = 0.45
-HIT_SWEAT = 0.30         # SWEAT fraction's contribution
-HIT_LEVEL = 0.004        # per level above 1
-HIT_MIN, HIT_MAX = 0.10, 0.95
+# --- to-hit: attacker SWEAT+LEVEL vs. defender SWEAT+LEVEL, contested ------
+HIT_BASE = 0.75
+LEVEL_HIT_SCALE = 0.03   # per level of (attacker.level - defender.level)
+SWEAT_ACC = 0.25         # attacker SWEAT fraction's contribution (accuracy)
+SWEAT_EVA = 0.25         # defender SWEAT fraction's contribution (evasion)
+HIT_MIN, HIT_MAX = 0.15, 0.95
 
-# --- damage --------------------------------------------------
-DMG_BASE = 2.0
-DMG_WEIGHT = 4.0         # WEIGHT fraction's contribution
-GROWTH = 0.10            # dinging: dmg *= 1 + (level-1)*GROWTH   (lvl60 ~ 6.9x)
-RESIST = 2.0             # defender SWEAT fraction soaks this much
+# --- damage: a LEVEL-driven base, WEIGHT as a smaller fixed modifier ------
+LEVEL_BASE = 6.0         # dmg *= 1 + (level-1)*GROWTH -- the dominant term
+GROWTH = 0.10            # dinging: (lvl60 ~ 6.9x LEVEL_BASE)
+WEIGHT_POWER = 1.5       # attacker WEIGHT fraction's contribution
+WEIGHT_TOUGHNESS = 1.0   # defender WEIGHT fraction's contribution (damage reduction)
+DMG_FLOOR = 1
 CRIT_BONUS = 0.15        # +15% on a crit
-GLANCE_CHIP = 1          # flat damage a glancing blow deals
+# TODO: CRIT ANIMATION WHEN CRITS HAPPEN -- see engine.renderer.BattleScene,
+# resolve_attack's res["crit"] is where this should be read from.
 
-# --- crit & parry (scale with LEVEL only) --------------------
+# --- crit (scales with LEVEL only) ----------------------------------------
 CRIT_START = 0.08
-PARRY_START = 0.08
-CRITPARRY_CEIL = 0.35    # chance at MAX_LEVEL
+CRIT_CEIL = 0.35         # chance at MAX_LEVEL
 MAX_LEVEL = 60
-_critparry_step = (CRITPARRY_CEIL - CRIT_START) / (MAX_LEVEL - 1)
-
-# --- saving throw (glance) : multi-stat defender vs attacker --
-# defender power = weighted sum of normalized stats. tune who defends well.
-SAVE_W_IQ = 0.50         # wits -> dodge (Billy shines here)
-SAVE_W_WEIGHT = 0.30     # bulk -> hard to shift
-SAVE_W_SWEAT = 0.20      # grit
-SAVE_LEVEL = 0.01
-SAVE_BASE = 0.25
-SAVE_SPREAD = 0.60       # how much the power gap swings the chance
-SAVE_MIN, SAVE_MAX = 0.05, 0.75
+_crit_step = (CRIT_CEIL - CRIT_START) / (MAX_LEVEL - 1)
 
 # --- defend action -------------------------------------------
 DEF_BASE = 0.20
@@ -101,6 +112,9 @@ RUN_MIN, RUN_MAX = 0.05, 0.95
 # --- hp ------------------------------------------------------
 PARTY_HP_BASE = 25
 PARTY_HP_PER_LEVEL = 2
+PARTY_HP_WEIGHT = 8      # + WEIGHT_frac * this -- mirrors ENEMY_HP_WEIGHT, so
+                          #   a heavy party member (e.g. POOTS) is visibly
+                          #   tankier, not just harder-hitting
 ENEMY_HP_BASE = 14
 ENEMY_HP_WEIGHT = 12     # + WEIGHT_frac * this
 ENEMY_HP_PER_LEVEL = 3
@@ -145,7 +159,11 @@ class Fighter:
                     + (self.level - 1) * ENEMY_HP_PER_LEVEL
                 )
             else:
-                self.max_hp = PARTY_HP_BASE + (self.level - 1) * PARTY_HP_PER_LEVEL
+                self.max_hp = round(
+                    PARTY_HP_BASE
+                    + _frac(self.weight, WEIGHT_RANGE) * PARTY_HP_WEIGHT
+                    + (self.level - 1) * PARTY_HP_PER_LEVEL
+                )
             self.hp = self.max_hp
         if not self.is_enemy and self.max_mp == 0:
             self.max_mp = PARTY_MP_BASE + (self.level - 1) * PARTY_MP_PER_LEVEL
@@ -212,9 +230,11 @@ def apply_level_ups(member: PartyMember) -> int:
     data/party/*.json starts at xp: 0) -- each level crossed subtracts that
     level's threshold and increments max_hp/max_mp by the same
     PARTY_HP_PER_LEVEL/PARTY_MP_PER_LEVEL step a fresh Fighter uses, so the
-    authored data/party/*.json max_hp stays the baseline rather than being
-    recomputed wholesale. Current hp/mp are left exactly as they are -- a
-    level-up doesn't also fully heal you."""
+    authored data/party/*.json max_hp (itself already including that
+    member's fixed PARTY_HP_WEIGHT bonus -- see Fighter.__post_init__)
+    stays the baseline rather than being recomputed wholesale. Current
+    hp/mp are left exactly as they are -- a level-up doesn't also fully
+    heal you."""
     levels_gained = 0
     while member.xp >= xp_to_next_level(member.lvl):
         member.xp -= xp_to_next_level(member.lvl)
@@ -228,35 +248,31 @@ def apply_level_ups(member: PartyMember) -> int:
 # =============================================================================
 # FORMULAS
 # =============================================================================
-def hit_chance(attacker):
-    c = HIT_BASE + _frac(attacker.sweat, SWEAT_RANGE) * HIT_SWEAT \
-        + (attacker.level - 1) * HIT_LEVEL
+def hit_chance(attacker, defender):
+    """Contested to-hit: attacker SWEAT+LEVEL vs. defender SWEAT+LEVEL, one
+    roll -- no separate glance/save gate on top (see module docstring for
+    why the old 3-gate chain got collapsed to this)."""
+    c = (HIT_BASE
+         + (attacker.level - defender.level) * LEVEL_HIT_SCALE
+         + _frac(attacker.sweat, SWEAT_RANGE) * SWEAT_ACC
+         - _frac(defender.sweat, SWEAT_RANGE) * SWEAT_EVA)
     return max(HIT_MIN, min(HIT_MAX, c))
 
 
 def crit_chance(level):
-    return CRIT_START + (level - 1) * _critparry_step
-
-
-def parry_chance(level):
-    return PARRY_START + (level - 1) * _critparry_step
-
-
-def save_chance(defender, attacker):
-    d_power = (_frac(defender.iq, IQ_RANGE) * SAVE_W_IQ
-               + _frac(defender.weight, WEIGHT_RANGE) * SAVE_W_WEIGHT
-               + _frac(defender.sweat, SWEAT_RANGE) * SAVE_W_SWEAT
-               + defender.level * SAVE_LEVEL)
-    a_power = _frac(attacker.weight, WEIGHT_RANGE) + attacker.level * SAVE_LEVEL
-    c = SAVE_BASE + (d_power - a_power) * SAVE_SPREAD
-    return max(SAVE_MIN, min(SAVE_MAX, c))
+    return CRIT_START + (level - 1) * _crit_step
 
 
 def raw_damage(attacker, defender):
-    raw = DMG_BASE + _frac(attacker.weight, WEIGHT_RANGE) * DMG_WEIGHT
-    scaled = raw * (1 + (attacker.level - 1) * GROWTH)
-    resist = _frac(defender.sweat, SWEAT_RANGE) * RESIST
-    return max(1, round(scaled - resist) + attacker.attack_bonus)
+    """LEVEL is the dominant term; WEIGHT is a smaller fixed modifier on
+    both sides (attacker's power, defender's toughness) -- floored so a
+    near-zero-WEIGHT attacker (e.g. BILLY) still deals real, level-scaled
+    damage rather than collapsing toward nothing."""
+    base = LEVEL_BASE * (1 + (attacker.level - 1) * GROWTH)
+    dmg = (base
+           + _frac(attacker.weight, WEIGHT_RANGE) * WEIGHT_POWER
+           - _frac(defender.weight, WEIGHT_RANGE) * WEIGHT_TOUGHNESS)
+    return max(DMG_FLOOR, round(dmg) + attacker.attack_bonus)
 
 
 def defend_reduction(fighter):
@@ -271,35 +287,18 @@ def defend_reduction(fighter):
 def resolve_attack(attacker, defender, rng=None):
     rng = rng or random
     res = {"attacker": attacker.name, "defender": defender.name,
-           "outcome": None, "damage": 0, "reflected": 0, "crit": False}
+           "outcome": None, "damage": 0, "crit": False}
 
-    if rng.random() >= hit_chance(attacker):
+    if rng.random() >= hit_chance(attacker, defender):
         res["outcome"] = "miss"
         return res
 
     is_crit = rng.random() < crit_chance(attacker.level)
     res["crit"] = is_crit
+    # TODO: CRIT ANIMATION WHEN CRITS HAPPEN -- hook off res["crit"] in
+    # engine.renderer.BattleScene wherever this result's flavor text gets shown.
 
-    # parry (enemies never parry)
-    if not defender.is_enemy and rng.random() < parry_chance(defender.level):
-        dmg = raw_damage(attacker, defender)
-        if is_crit:
-            dmg = round(dmg * (1 + CRIT_BONUS))
-        reflected = max(1, round(dmg * 0.5))
-        attacker.hp -= reflected
-        res["outcome"] = "parry"
-        res["reflected"] = reflected
-        return res
-
-    # saving throw -> glance or full
-    glanced = rng.random() < save_chance(defender, attacker)
-    if glanced:
-        dmg = GLANCE_CHIP
-        res["outcome"] = "glance"
-    else:
-        dmg = raw_damage(attacker, defender)
-        res["outcome"] = "hit"
-
+    dmg = raw_damage(attacker, defender)
     if is_crit:
         dmg = round(dmg * (1 + CRIT_BONUS))
 
@@ -309,6 +308,7 @@ def resolve_attack(attacker, defender, rng=None):
     dmg = max(1, dmg - defender.defense_bonus)
 
     defender.hp -= dmg
+    res["outcome"] = "hit"
     res["damage"] = dmg
     return res
 
@@ -339,7 +339,7 @@ def try_run(party_level, enemy_level, run_attempts, rng=None):
     everything in this battle system stays probabilistic). `run_attempts`
     (prior failed attempts *this battle*) adds RUN_STEP on top, so a run
     always eventually succeeds no matter how bad the matchup, same idea as
-    crit/parry/save elsewhere in this module never hard-gating on a stat."""
+    hit_chance/crit_chance elsewhere in this module never hard-gating on a stat."""
     rng = rng or random
     base = max(RUN_MIN, min(RUN_MAX, RUN_BASE + (party_level - enemy_level) * RUN_LEVEL_SCALE))
     chance = min(RUN_MAX, base + run_attempts * RUN_STEP)
@@ -351,10 +351,8 @@ def try_run(party_level, enemy_level, run_attempts, rng=None):
 # =============================================================================
 def _fmt_attack(res: dict) -> str:
     a, d, crit = res["attacker"], res["defender"], " CRIT!" if res["crit"] else ""
-    o = res["outcome"]
-    if o == "miss":   return f"{a} swings at {d}... MISS."
-    if o == "parry":  return f"{a} swings at {d}... PARRIED! {d} reflects {res['reflected']} back.{crit}"
-    if o == "glance": return f"{a} grazes {d} for {res['damage']}.{crit}"
+    if res["outcome"] == "miss":
+        return f"{a} swings at {d}... MISS."
     return f"{a} hits {d} for {res['damage']}.{crit}"
 
 
