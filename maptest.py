@@ -31,6 +31,21 @@ from engine.save import SLOT_COUNT, clear_slot, load_from_slot, slot_exists
 _MAPS_DIR = Path(__file__).parent / "data" / "maps"
 
 
+def _use_kmsdrm_on_pi() -> None:
+    """On a Raspberry Pi, default SDL to KMSDRM so the window opens over the
+    console (HDMI/composite) without X11/Wayland. Assumes the connector has
+    already been forced "connected" at boot (see the pi's
+    composite-kmsdrm-force.service) -- this only picks the driver, it does
+    not touch connector state itself.
+    """
+    try:
+        is_pi = "raspberry pi" in Path("/proc/device-tree/model").read_text(errors="ignore").lower()
+    except OSError:
+        is_pi = False
+    if is_pi:
+        os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")
+
+
 def _clear_screen() -> None:
     os.system("cls" if os.name == "nt" else "clear")
 
@@ -131,6 +146,7 @@ def _choose_mode() -> str:
 
 
 def main():
+    _use_kmsdrm_on_pi()
     view_size = (cfg.view_cols * cfg.tile_px, cfg.view_rows * cfg.tile_px)
     choice = _choose_mode()
 
