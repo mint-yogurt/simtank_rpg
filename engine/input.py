@@ -189,7 +189,13 @@ def handle_b_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     `npcs` by `shop_menu.shop_name`) has a `farewell_variants` line that
     resolves against current `game_state` flags, shows it in `dialogue`
     (player moves to IN_DIALOGUE, same close-to-IDLE as any other dialogue)
-    instead of returning straight to IDLE."""
+    instead of returning straight to IDLE.
+
+    Last, with no menu open at all: an open `dialogue` box treats B exactly
+    like A (see handle_a_button's own dialogue.is_open branch) -- advance to
+    the next page, or close it and hand off to a pending shop screen /
+    back to IDLE. B is a second, equally valid "proceed" button for
+    dialogue, same idiom as most RPGs, not just a menu-back button."""
     if save_menu.is_open:
         save_menu.close()
         return
@@ -224,6 +230,17 @@ def handle_b_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     if menu.is_open:
         menu.close()
         player.set_state(PlayerState.IDLE)
+        return
+    if dialogue.is_open:
+        # Same advance-or-close as A (see handle_a_button's own
+        # dialogue.is_open branch) -- B is meant to work as an equally
+        # valid "proceed" button for dialogue, not just a menu-back button.
+        if dialogue.advance():
+            if shop_menu.pending_shop:
+                shop_menu.open(shop_menu.pending_shop)
+                player.set_state(PlayerState.IN_SHOP)
+            else:
+                player.set_state(PlayerState.IDLE)
 
 
 def _open_container(container, game_state: GameState, inventory: Inventory,

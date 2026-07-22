@@ -1,0 +1,39 @@
+id: 001_melvin_sleeping
+map: interior_fronthouse
+trigger:
+  event: map_load
+steps:
+- pan_camera:
+    to:
+    - 14
+    - 19
+    duration_ms: 0
+- spawn_actor:
+    id: melvin_sleepy
+    npc_id: melvin_sleep
+    row: 15
+    col: 20
+    facing: S
+- wait:
+    ms: 500
+- dialogue:
+    pages:
+    - Melvin...
+- wait:
+    ms: 200
+- wait:
+    ms: 150
+- teleport_actor:
+    actor: player
+    to:
+    - 15
+    - 20
+- face:
+    actor: player
+    dir: S
+- pan_camera:
+    to:
+    - 0
+    - 0
+    duration_ms: 400
+    to_player: true

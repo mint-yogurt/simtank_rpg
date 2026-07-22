@@ -107,6 +107,9 @@ sprites:
   manager:
     file: manager
     colors: ["004059", "f1d0b1", "a77865", "503001"] # shirt, skin, skin shade, shoes
+  melvin_sleep:
+    file: melvin_sleep
+    colors: []
 
 # ── NPCs ──────────────────────────────────────────────────────────────────
 #
@@ -178,3 +181,8 @@ npcs:
     sprite: wizard
     behavior: static
     facing: S
+
+  melvin_sleep:
+    sprite: melvin_sleep
+    behavior: static
+    facing: S 

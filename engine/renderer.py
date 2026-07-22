@@ -120,7 +120,14 @@ _HUB_MAP     = _MAPS_DIR / 'hub_fronthouse' / 'hub_fronthouse.json'
 _SPRITES_PNG = _ASSETS / 'sprites' / 'party_sprites.png'
 _SPRITES_TXT = _ASSETS / 'sprites' / 'partysprites.txt'
 _ENEMY_SPRITES_DIR = _ASSETS / 'sprites' / 'enemies'
-_NPC_SPRITES_DIR = _ASSETS / 'sprites' / 'npcs'
+# An NPC sprite strip normally lives in assets/sprites/npcs/, but a handful
+# (e.g. melvin_sleep, a one-off pose for a cutscene-only NPC placement)
+# live in assets/sprites/party/ instead, alongside the rest of that
+# character's other party art -- see load_npc_sprites, which merges both
+# directories keyed by filename stem rather than requiring every NPC
+# strip's PNG to physically live under npcs/ even when it's really party
+# art. Order matters only on a filename collision -- npcs/ wins.
+_NPC_SPRITES_DIRS = [_ASSETS / 'sprites' / 'party', _ASSETS / 'sprites' / 'npcs']
 _BATTLE_ART_DIR = _ASSETS / 'tiles' / 'enemies'
 _PARTY_DIR   = _REPO_ROOT / 'data' / 'party'
 _MENU_DIR    = _ASSETS / 'menus'
@@ -645,7 +652,15 @@ def get_enemy_frame(enemy_sprites: dict[str, list[pygame.Surface]],
 # self.npc_frames_by_id), not per frame drawn -- recolor_surface below is
 # only ever called there, never from draw().
 
-load_npc_sprites = load_enemy_sprites   # identical mechanism, different directory
+def load_npc_sprites(dirs: list[Path], tile_px: int = 16) -> dict[str, list[pygame.Surface]]:
+    """Same slicing rules as load_enemy_sprites (identical mechanism, just
+    merged across more than one directory -- see _NPC_SPRITES_DIRS above
+    for why an NPC sprite strip isn't always under assets/sprites/npcs/).
+    A later directory's file wins on a filename-stem collision."""
+    frames: dict[str, list[pygame.Surface]] = {}
+    for d in dirs:
+        frames.update(load_enemy_sprites(d, tile_px))
+    return frames
 
 
 def _hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
@@ -1333,14 +1348,15 @@ class OverworldScene:
         self.npc_defs = load_npc_defs()
         self.cutscene_defs = load_cutscene_defs()   # data/cutscenes/*.yaml -- see engine.cutscene
         self.npc_sprite_specs = load_npc_sprite_specs()
-        self.npc_sprites = load_npc_sprites(_NPC_SPRITES_DIR, self.tile_px)   # raw, unrecolored, by filename stem
+        self.npc_sprites = load_npc_sprites(_NPC_SPRITES_DIRS, self.tile_px)   # raw, unrecolored, by filename stem
 
         missing_npc_sprites = sorted({spec.file for spec in self.npc_sprite_specs.values()
                                       if spec.file not in self.npc_sprites})
         if missing_npc_sprites:
             print(f'WARNING: npc.yaml references sprite file(s) with no matching PNG in '
-                  f'assets/sprites/npcs/: {missing_npc_sprites} -- those NPCs will place but '
-                  f'render as nothing until a strip PNG with that filename stem is added',
+                  f'assets/sprites/npcs/ or assets/sprites/party/: {missing_npc_sprites} -- those '
+                  f'NPCs will place but render as nothing until a strip PNG with that filename '
+                  f'stem is added to one of those two directories',
                   flush=True)
 
         # One recolored frame set per unique NPC def (not per placement, not
@@ -1453,6 +1469,20 @@ class OverworldScene:
         self._cutscene_spawned_ids: set[int] = set()
         self._cutscene_next_actor_index = -1   # negative, so it can never collide with a real Tiled object id
         self._camera_override: tuple[float, float] | None = None   # see _camera_offset_px / _cutscene_step_pan_camera
+
+        # Cutscene fade overlay -- see _cutscene_step_fade/_draw_cutscene_fade.
+        # Distinct from _transition_phase/_fade_overlay above (the fixed-
+        # color, fixed-duration warp fade): this one is fully author-
+        # controlled -- any color, any duration -- and, per the fade step's
+        # own semantics, does NOT auto-clear once its tween finishes: a
+        # fade-out holds at full opacity until a later fade-in step ramps it
+        # back down, or the whole cutscene ends (see _end_cutscene). alpha
+        # is 0..255; 0 means "draw nothing," so draw() can skip the blit
+        # entirely whenever no fade is in effect.
+        self._cutscene_fade_overlay = pygame.Surface((cfg.view_cols * self.tile_px, cfg.view_rows * self.tile_px))
+        self._cutscene_fade_alpha = 0.0
+        self._cutscene_fade_see_through = False
+        self._cutscene_fade_anim: dict | None = None   # in-progress tween, see _cutscene_step_fade
 
         spawn = (self.player.row, self.player.col) if self._loaded_save else None
         facing = self.player.facing if self._loaded_save else None
@@ -1736,6 +1766,17 @@ class OverworldScene:
                                            self.shop_menu, self.item_action_menu, self.party_menu,
                                            category_item_count, len(self.roster.current_party(self.game_state)),
                                            shop_list_len, shop_max_amount)
+                elif self.player.state == PlayerState.IN_DIALOGUE:
+                    # Locked out entirely -- a direction press must not turn
+                    # the player to face a new way while a dialogue box is
+                    # up. Ordinary sign/NPC/container/shop dialogue never
+                    # sets choices (see engine.dialogue's module docstring),
+                    # so there's no N/S-cursor case to route here either --
+                    # that only exists for a cutscene's dialogue step, which
+                    # is handled entirely by _handle_cutscene_event instead
+                    # (self.cutscene_player is not None already returns
+                    # above, before this branch is ever reached).
+                    pass
                 else:
                     # Turn-in-place (a tap that doesn't move, just faces the
                     # new way) only applies from a dead stop — see
@@ -1829,11 +1870,16 @@ class OverworldScene:
             return
 
         if self.dialogue.is_open:
-            # Holding A or B types the current page in faster; still a full
-            # gameplay pause otherwise — no movement/anim ticks while open.
+            # Holding A or B types the current page in faster. Player
+            # input/movement, enemy AI, and warp/trigger checks all stay
+            # fully paused -- but NPCs keep animating and wandering (see
+            # _tick_npc_animation) rather than visibly freezing mid-frame
+            # just because the player is mid-conversation with someone
+            # else, or reading a sign.
             fast = bool(self._held_buttons & {'A', 'B'})
             ms_per_char = cfg.dialogue_char_fast_ms if fast else cfg.dialogue_char_ms
             self.dialogue.tick(dt_ms, ms_per_char)
+            self._tick_npc_animation(dt_ms)
             return
 
         if self.menu.is_open or self.shop_menu.is_open:
@@ -1843,6 +1889,20 @@ class OverworldScene:
             # directly from the overworld with self.menu.is_open staying
             # False the whole time, so it needs its own check here.
             return
+
+        # `flag`-event cutscene triggers (see engine.cutscene's module
+        # docstring / _check_cutscene_triggers) are the only trigger surface
+        # polled every ordinary-gameplay frame instead of off some physical
+        # action (arriving somewhere, stepping on a tile, pressing A) -- this
+        # is what lets one cutscene chain straight into another purely off a
+        # flag it set itself, with no map transition/tile-step/NPC-talk in
+        # between (e.g. a multi-part intro that plays before the player ever
+        # gets control). Checked here, past every full-pause gate above, so
+        # it can't preempt a battle/dialogue/menu/warp-fade already in
+        # progress -- only ordinary free-roam.
+        self._check_cutscene_triggers('flag')
+        if self.cutscene_player is not None:
+            return   # a flag trigger just started a cutscene this frame
 
         # Only ticks once the player actually has control again (past every
         # full-pause gate above) -- an item-drop win opens a "Found X!"
@@ -1858,15 +1918,7 @@ class OverworldScene:
         else:
             self._immunity_blink_visible = True   # self-heal if immunity expires mid-blink-off
 
-        self._anim_timer += dt_ms
-        if self._anim_timer >= _NPC_ANIM_MS:
-            self._anim_frame ^= 1
-            self._anim_timer -= _NPC_ANIM_MS
-
-        self._npc_move_timer += dt_ms
-        if self._npc_move_timer >= _NPC_MOVE_MS:
-            self._npc_move_timer -= _NPC_MOVE_MS
-            self._update_npc_wander()
+        self._tick_npc_animation(dt_ms)
 
         if self._update_enemies(dt_ms):
             return   # a battle just started this frame -- see _update_enemies
@@ -1883,6 +1935,26 @@ class OverworldScene:
         else:
             self._player_walk_timer = 0
             self._player_anim = 0
+
+    def _tick_npc_animation(self, dt_ms: int) -> None:
+        """NPC idle-frame toggle, wander-move decisions, and in-flight move
+        tweens -- split out of the main body of update() so a dialogue box
+        (see the self.dialogue.is_open branch above) can keep this ticking
+        while it fully pauses everything else (player input/movement, enemy
+        AI, warps). Deliberately ticked together rather than split further
+        (e.g. only the frame toggle): freezing a wander tween's `elapsed`
+        while still toggling `_anim_frame` would show an NPC's legs cycling
+        while it stays visually pinned mid-tile, which is arguably a worse
+        version of the frozen-solid bug this exists to fix."""
+        self._anim_timer += dt_ms
+        if self._anim_timer >= _NPC_ANIM_MS:
+            self._anim_frame ^= 1
+            self._anim_timer -= _NPC_ANIM_MS
+
+        self._npc_move_timer += dt_ms
+        if self._npc_move_timer >= _NPC_MOVE_MS:
+            self._npc_move_timer -= _NPC_MOVE_MS
+            self._update_npc_wander()
 
         for tw in self._npc_tweens.values():
             if tw['elapsed'] < _NPC_MOVE_MS:
@@ -2363,7 +2435,29 @@ class OverworldScene:
         through an ordinary warp; map 2's own "map_load" check (called from
         _load_map, at the tail end of _swap_map) sees that flag and starts
         cutscene B -- no map-switching logic ever needed inside the executor
-        itself."""
+        itself.
+
+        `event == 'flag'` is the odd one out: update() polls it every
+        ordinary-gameplay frame rather than off a physical action (arriving
+        somewhere / a tile-step / an A-press), which is what makes it the
+        right surface for chaining a cutscene purely off another cutscene's
+        own set_flag step -- no map transition, tile, or NPC needed in
+        between (the case that actually motivated this: an intro made of
+        several back-to-back cutscenes, before the player has ever had
+        control at all). Being polled every frame with no physical gate
+        also means it's the one surface that would refire forever the
+        instant it ends if nothing stopped it -- so unlike map_load/tile/
+        npc_talk (author's own job to add an `unless: [cutscene_seen:<id>]`
+        guard, per this module's docstring), a `flag`-event cutscene is
+        *implicitly* skipped here the moment its own `cutscene_seen:<id>`
+        flag is set, regardless of what the author's own `when`/`unless`
+        say -- and that flag gets set automatically, right here, the
+        instant it fires. Not "auto-populates the author's `unless` list"
+        (an empty `unless: []` wouldn't check it) -- an actual second,
+        unconditional gate this surface alone enforces, so no author
+        discipline is required at all for this one to be one-shot; a
+        manual `unless: [cutscene_seen:<id>]` on top is harmless, just
+        redundant."""
         if self.cutscene_player is not None:
             return
         map_name = self.map_path.stem
@@ -2371,7 +2465,11 @@ class OverworldScene:
             trigger = cutscene.trigger
             if trigger is None or trigger.event != event or cutscene.map != map_name:
                 continue
+            if event == 'flag' and self.game_state.flag(f'cutscene_seen:{cutscene.id}'):
+                continue
             if trigger_matches(trigger, self.game_state.flag):
+                if event == 'flag':
+                    self.game_state.set_flag(f'cutscene_seen:{cutscene.id}', True)
                 self.start_cutscene(cutscene.id)
                 return
 
@@ -2420,22 +2518,26 @@ class OverworldScene:
             self._cutscene_spawned_ids = set()
         self._camera_override = None
         self._cutscene_camera_pan = None
+        self._cutscene_fade_alpha = 0.0   # a fade holds until faded back in or the cutscene ends -- this is "ends"
+        self._cutscene_fade_anim = None
         self.cutscene_player = None
         self._cutscene_armed_index = None
         self._player_last_tile = self.player.current_tile()
 
     def _handle_cutscene_event(self, event: pygame.event.Event) -> None:
-        """Input while a cutscene is active: A advances/closes whatever
-        dialogue page is currently open (same as ordinary play), tracked
-        via _held_buttons same as normal for the fast-reveal-on-hold effect
-        (see _cutscene_step_dialogue). Movement keys are otherwise ignored
-        entirely -- a cutscene owns the player's position via move_actor
-        steps, same "full pause" reasoning as a battle or menu owning input
-        -- except while a dialogue step's response list is showing
-        (self.dialogue.is_showing_choices()), where N/S move the response
-        cursor and A confirms one instead of advancing/closing, same
-        N/S-cursor + A-confirm idiom as every other list menu in this
-        game."""
+        """Input while a cutscene is active: A or B advances/closes whatever
+        dialogue page is currently open (same as ordinary play -- see
+        engine.input.handle_a_button/handle_b_button's own dialogue.is_open
+        branches), tracked via _held_buttons same as normal for the
+        fast-reveal-on-hold effect (see _cutscene_step_dialogue). Movement
+        keys are otherwise ignored entirely -- a cutscene owns the player's
+        position via move_actor steps, same "full pause" reasoning as a
+        battle or menu owning input -- except while a dialogue step's
+        response list is showing (self.dialogue.is_showing_choices()),
+        where N/S move the response cursor and A confirms one instead of
+        advancing/closing, same N/S-cursor + A-confirm idiom as every other
+        list menu in this game (B has no role there -- confirming a choice
+        is a distinct action from merely proceeding, so it stays A-only)."""
         if event.type != pygame.KEYDOWN:
             return
         button = _BUTTON_KEY.get(event.key)
@@ -2452,7 +2554,7 @@ class OverworldScene:
                 self._confirm_dialogue_choice()
             return
 
-        if button == 'A' and self.dialogue.is_open:
+        if button in ('A', 'B') and self.dialogue.is_open:
             self.dialogue.advance()
 
     def _confirm_dialogue_choice(self) -> None:
@@ -2558,10 +2660,23 @@ class OverworldScene:
         dialogue in the game, or via _confirm_dialogue_choice closing it once
         a response is picked, for one authored with `choices:` (see
         engine.cutscene.CutsceneChoice) -- either way, this method just
-        watches self.dialogue.is_open, so it doesn't need to know which."""
+        watches self.dialogue.is_open, so it doesn't need to know which.
+
+        `args['pages']` is run through _wrap_dialogue_pages just like
+        ordinary sign/NPC dialogue -- authoring this step with raw
+        unwrapped strings used to overflow the box past the screen edge
+        for anything longer than one line; every other dialogue.open() call
+        site already wrapped, this one just hadn't.
+
+        An optional `position: "top"|"bottom"` pins which edge the box
+        docks to for this step specifically, read directly by
+        _draw_dialogue_box off the currently-active step rather than
+        stored here -- see that method. Anything else (unset, "auto")
+        leaves the normal player-position-based auto-dock behavior alone."""
         if is_new:
             choices = args.get('choices') or []
-            self.dialogue.open(list(args['pages']), choices=[c.label for c in choices] or None)
+            self.dialogue.open(self._wrap_dialogue_pages(list(args['pages'])),
+                                choices=[c.label for c in choices] or None)
             return False
         if not self.dialogue.is_open:
             return True
@@ -2799,6 +2914,75 @@ class OverworldScene:
             return True
         return False
 
+    def _cutscene_step_teleport_actor(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Instantly set an actor's position -- no walk cycle, no cardinal-
+        line requirement, always finishes the same frame it starts. This
+        is the tool for repositioning an actor while the camera's looking
+        somewhere else (see pan_camera) so the reposition itself is never
+        seen: move_actor always walks (proportional to distance, cardinal
+        only), which is either a visibly wrong diagonal-looking L-shaped
+        detour or just pointless time spent off-screen for no visual
+        payoff. Same not-a-real-movement spirit as spawn_actor seeding a
+        finished tween outright rather than animating in from somewhere."""
+        actor = self._cutscene_actor(args['actor'])
+        if actor is None:
+            return True
+        row, col = args['to'][0], args['to'][1]
+        if actor is self.player:
+            self.player.row, self.player.col = float(row), float(col)
+            self._player_vis = (self.player.row, self.player.col)
+            self._player_walk_timer = 0
+            self._player_anim = 0
+        else:
+            actor.row, actor.col = int(row), int(col)
+            self._npc_tweens[actor.index] = {
+                'src': (float(row), float(col)),
+                'dst': (float(row), float(col)),
+                'elapsed': _NPC_MOVE_MS,
+            }
+        return True
+
+    def _cutscene_step_fade(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Ramp a full-screen color overlay in (`direction: "in"`, toward
+        clear) or out (`direction: "out"`, toward opaque), lerping over
+        `duration_ms` -- same src/dst/elapsed/duration tween shape as
+        _cutscene_step_pan_camera. `color` (`#rrggbb` or `rrggbb`, default
+        black) is latched onto the shared overlay surface the instant this
+        step starts, so a later fade step can pick a different color
+        without the previous one bleeding through mid-tween.
+
+        Unlike pan_camera's `to_player`, there's no equivalent auto-reset
+        here: the overlay just holds at wherever the tween lands -- a
+        fade-out stays solid until a later fade-in step or the cutscene
+        ending (see _end_cutscene) clears it, because the entire point of
+        this step is hiding something for as long as the author needs (e.g.
+        a teleport_actor happening off-camera), not for a fixed beat the
+        engine decides on its own.
+
+        `see_through` (default off) redraws every entity on top of the
+        overlay once it's blitted (see draw()/_draw_cutscene_fade) -- same
+        "overlay first, entities redrawn on top" trick
+        _draw_battle_transition_overlay already uses -- so a scripted beat
+        can keep character sprites visible against the solid color instead
+        of hiding everything. Dialogue boxes draw over the overlay
+        regardless of this flag either way (see draw()'s own ordering)."""
+        direction = args.get('direction', 'out')
+        target_alpha = 255.0 if direction == 'out' else 0.0
+        duration_ms = max(args.get('duration_ms', 0), 1)
+        if is_new:
+            color = (args.get('color') or '#000000').lstrip('#')
+            self._cutscene_fade_overlay.fill(_hex_to_rgb(color))
+            self._cutscene_fade_see_through = bool(args.get('see_through', False))
+            self._cutscene_fade_anim = {
+                'src': self._cutscene_fade_alpha, 'dst': target_alpha,
+                'elapsed': 0, 'duration': duration_ms,
+            }
+        anim = self._cutscene_fade_anim
+        anim['elapsed'] = min(anim['elapsed'] + dt_ms, anim['duration'])
+        t = anim['elapsed'] / anim['duration']
+        self._cutscene_fade_alpha = _lerp(anim['src'], anim['dst'], t)
+        return anim['elapsed'] >= anim['duration']
+
     # ── camera ───────────────────────────────────────────────────────────────
 
     def _camera_offset_px(self) -> tuple[int, int]:
@@ -2867,6 +3051,9 @@ class OverworldScene:
             # but a map authored without one shouldn't hide the player.
             self._draw_entities(surface, cam_x, cam_y)
 
+        if self._cutscene_fade_alpha > 0:
+            self._draw_cutscene_fade(surface, cam_x, cam_y)
+
         if self._battle_transition_phase == "anim":
             self._draw_battle_transition_overlay(surface, cam_x, cam_y)
 
@@ -2896,6 +3083,19 @@ class OverworldScene:
 
         if self._transition_phase is not None:
             self._draw_transition(surface)
+
+    def _draw_cutscene_fade(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
+        """Full-screen color overlay driven by a cutscene's own `fade` step
+        (_cutscene_step_fade) -- unrelated to _draw_transition's warp fade,
+        which is fixed-color/fixed-duration and drawn separately, later,
+        at the very end of draw(). `see_through` redraws entities on top of
+        the overlay afterward, same "overlay then entities again" trick
+        _draw_battle_transition_overlay uses just below, so sprites stay
+        visible against the solid color instead of being hidden by it."""
+        self._cutscene_fade_overlay.set_alpha(round(self._cutscene_fade_alpha))
+        surface.blit(self._cutscene_fade_overlay, (0, 0))
+        if self._cutscene_fade_see_through:
+            self._draw_entities(surface, cam_x, cam_y)
 
     def _draw_battle_transition_overlay(self, surface: pygame.Surface, cam_x: int, cam_y: int) -> None:
         """Battle-entry transition, "anim" phase only (see start_battle):
@@ -3245,9 +3445,27 @@ class OverworldScene:
         screen. That happens near a map edge, where the camera clamps
         instead of re-centering and the player can end up low enough that a
         bottom-docked box would sit right on top of them.
+
+        A running cutscene's own `dialogue` step can override this
+        entirely via `position: "top"|"bottom"`, read directly off the
+        currently-active step rather than cached anywhere -- it naturally
+        stops applying the instant that step ends (whether it advances to
+        another step or the cutscene finishes), no separate reset needed.
+        Anything else (unset, "auto", ordinary non-cutscene dialogue) falls
+        through to the player-position rule above.
         """
         view_h = surface.get_height()
-        mirrored = self._player_screen_row() > view_h / 2
+        position_override = None
+        if self.cutscene_player is not None:
+            step = self.cutscene_player.current_step()
+            if step is not None and step.kind == 'dialogue':
+                position_override = step.args.get('position')
+        if position_override == 'top':
+            mirrored = True
+        elif position_override == 'bottom':
+            mirrored = False
+        else:
+            mirrored = self._player_screen_row() > view_h / 2
 
         box = self.menu_assets['dialogue_box_flipped' if mirrored else 'dialogue_box']
         box_h = box.get_height()

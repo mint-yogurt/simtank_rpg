@@ -49,6 +49,28 @@ isn't a straight cardinal line from wherever the actor happens to be is an
 authoring error the renderer logs and skips past, rather than something
 resolved here.
 
+`teleport_actor` (`{actor, to: [row, col]}`) is `move_actor`'s no-walk
+counterpart -- an instant position set, any target, no cardinal-line
+requirement, finished the same frame it runs. The reason it exists as its
+own kind rather than a `move_actor` flag: repositioning the player between
+where a fresh boot's default spawn point happens to land them and wherever
+a cutscene actually needs them (e.g. next to a bed the camera's panned to,
+see pan_camera) has no reason to visibly walk there at all, especially
+since it's normally done entirely off-camera -- move_actor would either
+force an on-screen-looking detour (cardinal-only can't cut a diagonal) or
+just burn time walking somewhere nobody's watching, for no visual payoff
+either way.
+
+A `dialogue` step's `pages` are word-wrapped the same way ordinary sign/NPC
+dialogue is (engine.renderer.OverworldScene._wrap_dialogue_pages) -- an
+authored page longer than the box's text area splits across multiple
+on-screen screens rather than overflowing past the edge of the box. An
+optional `position: "top"|"bottom"` pins which edge the box docks to for
+just this step, overriding the normal auto-pick-based-on-player-position
+rule (see _draw_dialogue_box) -- useful when a cutscene's camera has panned
+somewhere that would otherwise put the box right over whatever it's
+showing. Leaving it unset (or `"auto"`) keeps the normal rule.
+
 A `dialogue` step's last page can carry a `choices:` list -- once that page
 fully reveals, an N/S-cursor + A-confirm response prompt replaces "press A
 to close" (see engine.dialogue.DialogueBox.is_showing_choices), same
@@ -81,6 +103,20 @@ can't, at the cost of not being an instance of the same generic "trigger
 surface" pattern map_load/tile/npc_talk share -- there is no standalone
 "dialogue_choice" trigger event; branching lives entirely in the choice's
 own `then:`.
+
+`fade` (`{direction: "in"|"out", color: "#rrggbb", duration_ms, see_through}`)
+ramps a full-screen color overlay -- "out" toward fully opaque, "in" back
+toward fully clear -- over `duration_ms` (default black, `#000000`). It
+does NOT auto-clear once the ramp finishes: a fade-out holds solid until a
+later fade-in step brings it back down, or the cutscene ends outright
+(engine.renderer.OverworldScene._end_cutscene resets it) -- deliberately,
+since the usual reason to reach for this is hiding something (e.g. a
+teleport_actor repositioning an actor) for exactly as long as the author
+needs, not for some fixed engine-decided beat. `see_through` (default
+false) keeps every sprite drawn on top of the overlay instead of hidden
+under it, for a "characters visible against a solid color" look; dialogue
+boxes always draw on top of the overlay regardless of this flag. See
+engine.renderer.OverworldScene._cutscene_step_fade/_draw_cutscene_fade.
 """
 
 from dataclasses import dataclass, field
@@ -114,6 +150,26 @@ class CutsceneTrigger:
                       `actor` must match that placement's own `name` on
                       this trigger's `map`, same as it'd be referenced by
                       engine.game_state.persistent_id.
+      "flag"       -- checked every ordinary-gameplay frame (OverworldScene.
+                      update(), not off any physical action) against
+                      cutscenes matching the currently loaded map -- the
+                      surface for chaining a cutscene purely off a flag set
+                      by an *earlier* cutscene, with no map transition/
+                      tile-step/NPC-talk required in between (e.g. a
+                      multi-part intro that plays before the player has
+                      ever had control). `actor` unused. Since it's polled
+                      with no physical gate at all, OverworldScene enforces
+                      one-shot-ness itself for this surface alone: it skips
+                      a `flag`-event cutscene outright once its own
+                      `cutscene_seen:<id>` flag is set (checked
+                      unconditionally, not merely added to the author's own
+                      `unless` list -- an author-written `unless: []` would
+                      never catch it otherwise), and sets that same flag the
+                      instant it fires. Unlike the other three surfaces, no
+                      author discipline is required to stop this one
+                      refiring every frame after it ends (a manual
+                      `unless: [cutscene_seen:<id>]` on top is harmless,
+                      just redundant).
 
     See this module's docstring for why the field is called `event` and
     not the more obvious `on`."""

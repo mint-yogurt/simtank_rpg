@@ -65,13 +65,48 @@ main { flex: 1; display: flex; min-height: 0; }
   min-width: 0;
 }
 
-#map-scroll { flex: 1; overflow: auto; background: #0d0e11; }
+#map-scroll {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #0d0e11;
+  cursor: grab;
+  touch-action: none;
+}
+#map-scroll.dragging { cursor: grabbing; }
 
-#map-wrapper { position: relative; display: inline-block; }
+#map-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
 
-#map-bg { display: block; image-rendering: pixelated; }
+#map-bg { display: block; image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
 
-#map-overlay { position: absolute; top: 0; left: 0; }
+#map-overlay, #spawned-overlay { position: absolute; top: 0; left: 0; }
+
+.spawned-sprite {
+  position: absolute;
+  image-rendering: pixelated;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px #ffd23f) drop-shadow(0 0 3px #ffd23f);
+}
+
+.spawned-marker {
+  background: rgba(255, 210, 63, .85) !important;
+  color: #1b1d22 !important;
+}
+
+#map-hint {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(13,14,17,.7);
+  padding: 2px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+}
 
 .actor-marker, .object-marker {
   position: absolute;
@@ -86,6 +121,14 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .actor-marker { background: rgba(91,141,238,.85); color: #fff; }
 .object-marker { background: rgba(226,96,79,.7); color: #fff; }
+
+#camera-border {
+  position: absolute;
+  border: 2px dashed #ffd23f;
+  box-shadow: 0 0 0 20000px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+#camera-border.hidden { display: none; }
 
 #pick-banner {
   position: absolute;
@@ -124,6 +167,7 @@ main { flex: 1; display: flex; min-height: 0; }
 
 .step-card {
   border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
   border-radius: 5px;
   margin-bottom: 8px;
   background: #1f222a;
@@ -139,6 +183,12 @@ main { flex: 1; display: flex; min-height: 0; }
 .step-card .step-head .kind { font-weight: 600; flex: 1; }
 .step-card .step-body { padding: 8px; }
 .step-card .step-head button { padding: 2px 6px; font-size: 11px; }
+
+.drag-handle { cursor: grab; padding: 0 4px; color: var(--dim); font-size: 14px; }
+.drag-handle:active { cursor: grabbing; }
+.step-card.dragging { opacity: .35; }
+.step-card.drag-over-top { box-shadow: inset 0 3px 0 0 #ffd23f; }
+.step-card.drag-over-bottom { box-shadow: inset 0 -3px 0 0 #ffd23f; }
 
 .tile-pick-row { display: flex; gap: 4px; align-items: center; }
 .tile-pick-row input[type=number] { width: 55px; flex: none; }

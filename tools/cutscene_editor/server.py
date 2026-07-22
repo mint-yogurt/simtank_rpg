@@ -46,6 +46,7 @@ file parsed" isn't proof it parsed into what was meant).
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -62,6 +63,7 @@ import yaml  # noqa: E402
 pygame.init()
 pygame.display.set_mode((1, 1))
 
+from engine.config import cfg  # noqa: E402
 from engine.cutscene import (  # noqa: E402
     CutsceneDef,
     CutsceneStep,
@@ -73,7 +75,7 @@ from engine.cutscene import (  # noqa: E402
 )
 from engine.inventory import load_item_defs  # noqa: E402
 from engine.npc import load_npc_defs  # noqa: E402
-from engine.renderer import OverworldScene  # noqa: E402
+from engine.renderer import OverworldScene, get_npc_frame  # noqa: E402
 
 _MAPS_DIR = _REPO / "data" / "maps"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -117,6 +119,38 @@ def _render_map_background(scene: OverworldScene) -> bytes:
     return buf.getvalue()
 
 
+def _any_scene() -> OverworldScene:
+    """A cached OverworldScene for whichever map happens to load fastest/
+    first, used only to resolve NPC sprite frames (_resolve_npc_frames) --
+    NPC defs/recoloring (data/npcs/npc.yaml) are global, not per-map, so it
+    doesn't matter which map's scene actually does the resolving; this
+    avoids a second, parallel "load NPC sprites" code path outside
+    OverworldScene.__init__ (recoloring, frame slicing) that could drift
+    from what real play actually draws."""
+    maps = _available_maps()
+    if not maps:
+        raise _ApiError(500, "no maps available to resolve NPC sprites against")
+    return _get_scene(maps[0])
+
+
+def _render_npc_sprite(npc_id: str, facing: str) -> bytes:
+    """A spawn_actor step's `npc_id` rendered as a single static frame (the
+    idle/first frame, anim_frame=0) -- lets the editor show what a spawned
+    actor actually looks like at its authored position, via the exact same
+    frame-resolution/recoloring path (_resolve_npc_frames/get_npc_frame)
+    real play draws it through, not a re-derived approximation."""
+    scene = _any_scene()
+    frames = scene._resolve_npc_frames(npc_id, None)
+    if not frames:
+        raise _ApiError(404, f"no sprite frames resolved for npc_id: {npc_id!r}")
+    surf = get_npc_frame(frames, facing, 0)
+    if surf is None:
+        raise _ApiError(404, f"no frame for npc_id {npc_id!r} facing {facing!r}")
+    buf = io.BytesIO()
+    pygame.image.save(surf, buf, "npc.png")
+    return buf.getvalue()
+
+
 def _map_metadata(scene: OverworldScene, map_name: str) -> dict:
     return {
         "name": map_name,
@@ -143,6 +177,13 @@ def _map_metadata(scene: OverworldScene, map_name: str) -> dict:
                for o in scene.triggers]
         ),
         "tile_layers": [layer.name for layer in scene.tmap.layers if layer.kind == "tile"],
+        # The real in-game camera viewport, in tiles (config.json's
+        # view_cols/view_rows) -- lets the editor draw the camera's actual
+        # visible-area border when authoring a pan_camera step, since
+        # OverworldScene._camera_axis clamps the viewport to the map edges
+        # rather than always centering exactly on the target tile.
+        "view_cols": cfg.view_cols,
+        "view_rows": cfg.view_rows,
     }
 
 
@@ -259,6 +300,11 @@ def _handle_get(path: str, query: dict) -> tuple[bytes, str]:
         defs = load_npc_defs()
         return json.dumps(sorted(defs.keys())).encode(), "application/json"
 
+    if path.startswith("/api/npc_sprite/"):
+        npc_id = path[len("/api/npc_sprite/"):]
+        facing = (query.get("facing") or ["S"])[0]
+        return _render_npc_sprite(npc_id, facing), "image/png"
+
     if path == "/api/cutscenes":
         defs = load_cutscene_defs()
         listing = [{"id": c.id, "map": c.map} for c in sorted(defs.values(), key=lambda c: c.id)]
@@ -319,6 +365,35 @@ def _handle_post(path: str, body: bytes) -> tuple[bytes, str]:
                                   "was authored; please report this")
 
         tmp_path.replace(file_path)
+        return json.dumps({"ok": True}).encode(), "application/json"
+
+    if path.startswith("/api/play/"):
+        cutscene_id = path[len("/api/play/"):]
+        file_path = _CUTSCENES_DIR / f"{cutscene_id}.yaml"
+        if not file_path.exists():
+            raise _ApiError(404, f"no such cutscene (save it first): {cutscene_id}")
+
+        # Launch tools/cutscene_editor/play_cutscene.py as a detached
+        # subprocess in a real window, not this server's own headless
+        # process -- this server runs under SDL_VIDEODRIVER=dummy (see
+        # module docstring) purely for map-render snapshots, and that
+        # variable would make the spawned game window invisible too if
+        # inherited, so the child gets a copy of the environment with it
+        # (and SDL_AUDIODRIVER) stripped rather than the parent's os.environ
+        # directly. Fire-and-forget: Popen without wait(), so the HTTP
+        # request returns immediately and the editor stays usable while the
+        # game window is open.
+        child_env = dict(os.environ)
+        child_env.pop("SDL_VIDEODRIVER", None)
+        child_env.pop("SDL_AUDIODRIVER", None)
+        script = Path(__file__).parent / "play_cutscene.py"
+        try:
+            subprocess.Popen(
+                [sys.executable, str(script), cutscene_id],
+                env=child_env, cwd=str(_REPO), start_new_session=True,
+            )
+        except OSError as exc:
+            raise _ApiError(500, f"failed to launch: {exc}")
         return json.dumps({"ok": True}).encode(), "application/json"
 
     raise _ApiError(404, f"no such route: {path}")

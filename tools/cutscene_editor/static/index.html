@@ -10,15 +10,13 @@
     <label>Map
       <select id="map-picker"></select>
     </label>
-    <label>Zoom
-      <select id="zoom-picker">
-        <option value="0.5">50%</option>
-        <option value="1" selected>100%</option>
-        <option value="2">200%</option>
-      </select>
-    </label>
+    <button id="fit-btn" title="Reset pan/zoom to fit the whole map">Fit to view</button>
+    <label><input type="checkbox" id="show-objects-cb" checked> Show objects</label>
+    <label><input type="checkbox" id="show-player-cb" checked> Show player</label>
+    <label><input type="checkbox" id="show-spawned-cb" checked> Show spawned actors</label>
   </div>
   <div class="group">
+    <button id="test-btn" title="Save, then open this cutscene in a real game window">Test in game</button>
     <button id="save-btn">Save</button>
     <span id="status"></span>
   </div>
@@ -30,8 +28,11 @@
       <div id="map-wrapper">
         <img id="map-bg" alt="map">
         <div id="map-overlay"></div>
+        <div id="spawned-overlay"></div>
+        <div id="camera-border" class="hidden"></div>
       </div>
     </div>
+    <div class="hint" id="map-hint">Scroll to zoom · click and drag to pan</div>
     <div id="pick-banner" class="hidden">Click a tile on the map to set the target…
       <button id="pick-cancel">cancel</button>
     </div>
@@ -51,6 +52,7 @@
           <option value="face">face</option>
           <option value="wait">wait</option>
           <option value="move_actor">move_actor</option>
+          <option value="teleport_actor">teleport_actor</option>
           <option value="dialogue">dialogue</option>
           <option value="set_flag">set_flag</option>
           <option value="clear_flag">clear_flag</option>
@@ -59,6 +61,7 @@
           <option value="despawn_actor">despawn_actor</option>
           <option value="set_tile">set_tile</option>
           <option value="pan_camera">pan_camera</option>
+          <option value="fade">fade</option>
           <option value="start_cutscene">start_cutscene</option>
         </select>
         <button id="add-step-btn">+ Add step</button>
