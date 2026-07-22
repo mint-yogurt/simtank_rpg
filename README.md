@@ -13,8 +13,6 @@ Two tools produce all game content. The engine's job is to **interpret** what th
 | Maps (tile layers, collision, object placement) | **Tiled** | JSON export | `engine/renderer.py` |
 | Items, NPCs, dialogue, event flags, abilities | Hand-edited | **YAML** | `engine/` data loaders |
 
-We are **not** building our own tile/map editor — Tiled is the map tool, full stop. Map loading and rendering live in one file, `engine/renderer.py` — see CLAUDE.md's architecture constraints for why.
-
 ### Maps (Tiled → JSON)
 
 A map authored in Tiled and exported to JSON contains:
