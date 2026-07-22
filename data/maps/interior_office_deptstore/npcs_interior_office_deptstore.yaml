@@ -4,5 +4,30 @@
 # a field you've filled in, as long as this object's id still exists in the
 # map's object layer.
 #
+# npc -- template:
+#   npc_id:
+#   sprite:
+#   behavior:
+#   event:
+#   dialogue:
+#
+# npc -- example:
+#   npc_id: grocer      # key from data/npcs/npc.yaml, or null for a one-off character authored entirely here
+#   sprite: null         # overrides npc.yaml's sprite for this placement only -- null = inherit it
+#   behavior: null       # overrides npc.yaml's behavior ("static"/"wander") for this placement only -- null = inherit it
+#   event: null          # reserved, not wired to anything yet
+#   dialogue:            # flat page list, OR a list of variants gated on engine.game_state flags
+#     - unless: ["npc_met:grocer"]       # first time ever (before this flag is set)
+#       pages: ["First time seeing you!"]
+#     - pages: ["Hey again."]            # fallback -- checked top-to-bottom, first match wins
+#
 
-{}
+4:
+  behavior: static
+  dialogue: 
+  - this is test dialogue
+  event: null
+  name: manager
+  npc_id: null
+  sprite: manager
+  type: npc

@@ -82,13 +82,16 @@ sprites:
     colors: []
   pizza_cashier:
     file: pizza_cashier
-    colors: []
+    colors: ["ff0000"] ## just re-coloring the hat
   flies:
     file: flies
     colors: []
   gnome1:
     file: gnome1
     colors: ["930084", "7c7c7c", "01a800", "fddfa9"]
+  manager:
+    file: manager
+    colors: ["004059", "f1d0b1", "a77865", "503001"] # shirt, skin, skin shade, shoes
 
 # ── NPCs ──────────────────────────────────────────────────────────────────
 #

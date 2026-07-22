@@ -86,17 +86,17 @@
   name: trashcan_roach
   type: container
 12:
-  dialogue: 
-  - A strange, earthy aroma. 
+  dialogue:
+  - A strange, earthy aroma.
   name: toilet_roachroom
   type: sign
 13:
-  dialogue: 
+  dialogue:
   - Even Melvin's stinky bed is good for a nap.
   name: bed_heal_R
   type: healer
 14:
-  dialogue: 
+  dialogue:
   - Nap time.
   name: bed_heal_L
   type: healer

@@ -31,3 +31,11 @@
   npc_id: null
   sprite: npc01
   type: npc
+8:
+  behavior: null
+  dialogue: []
+  event: null
+  name: dept_cashier
+  npc_id: null
+  sprite: null
+  type: npc
