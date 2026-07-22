@@ -193,10 +193,17 @@ class Player:
         Caller checks the return type to decide what kind of interaction to start
         (dialogue, chest open, sign read, etc.).
         Returns None if nothing interactable is there.
+
+        An NPC's `row`/`col` anchor its bottom-left tile, and `width_span`/
+        `height_span` (plain ints, resolved by engine.renderer._load_map --
+        no Tiled/pygame knowledge needed here) give its full footprint in
+        tiles -- a bigger-than-one-tile NPC (e.g. a 2x2 sprite) is reachable
+        from any tile it visually covers, not just its anchor tile.
         """
         tr, tc = self.facing_tile()
         for npc in npcs:
-            if npc.row == tr and npc.col == tc:
+            if (npc.col <= tc < npc.col + npc.width_span
+                    and npc.row - npc.height_span < tr <= npc.row):
                 return npc
         for obj in objects:
             if obj.row == tr and obj.col == tc:

@@ -83,6 +83,7 @@ STUB_FIELDS = {
     "healer": {"dialogue": []},
     "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None, "npc_id": None},
     "warp": {"destination_map": None, "destination_warp": None, "facing": None, "distance": None},
+    "trigger": {"cutscene_id": None},
     "enemy": {"enemy_id": None, "level": None},
     # `enemies` seeds with one blank candidate block, not an empty list --
     # a spawner is useless with `enemies: []` (nothing to pick from), so the
@@ -95,7 +96,7 @@ STUB_FIELDS = {
 
 # Canonical display order for whichever of these types show up in one file's
 # header -- not alphabetical, just a stable, readable order.
-_TYPE_ORDER = ["container", "sign", "healer", "warp", "enemy", "spawner", "npc", "shop"]
+_TYPE_ORDER = ["container", "sign", "healer", "warp", "trigger", "enemy", "spawner", "npc", "shop"]
 
 # Per-type header block: a bare copy-pastable template (every field, no
 # values, no comments) followed by one filled-in example with a trailing
@@ -139,6 +140,16 @@ TYPE_DOCS = {
 #   destination_warp: front_door      # name of the warp object THERE to land on
 #   facing: S                         # which way the player faces after landing on THIS warp (blank = S)
 #   distance: 1                       # tiles to offset the landing spot from THIS warp, toward `facing` (blank/0 = exact tile)
+""",
+    "trigger": """\
+# trigger -- template:
+#   cutscene_id:
+#
+# trigger -- example:
+#   cutscene_id: debug_test   # key from data/cutscenes/ -- that cutscene's own trigger.event must be "tile"
+# An invisible, one-tile zone (place with the rectangle tool, same as an enemy/spawner) --
+# the instant the player's tile becomes this one, the named cutscene is checked (not
+# unconditionally played -- its own when/unless still has to pass) and started if it matches.
 """,
     "enemy": """\
 # enemy -- template:

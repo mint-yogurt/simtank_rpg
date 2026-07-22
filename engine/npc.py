@@ -20,7 +20,12 @@ NOT the old shared party_sprites.png + partysprites.txt mechanism, which
 is deprecated for NPCs. A strip's width decides how it animates: 32x16 (2
 frames) is a south-only idle loop with no facing; 128x16 (8 frames) is a
 full walk cycle in the same S1,S2,N1,N2,W1,W2,E1,E2 order the party sheet
-uses, and does support facing.
+uses, and does support facing. A frame can also be wider and/or taller
+than one tile (e.g. manager, 64x32 -- 2 frames, each 32x32): the extra
+rows/columns beyond the bottom-left 16x16 cell are a fixed overhang with
+no animation of their own, and a placement anchors at that bottom-left
+cell -- see engine.renderer's "NPC sprite sheet loading" section and
+NPC.width_span/height_span.
 
 Recoloring: a sprite's `colors` (NpcSpriteSpec) are the placeholder hex
 colors actually baked into its PNG; an NpcDef's own `colors`, if set,

@@ -2,10 +2,10 @@
 
     python maptest.py
 
-Prompts with a numbered list: 1. map 2. battles 3. debug screen. Accepts
-either the number or the typed name. `map` first prompts for a save slot
-(engine/save.py) — pick an in-use slot to resume exactly where it left off
-(map, player position, inventory, flags, party HP/MP/XP/level), an empty
+Prompts with a numbered list: 1. map 2. battles 3. debug screen 4. cutscene.
+Accepts either the number or the typed name. `map` first prompts for a save
+slot (engine/save.py) — pick an in-use slot to resume exactly where it left
+off (map, player position, inventory, flags, party HP/MP/XP/level), an empty
 one to start fresh, or `c<N>` to wipe slot N back to nothing, so different
 chapters/scenarios can be tested without hand-editing save files. A
 fresh/new-game boot then lists every folder under data/maps/ (each expected
@@ -15,7 +15,10 @@ start_battle), win/loss actually changes the loaded game's state. `battles`
 prompts for an enemy id from data/enemy/enemies.yaml and boots
 engine.renderer.BattleScene against it directly — MELVIN vs. that one
 enemy, an isolated debug fight with no save/overworld involved (see
-engine/battle.py). `debug screen` is still a stub for later.
+engine/battle.py). `debug screen` is still a stub for later. `cutscene`
+prompts for a cutscene id from data/cutscenes/ and plays it start-to-finish
+on its own map, no save involved — same isolated-debug spirit as `battles`
+(see engine/cutscene.py and engine.renderer.OverworldScene.start_cutscene).
 """
 import os
 import sys
@@ -23,6 +26,7 @@ from functools import partial
 from pathlib import Path
 
 from engine.config import cfg
+from engine.cutscene import load_cutscene_defs
 from engine.enemy import load_enemy_defs
 from engine.inventory import Inventory
 from engine.renderer import BattleScene, OverworldScene, run
@@ -122,7 +126,26 @@ def _choose_enemy() -> str:
         sys.exit(1)
 
 
-_MODES = ["map", "battles", "debug screen"]
+def _choose_cutscene() -> str:
+    """Prompt for a cutscene id, same list-and-pick shape as _choose_enemy
+    -- see engine.cutscene.load_cutscene_defs (data/cutscenes/*.yaml)."""
+    cutscene_defs = load_cutscene_defs()
+    cutscene_ids = sorted(cutscene_defs.keys())
+    if not cutscene_ids:
+        print("No cutscenes found in data/cutscenes/", flush=True)
+        sys.exit(1)
+
+    for i, cid in enumerate(cutscene_ids, start=1):
+        print(f"  {i}. {cid} (map: {cutscene_defs[cid].map})")
+    choice = input(f"cutscene (1-{len(cutscene_ids)})? ").strip()
+    try:
+        return cutscene_ids[int(choice) - 1]
+    except (ValueError, IndexError):
+        print(f"Unknown choice {choice!r}", flush=True)
+        sys.exit(1)
+
+
+_MODES = ["map", "battles", "debug screen", "cutscene"]
 
 
 def _choose_mode() -> str:
@@ -187,6 +210,16 @@ def main():
     elif choice == "debug screen":
         print("debug screen: not yet implemented", flush=True)
         sys.exit(1)
+    elif choice == "cutscene":
+        cutscene_id = _choose_cutscene()
+        cutscene_map = load_cutscene_defs()[cutscene_id].map
+        map_path = _MAPS_DIR / cutscene_map / f"{cutscene_map}.json"
+        run(
+            partial(OverworldScene, map_path=map_path, play_cutscene=cutscene_id),
+            view_size=view_size,
+            scale=cfg.pygame_scale,
+            title=f"Front House Gaiden — debug cutscene [{cutscene_id}]",
+        )
 
 
 if __name__ == "__main__":

@@ -20,24 +20,39 @@
 # reads that file anymore. `file` is a bare filename stem (no `.png`), e.g.
 # `npc01` for assets/sprites/npcs/npc01.png.
 #
-# A sprite strip's width decides how it animates -- engine.renderer slices
-# it into tile_px (16px) frames and picks behavior by frame count:
+# A sprite strip's width decides how it animates -- engine.renderer infers
+# frame count from it (2 or 8; whichever evenly divides the strip into
+# tile_px(16px)-multiple frames, trying 8 first) and picks behavior by that
+# count:
 #
-#   32x16  (2 frames) -- south-only idle, the old npc01-style look. Facing
-#                         is ignored; it always alternates its 2 frames.
-#   128x16 (8 frames) -- full 4-directional walk cycle, same frame order as
-#                         the party sheet: S1,S2,N1,N2,W1,W2,E1,E2. A
-#                         "static" NPC using one of these faces whatever its
-#                         `facing:` field says (below); a "wander" NPC turns
-#                         to face whichever direction it's currently
-#                         stepping.
+#   32x16  (2 frames, 16px each)  -- south-only idle, the old npc01-style
+#                                    look. Facing is ignored; it always
+#                                    alternates its 2 frames.
+#   128x16 (8 frames, 16px each)  -- full 4-directional walk cycle, same
+#                                    frame order as the party sheet: S1,S2,
+#                                    N1,N2,W1,W2,E1,E2. A "static" NPC using
+#                                    one of these faces whatever its
+#                                    `facing:` field says (below); a "wander"
+#                                    NPC turns to face whichever direction
+#                                    it's currently stepping.
 #
 # Height can be any multiple of 16px, independent of the frame-count table
 # above (which is keyed off width only) -- e.g. wizard is 128x32: still the
-# 8-frame walk cycle, just 32px tall per frame. The bottom 16px of each
-# frame is the ordinary body (behaves exactly like a 16-tall sprite); any
+# 8-frame walk cycle, just 32px tall per frame. The bottom-left 16px row of
+# each frame is the ordinary body (behaves exactly like a 16x16 sprite); any
 # rows above that are just placed on top as a fixed overhang (a hat, tall
 # hair, ...) with no animation of their own.
+#
+# A frame can likewise be wider than one tile -- e.g. manager is 64x32: 2
+# frames, each 32x32, a 2-tile-wide/2-tile-tall south-only idle loop (same
+# animation rule as the 32x16 case, just a bigger frame). Extra columns to
+# the right of the bottom-left 16x16 cell are the rest of a wider character,
+# same "no animation of its own" rule as the overhang rows above. A map
+# object placing a wide NPC anchors at that bottom-*left* 16x16 cell -- put
+# the object where you want the sprite's lower-left corner, and it extends
+# up and to the right from there; the player can walk up to and interact
+# with any tile the sprite visually covers, not just the anchor tile (see
+# engine.renderer.NPC.width_span/height_span).
 #
 # `colors` lists the placeholder hex colors actually baked into that PNG's
 # pixels (6-digit, no `#`, e.g. "ff83c1") -- the swap *keys* a `npcs:`

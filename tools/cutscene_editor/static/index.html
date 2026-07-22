@@ -1,0 +1,77 @@
+<title>Cutscene Editor — Front House Gaiden</title>
+<link rel="stylesheet" href="/static/editor.css">
+
+<header id="topbar">
+  <div class="group">
+    <label>Cutscene
+      <select id="cutscene-picker"><option value="">— new —</option></select>
+    </label>
+    <input id="new-id" placeholder="new cutscene id" style="display:none">
+    <label>Map
+      <select id="map-picker"></select>
+    </label>
+    <label>Zoom
+      <select id="zoom-picker">
+        <option value="0.5">50%</option>
+        <option value="1" selected>100%</option>
+        <option value="2">200%</option>
+      </select>
+    </label>
+  </div>
+  <div class="group">
+    <button id="save-btn">Save</button>
+    <span id="status"></span>
+  </div>
+</header>
+
+<main>
+  <section id="map-pane">
+    <div id="map-scroll">
+      <div id="map-wrapper">
+        <img id="map-bg" alt="map">
+        <div id="map-overlay"></div>
+      </div>
+    </div>
+    <div id="pick-banner" class="hidden">Click a tile on the map to set the target…
+      <button id="pick-cancel">cancel</button>
+    </div>
+  </section>
+
+  <section id="side-pane">
+    <div id="trigger-panel" class="panel">
+      <h3>Trigger</h3>
+      <div id="trigger-body"></div>
+    </div>
+
+    <div id="steps-panel" class="panel">
+      <h3>Steps</h3>
+      <div id="steps-list"></div>
+      <div id="add-step-row">
+        <select id="add-step-kind">
+          <option value="face">face</option>
+          <option value="wait">wait</option>
+          <option value="move_actor">move_actor</option>
+          <option value="dialogue">dialogue</option>
+          <option value="set_flag">set_flag</option>
+          <option value="clear_flag">clear_flag</option>
+          <option value="give_item">give_item</option>
+          <option value="spawn_actor">spawn_actor</option>
+          <option value="despawn_actor">despawn_actor</option>
+          <option value="set_tile">set_tile</option>
+          <option value="pan_camera">pan_camera</option>
+          <option value="start_cutscene">start_cutscene</option>
+        </select>
+        <button id="add-step-btn">+ Add step</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<datalist id="dl-flags"></datalist>
+<datalist id="dl-items"></datalist>
+<datalist id="dl-npc-ids"></datalist>
+<datalist id="dl-actors"></datalist>
+<datalist id="dl-cutscenes"></datalist>
+<datalist id="dl-layers"></datalist>
+
+<script src="/static/editor.js"></script>

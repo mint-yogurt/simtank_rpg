@@ -35,6 +35,7 @@ handle_a_button.
 """
 
 from engine.config import cfg
+from engine.cutscene import CutsceneDef, trigger_matches
 from engine.dialogue import DialogueBox
 from engine.game_state import GameState, persistent_id
 from engine.inventory import Inventory
@@ -371,6 +372,39 @@ def _confirm_item_action(item_action_menu: ItemActionMenu, inventory: Inventory,
     item_action_menu.close()
 
 
+_CUTSCENE_RESULT_PREFIX = "cutscene:"
+
+
+def cutscene_id_from_result(result: str | None) -> str | None:
+    """If handle_a_button's return value signals that an npc_talk-triggered
+    cutscene should start instead of (or before) an ordinary dialogue box,
+    the cutscene id to start -- else None. engine.renderer.OverworldScene's
+    A-button handling checks this against handle_a_button's return value
+    and calls its own start_cutscene if it's not None. Kept as a function
+    (rather than the caller doing its own string check) so the encoding --
+    a prefixed string, since handle_a_button's return channel is already a
+    loosely-typed "confirmed menu option name, or None" -- only needs to
+    live in one place."""
+    if result is not None and result.startswith(_CUTSCENE_RESULT_PREFIX):
+        return result[len(_CUTSCENE_RESULT_PREFIX):]
+    return None
+
+
+def _npc_talk_cutscene(cutscene_defs: dict, map_name: str, actor_name: str, flag) -> str | None:
+    """The id of the first cutscene (dict iteration order -- see
+    engine.cutscene.load_cutscene_defs) whose trigger is `event: npc_talk`,
+    `actor` matching this NPC/shop placement's own `name`, `map` matching
+    `map_name`, and whose when/unless passes against `flag` -- or None if
+    none match. `cutscene_defs` may be None/empty (e.g. existing tests that
+    don't care about cutscenes at all) -- treated the same as no match."""
+    for cutscene in (cutscene_defs or {}).values():
+        trigger = cutscene.trigger
+        if (trigger is not None and trigger.event == "npc_talk" and trigger.actor == actor_name
+                and cutscene.map == map_name and trigger_matches(trigger, flag)):
+            return cutscene.id
+    return None
+
+
 def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
                      inventory_menu: InventoryMenu, settings_menu: SettingsMenu,
                      shop_menu: ShopMenu, item_action_menu: ItemActionMenu,
@@ -378,7 +412,8 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
                      dialogue: DialogueBox,
                      npcs: list, objects: list, wrap_pages,
                      game_state: GameState, inventory: Inventory, roster: Roster,
-                     item_defs: dict, map_name: str, active_slot: int) -> str | None:
+                     item_defs: dict, map_name: str, active_slot: int,
+                     cutscene_defs: dict[str, CutsceneDef] | None = None) -> str | None:
     """A confirms whichever menu is on top, advances/closes an open dialogue
     box, or — failing all of that — opens one by interacting with whatever
     the player is facing. Returns the confirmed menu option's name, or None.
@@ -447,6 +482,17 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
     page's text won't always fit in one screen. It's pygame.font-aware
     (measures pixel width/line height), so it's supplied by engine.renderer
     rather than done in this module, which stays pygame-free.
+
+    `cutscene_defs`, if given, is checked (see _npc_talk_cutscene) before
+    opening an NPC's or shop's ordinary dialogue: a cutscene with an
+    `event: npc_talk` trigger whose `actor` matches this placement's `name`
+    plays instead of the normal dialogue box, checked against flags in the
+    same pre-visit moment resolve_dialogue's variants are (before
+    npc_met_flag gets set for this visit). The return value signals this
+    back to the caller via cutscene_id_from_result, since this module has
+    no way to actually start a cutscene itself (that's engine.renderer.
+    OverworldScene.start_cutscene) -- same headless/execution split as
+    engine.cutscene's own module docstring describes.
     """
     if save_menu.is_open:
         option = save_menu.confirm()
@@ -528,12 +574,16 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
             dialogue.open(wrap_pages(pages))
             player.set_state(PlayerState.IN_DIALOGUE)
         elif target is not None and target.type == "npc":
-            target.facing = OPPOSITE_DIR[player.facing]
-            pages = resolve_dialogue(target.dialogue_variants, game_state.flag)
-            dialogue.open(wrap_pages(pages))
-            player.set_state(PlayerState.IN_DIALOGUE)
+            cutscene_id = _npc_talk_cutscene(cutscene_defs, map_name, target.name, game_state.flag)
+            if cutscene_id is None:
+                target.facing = OPPOSITE_DIR[player.facing]
+                pages = resolve_dialogue(target.dialogue_variants, game_state.flag)
+                dialogue.open(wrap_pages(pages))
+                player.set_state(PlayerState.IN_DIALOGUE)
             if target.npc_id:
                 game_state.set_flag(npc_met_flag(target.npc_id))
+            if cutscene_id is not None:
+                return f"{_CUTSCENE_RESULT_PREFIX}{cutscene_id}"
         elif target is not None and target.type == "container":
             pages = _open_container(target, game_state, inventory, item_defs, map_name)
             if pages is not None:
@@ -542,14 +592,22 @@ def handle_a_button(player: Player, menu: StartMenu, save_menu: SaveMenu,
         elif target is not None and target.type == "shop":
             # Talk first, same as any NPC -- the buy/sell screen only opens
             # once this greeting closes (see the dialogue.is_open branch
-            # above, which checks shop_menu.pending_shop).
-            target.facing = OPPOSITE_DIR[player.facing]
-            pages = resolve_dialogue(target.dialogue_variants, game_state.flag)
-            shop_menu.pending_shop = target.name
-            dialogue.open(wrap_pages(pages))
-            player.set_state(PlayerState.IN_DIALOGUE)
+            # above, which checks shop_menu.pending_shop). A cutscene
+            # triggered off this same talk (see the "npc" branch above)
+            # skips setting pending_shop entirely, so the buy/sell screen
+            # doesn't auto-open once the cutscene's own dialogue steps (if
+            # any) close -- those aren't this shop's greeting.
+            cutscene_id = _npc_talk_cutscene(cutscene_defs, map_name, target.name, game_state.flag)
+            if cutscene_id is None:
+                target.facing = OPPOSITE_DIR[player.facing]
+                pages = resolve_dialogue(target.dialogue_variants, game_state.flag)
+                shop_menu.pending_shop = target.name
+                dialogue.open(wrap_pages(pages))
+                player.set_state(PlayerState.IN_DIALOGUE)
             if target.npc_id:
                 game_state.set_flag(npc_met_flag(target.npc_id))
+            if cutscene_id is not None:
+                return f"{_CUTSCENE_RESULT_PREFIX}{cutscene_id}"
 
     return None
 

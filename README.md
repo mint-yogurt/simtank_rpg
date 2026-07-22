@@ -71,25 +71,54 @@ old_man_intro:
     - "Stay away from the forest."
 ```
 
-Signs and NPCs both use this page-list shape today, but inline — a sign's `dialogue` lives directly on its entry in `obj_<map>.yaml`, an NPC's on its entry in `npcs_<map>.yaml` (or on its shared def in `data/npcs/npc.yaml`, if the placement doesn't override it), rather than in a separate ID-keyed file. A separate ID-keyed dialogue file isn't built yet — see Roadmap (Event System) — but an NPC's inline `dialogue` can already be conditional: instead of a flat page list, it can be a list of `{when, unless, pages}` variants checked top-to-bottom against `GameState.flags`, first match wins (`engine.npc.DialogueVariant`/`resolve_dialogue`). Every `npc_id` gets a free flag, `npc_met:<npc_id>`, set the instant it's ever talked to, so a first-ever-meeting variant is just `unless: [npc_met:<npc_id>]`. This is a narrower, purpose-built mechanism (conditions only, no actions) — not the general `if`/`then`/`else` executor sketched below, which is still unbuilt. Signs don't have this yet, only NPCs.
+Signs and NPCs both use this page-list shape today, but inline — a sign's `dialogue` lives directly on its entry in `obj_<map>.yaml`, an NPC's on its entry in `npcs_<map>.yaml` (or on its shared def in `data/npcs/npc.yaml`, if the placement doesn't override it), rather than in a separate ID-keyed file. A separate ID-keyed dialogue file isn't built yet, but an NPC's inline `dialogue` can already be conditional: instead of a flat page list, it can be a list of `{when, unless, pages}` variants checked top-to-bottom against `GameState.flags`, first match wins (`engine.npc.DialogueVariant`/`resolve_dialogue`). Every `npc_id` gets a free flag, `npc_met:<npc_id>`, set the instant it's ever talked to, so a first-ever-meeting variant is just `unless: [npc_met:<npc_id>]`. This is a narrower, purpose-built mechanism (conditions only, no actions) — not the general executor described below in Cutscenes. Signs don't have this yet, only NPCs.
 
-**Event System — conditions and actions.** One flag primitive, `GameState.flags` (`engine/game_state.py`), is the only thing a condition ever checks — deliberately not two (flags *and* a live inventory lookup): "has the castle key" is modeled as a flag set the moment the key's granted, not `Inventory.has()`.
+**Cutscenes — the general condition/action system.** `engine/cutscene.py` is a headless step sequencer (`CutsceneDef`/`CutsceneTrigger`/`CutsceneStep`/`CutscenePlayer`) — same battle.py/BattleState split as everywhere else in this codebase: it only tracks *what* a cutscene should be doing and *which* step is current, never touching pygame/Tiled itself. `engine.renderer.OverworldScene` is the executor — a new full-pause gate in `update()`/`handle_event()`, same tier as a battle or an open dialogue box, so nothing else (wander AI, enemy movement, player input) ticks underneath a running cutscene. A cutscene file (`data/cutscenes/<id>.yaml`) is a flat, ordered step list, each entry a single-key mapping:
 
 ```yaml
-if: boss1_dead        # true only if the flag's set
-if_not: gate_open      # true only if the flag's NOT set
-
-then:
-  - set_flag: gate_open
-  - give_item: rusty_key
-  - dialogue: gate_now_open
+id: intro_meeting
+map: hub_fronthouse
+trigger:
+  event: map_load
+  when: []
+  unless: ["cutscene_seen:intro_meeting"]
+steps:
+  - move_actor:  {actor: old_man, to: [10, 12]}
+  - wait:        {ms: 500}
+  - dialogue:    {pages: ["Welcome home."]}
+  - set_flag:    {flag: "cutscene_seen:intro_meeting"}
+  - give_item:   {item: rusty_key}
 ```
 
-Built now (containers) or next in line: `set_flag`, `clear_flag`, `give_item`, `remove_item`, `dialogue`. Reserved for later, as more entries in this *same* list shape: `pan_camera`, `force_move`, `wait`.
+Built step kinds: `move_actor` (cardinal-only, same rule as every other kind of movement in this game — an actor's target must share a row or column with its current position; an L-shaped path is two consecutive steps, one per leg), `face`, `wait`, `dialogue` (see Dialogue choices below), `set_flag`, `clear_flag`, `give_item`, `spawn_actor`/`despawn_actor` (a temporary NPC-shaped actor, always cleaned up the instant the scene ends — never left on the map afterward), `set_tile` (a one-shot GID swap on a tile layer — a door flipping open — not the same thing as *animated/cycling* tiles, which remain unbuilt and unrelated, see below), `pan_camera` (moves the camera off the player temporarily; `{to_player: true}` snaps it back), and `start_cutscene` (jumps straight into a different cutscene, replacing the current one outright — a one-way jump, not a call-and-return; only valid targeting the same map, same "no mid-cutscene map switching" rule as everywhere else).
 
-**Current state:** the flag store this all sits on is real and save-able (`GameState.flags`/`persistent_id`), and so is order-preserving layer compositing (see Maps above), which is what lets a triggered object's tile disappear into whatever's painted underneath it. What's actually built *on* that foundation is still one concrete case, not the general `if`/`then`/`else` evaluator sketched above: containers. Every container gets its flag for free via `persistent_id(map_name, object_name)` — no registry, no per-object declaration. Opening one sets that flag and is inert afterward, one open, ever; a container with `contents` set grants that item, appending a synthesized `"Received {item name}."` page, and a container with `gold` set independently credits that amount to the party's wallet (`GameState.add_gold`), appending a synthesized `"Found ${amount}."` page — a container can grant either, both, or neither — see `engine.input._open_container`.
+The `trigger:` block is the same `when`/`unless` flag-list shape `DialogueVariant` already uses (compound conditions like "has the key AND hasn't seen this scene" fall out for free), plus an `event` naming which real game surface checks it — deliberately `event`, not the more obvious `on`, since PyYAML reads a bare `on`/`off`/`yes`/`no` key as a *boolean*, not a string (same class of gotcha as `npc.yaml`'s unquoted hex colors). Three surfaces are wired:
 
-Still not built: the general `if`/`if_not` condition check and `then`/`else` action-list executor, conditional dialogue for signs (NPCs have their own narrower flag-variant mechanism now — see Dialogue above), locked warps, and the `pan_camera`/`force_move`/`wait` action kinds. Also scoped but not designed at all yet: **animated tiles** (frame-cycling GIDs — how that interacts with the current one-surface-per-GID tile lookup isn't decided).
+- `map_load` — checked once per map load/warp arrival (`OverworldScene._check_cutscene_triggers`, called from `_load_map`). This is also how a story beat chains across two maps without the executor ever switching maps itself: cutscene A ends by setting a flag, the player leaves through an ordinary warp, and map B's own `map_load` check sees that flag and starts cutscene B.
+- `tile` — a `trigger`-type Tiled object (invisible, modeled directly on `warp`; synced via `populate_yamls.py` same as every other object type), whose own `cutscene_id` names which cutscene to check the instant the player's tile becomes its tile.
+- `npc_talk` — a `trigger.actor` naming an NPC/shop placement's own `name`; checked in `engine.input.handle_a_button` ahead of that NPC's ordinary `resolve_dialogue`, so the cutscene plays instead (the NPC's `npc_met_flag` still gets set either way).
+
+**Dialogue choices.** `engine/dialogue.py`'s `DialogueBox` gained a response-list mode: a `dialogue` step's last page can carry `choices:`, and once that page fully reveals, an N/S-cursor + A-confirm prompt (`DialogueBox.is_showing_choices`/`move_choice_cursor`/`confirm_choice`) replaces "press A to close" — same interaction idiom as every other list menu in this game. Ordinary sign/NPC/container dialogue is unaffected (it never sets `choices`, so this mode never engages there); this is a cutscene-only feature so far.
+
+```yaml
+- dialogue:
+    pages: ["Would you like to hear the legend?"]
+    choices:
+      - label: "Yes"
+        then:
+          - start_cutscene: {id: legend_flashback}
+      - label: "No"
+        then:
+          - set_flag: {flag: declined_legend}
+```
+
+Each choice's own `then:` is a nested step list — parsed the same way the cutscene's own top-level `steps:` is (`engine.cutscene.CutsceneChoice`) — spliced directly into the running cutscene's step list the instant that choice is confirmed (`OverworldScene._confirm_dialogue_choice`), so its consequences get ordinary multi-frame step handling (another `wait`/`move_actor`/`dialogue`, not just instantaneous ones) rather than a separate one-shot path. This was a deliberate design choice over the alternative of a choice only setting a flag for some later `map_load`/`npc_talk` trigger to notice elsewhere: it supports an immediate, same-beat branch ("Yes" instantly kicks off a flashback) that a flag-only design can't — at the cost of there being no standalone "dialogue_choice" trigger *event* the way `map_load`/`tile`/`npc_talk` are; branching lives entirely in the choice's own `then:`, not in a fourth global trigger surface.
+
+Also not built: mid-cutscene map switching (chaining, above, covers the common case on purpose), a cutscene leaving a permanently-added/removed map object behind, and locked warps. `maptest.py`'s debug `cutscene` mode lists every file under `data/cutscenes/` and plays one standalone, no save involved, same spirit as its `battles` mode.
+
+**Containers — the original, narrower case.** Every container gets its flag for free via `persistent_id(map_name, object_name)` — no registry, no per-object declaration, and not (yet) migrated onto the general cutscene step executor even though it's the same `set_flag`/`give_item` shape. Opening one sets that flag and is inert afterward, one open, ever; a container with `contents` set grants that item, appending a synthesized `"Received {item name}."` page, and a container with `gold` set independently credits that amount to the party's wallet (`GameState.add_gold`), appending a synthesized `"Found ${amount}."` page — a container can grant either, both, or neither — see `engine.input._open_container`.
+
+Also scoped but not designed at all yet: **animated tiles** (frame-cycling GIDs — how that interacts with the current one-surface-per-GID tile lookup isn't decided). This is unrelated to `set_tile` above, which is a single discrete swap, not a cycling animation.
 
 ---
 
@@ -99,7 +128,7 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 
 ### Content Pipeline (Tiled + YAML)
 - [x] Tiled JSON import — tile layers, tileset `walkable` property → passability grid, GID rendering, clamped camera; multiple tilesets per map, mirrored tiles; viewport-culled tile-layer draw (only visible rows/cols walked per frame, not the whole map grid)
-- [x] Object layer → engine objects — `container`/`sign`/`healer`/`npc`/`enemy`/`spawner`/`warp`, synced to editable YAML via `data/maps/populate_yamls.py`
+- [x] Object layer → engine objects — `container`/`sign`/`healer`/`npc`/`enemy`/`spawner`/`warp`/`trigger`, synced to editable YAML via `data/maps/populate_yamls.py`
 - [x] Order-preserving layer compositing — real Tiled layer order, not a hardcoded "first layer below" rule
 - [x] Warps — fade-to-black map transitions, landing-spot offset/facing
 - [x] Global game state / flags (`engine/game_state.py`) + `persistent_id()` per-object keys
@@ -107,10 +136,12 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 - [x] Dialogue System (`engine/dialogue.py`) — paged, typewriter box; wired to sign/npc/container
 - [x] Master NPC YAML (`data/npcs/npc.yaml`) — shared defs, per-NPC recoloring, `npc_id` override pattern
 - [x] Enemy/spawner placement, spawn-chance resolution, continuous movement (not battle-triggered yet)
-- [ ] Event System — general `if`/`then`/`else` script executor (containers are the only flag-driven case built so far)
-- [ ] Trigger System — script-driven doors/switches, locked warps
-- [x] Conditional NPC dialogue — flag-gated `{when, unless, pages}` variants, inline on an NPC's def or placement (`engine.npc.DialogueVariant`/`resolve_dialogue`); narrower than the Event System below (conditions only, no actions), and signs don't have it yet
-- [ ] NPC logic YAML — richer scripted NPC behavior (actions, not just dialogue conditions) via the general Event System
+- [x] Cutscene/Event System — general step-list executor (`engine/cutscene.py` headless def/sequencer + `engine.renderer.OverworldScene` execution), `move_actor`/`face`/`wait`/`dialogue`/`set_flag`/`clear_flag`/`give_item`/`spawn_actor`/`despawn_actor`/`set_tile`/`pan_camera`/`start_cutscene` step kinds, triggered by `map_load`/`tile`/`npc_talk` (containers remain their own older, narrower flag-driven case, not migrated onto this); mid-cutscene map switching still not built (chaining across maps via `map_load` covers the common case on purpose) — see Cutscenes above
+- [x] Dialogue choices — a cutscene `dialogue` step's last page can carry a `choices:` response list (N/S cursor + A confirm, `engine/dialogue.py`'s `DialogueBox`), each choice carrying its own `then:` consequences (including jumping straight into another cutscene via `start_cutscene`) rather than a fourth global trigger surface — see Cutscenes above
+- [x] Visual cutscene editor (`tools/cutscene_editor/`) — local browser tool for authoring `data/cutscenes/<id>.yaml` without hand-typing it: loads a real map's actual tiles/NPCs (server-side, via `engine.renderer.OverworldScene` itself, so the preview matches real playback exactly), builds the step list/trigger through a form, saves through the same round-trip-validated path either way
+- [x] Conditional NPC dialogue — flag-gated `{when, unless, pages}` variants, inline on an NPC's def or placement (`engine.npc.DialogueVariant`/`resolve_dialogue`); narrower than the Cutscene/Event System above (conditions only, no actions), and signs don't have it yet
+- [ ] NPC logic YAML — richer scripted NPC behavior (actions, not just dialogue conditions) via the general Cutscene/Event System
+- [ ] Locked warps — script-driven doors/switches gating a warp on a flag
 - [ ] Animated tiles — not designed yet
 - [x] Healer object type (`healer`, e.g. a map's saladbar) — full-party HP/MP restore, free, no flag, every visit (`engine.input.handle_a_button`)
 - [x] Currency — `GameState.gold`/`add_gold`/`spend_gold` (saves for free via `variables`), HUD readout on the start menu + inventory screen, container `gold` grants, battle win reward computed (`BattleState.gold_reward`) but not yet credited — see Visuals & UI below for the battle-crediting blocker
@@ -151,7 +182,7 @@ Still not built: the general `if`/`if_not` condition check and `then`/`else` act
 ### Visuals & UI
 **Stats.** `iq`/`weight`/`sweat`/`hair` (`data/party/<name>.json`, `data/enemy/enemies.yaml`) are fixed per character/enemy — they never grow over the course of the game; only `level` and equipped gear (`engine.roster.PartyMember.equipped_weapon`/`equipped_armour`) get stronger over time. Stat roles: `weight` is **physical power** (both damage dealt and toughness/HP); `iq` is **magic/special power** (damage and status-effect potency); `hair` is **magic defense/resist**, the counterpart to `weight` on the other track; `sweat` is **accuracy/evasion**, shared across both tracks. `level` is meant to be the dominant term in every formula, with the four stats acting as smaller fixed modifiers on top of a level-driven baseline rather than the thing that decides a fight — this is a redesign in progress; `engine/battle.py`'s current KNOBS/FORMULAS math is still the older all-stat-driven version and doesn't reflect this yet.
 
-- [x] Battle resolver (`engine/battle.py`, headless `Fighter`/`BattleState`) + graphical debug screen (`engine.renderer.BattleScene`) — MELVIN vs. one enemy. Wired into real play: touching an enemy on the overworld starts a battle (`OverworldScene.start_battle`, gated by a post-battle immunity window so the player isn't instantly regrabbed); a win credits gold/XP/an item drop (`enemies.yaml`'s `xp`/`drop_item`/`drop_chance` fields) through `engine.roster.Roster`/`GameState`/`Inventory` and returns the player to their exact overworld spot; a loss shows a GAME OVER screen and reverts to the last save (discarding everything since, no other penalty). `maptest.py`'s isolated `battles` debug mode still works unchanged, for testing any enemy without a save. A scripted-encounter stub (`OverworldScene.trigger_scripted_encounter`) exists for a future cutscene/dialogue-triggered fight — not callable from anywhere yet, blocked on the general Event System below. Post-battle, the player gets a 2-second immunity window (blinking sprite) before touch-triggering another battle, so a win/flee doesn't instantly re-grab them.
+- [x] Battle resolver (`engine/battle.py`, headless `Fighter`/`BattleState`) + graphical debug screen (`engine.renderer.BattleScene`) — MELVIN vs. one enemy. Wired into real play: touching an enemy on the overworld starts a battle (`OverworldScene.start_battle`, gated by a post-battle immunity window so the player isn't instantly regrabbed); a win credits gold/XP/an item drop (`enemies.yaml`'s `xp`/`drop_item`/`drop_chance` fields) through `engine.roster.Roster`/`GameState`/`Inventory` and returns the player to their exact overworld spot; a loss shows a GAME OVER screen and reverts to the last save (discarding everything since, no other penalty). `maptest.py`'s isolated `battles` debug mode still works unchanged, for testing any enemy without a save. A scripted-encounter stub (`OverworldScene.trigger_scripted_encounter`) exists for a future cutscene-triggered fight — not callable from anywhere yet; the Cutscene/Event System above exists now, but nothing has wired a `start_battle`-style step kind onto it. Post-battle, the player gets a 2-second immunity window (blinking sprite) before touch-triggering another battle, so a win/flee doesn't instantly re-grab them.
 - [x] Battle-entry transition — touching an enemy no longer cuts straight to the battle screen. A randomly-picked 8-frame dissolve animation (`assets/fx/transitions.png`, one row per variant, `_BATTLE_TRANSITION_ANIM_COUNT` finished so far) tiles across the whole screen over 2 seconds while player/NPC/enemy sprites stay visible on top, then holds on solid black for 0.5 seconds before the battle screen actually appears (`OverworldScene._tick_battle_transition`/`_draw_battle_transition_overlay`). Fully pauses gameplay and swallows input throughout.
 - [ ] Battle screen overhaul — real art (currently plain textboxes + procgen backgrounds)
 - [x] Player-driven battle action menu — ATTACK/ITEM/DEFEND/RUN row, N/S cursor + A confirm, hidden until the player's turn actually starts (a ~3s post-turn text hold, skippable with A/B, precedes it so results are readable before the menu reappears). ATTACK, ITEM, and RUN all do something when confirmed (ITEM opens a scrollable list of usable consumables); DEFEND is still a real selectable row with no effect wired in yet — ask before implementing. SPECIAL isn't in the row at all — see the per-member specials table below, unlocked by a story flag or player level, not just by existing in the party
@@ -185,7 +216,7 @@ simtank_rpg/
 │   ├── game_state.py       # GameState (flags/variables) + persistent_id()
 │   ├── roster.py           # Roster/PartyMember — live party HP/MP/XP/level, save-round-trippable
 │   ├── save.py             # save_to_slot/load_from_slot/clear_slot/slot_exists — JSON under saves/
-│   ├── dialogue.py         # DialogueBox — paged, typewriter-revealed dialogue state
+│   ├── dialogue.py         # DialogueBox — paged, typewriter-revealed dialogue state + choice prompts
 │   ├── renderer.py         # THE renderer: app loop, Tiled map/tileset/object-layer loading,
 │   │                       #   sprite slicing, camera, OverworldScene + BattleScene
 │   ├── battle.py           # Fighter + hit/crit/parry/damage math + BattleState (headless)
@@ -193,6 +224,8 @@ simtank_rpg/
 │   ├── enemy.py            # EnemyDef/Enemy + enemies.yaml loader + spawn resolution + movement
 │   ├── movement.py         # step_continuous + collision helpers, shared by player.py/enemy.py
 │   ├── npc.py              # NpcDef/NpcSpriteSpec + data/npcs/npc.yaml loader
+│   ├── cutscene.py         # CutsceneDef/CutsceneTrigger/CutsceneStep/CutscenePlayer — headless
+│   │                       #   data/cutscenes/*.yaml loader + step sequencer; OverworldScene executes it
 │   ├── journal.py          # Journal — generic milestone log, used by battle.py
 │   ├── viewscan.py         # line-of-sight scan → ViewScan dataclass (built, not consumed yet)
 │   └── scenes/
@@ -225,10 +258,19 @@ simtank_rpg/
 │   │   └── interior_deptstore/, interior_office_deptstore/, interior_pizzahutparkinglot/,
 │   │       interior_town1/, interior_wc_deptstore/, interior_hub_rearhouse/
 │   │       # all synced to obj_/npcs_ YAML except `town`, still fresh — see populate_yamls.py
-│   └── party/               # character sheet JSONs
-├── tests/                   # unittest suite (no pytest in .venv) — game_state/inventory/menu/battle/input coverage
+│   ├── party/               # character sheet JSONs
+│   └── cutscenes/           # <id>.yaml step lists — engine.cutscene.load_cutscene_defs, played by
+│                             #   OverworldScene (real triggers) or maptest.py's debug `cutscene` mode
+├── tests/                   # unittest suite (no pytest in .venv) — game_state/inventory/menu/battle/input/cutscene coverage
 ├── saves/                   # gitignored — slot1.json.. written by engine/save.py, nothing checked in
-├── maptest.py               # debug entry point — prompts map/battle/debug screen
+├── tools/
+│   └── cutscene_editor/     # browser-based cutscene authoring tool — its own local HTTP server
+│       ├── server.py        #   (stdlib only, no new dependency), reuses engine.cutscene/engine.renderer
+│       └── static/          #   directly rather than re-deriving map/tileset logic in JS; run with
+│                             #   `python tools/cutscene_editor/server.py`, open localhost:8420. Saves
+│                             #   straight to data/cutscenes/<id>.yaml — the exact format the real game
+│                             #   plays, whether a file was authored here or by hand.
+├── maptest.py               # debug entry point — prompts map/battles/debug screen/cutscene
 └── config.json               # pacing, display geometry, tunable params
 ```
 
@@ -242,6 +284,7 @@ simtank_rpg/
 - New NPC sprite → drop a strip PNG in `assets/sprites/npcs/` (32×16 south-only 2-frame idle, or 128×16 full 8-frame walk cycle), then add an entry under `sprites:` in `data/npcs/npc.yaml` pointing `file:` at its filename stem and listing its placeholder `colors:` (hex, **quoted**).
 - New reusable NPC → add an entry under `npcs:` in `data/npcs/npc.yaml` referencing one of those sprite ids, optionally its own `colors:`/`facing:`, then set `npc_id` to that entry's key on any placement's `npcs_<map>.yaml` entry. Leave a placement's own `sprite`/`behavior`/`dialogue` blank to inherit from the def, fill one in to override it for just that placement.
 - New shop → place a `shop`-type object in Tiled (a shopkeeper is a person — same sprite/behavior rules as any `npc`), run `populate_yamls.py` to stub it into `npcs_<map>.yaml`, then fill in `sprite`/`behavior`/`npc_id` same as an NPC, `dialogue:` for the greeting, `farewell:` for the goodbye line, and `stock:` (a list of `{item, price}` mappings) for what it sells.
+- New cutscene → author it visually via `tools/cutscene_editor/` (`python tools/cutscene_editor/server.py`, open `http://localhost:8420/`) rather than hand-typing YAML — it loads a real map's actual tiles/NPCs, builds the step list and trigger through a form, and saves straight to `data/cutscenes/<id>.yaml`. (Hand-writing the YAML directly, per the step/trigger shape documented above, still works fine too — the editor is a convenience, not the only path.) Either way, test it standalone via `python maptest.py` → `cutscene`. To fire it for real: a `map_load` trigger needs nothing further; a `tile` trigger needs a `trigger`-type object placed in Tiled (run `populate_yamls.py` to stub its `cutscene_id:` in `obj_<map>.yaml`); an `npc_talk` trigger just needs the cutscene's own `trigger.actor` to name that NPC/shop placement's `name`.
 - New abilities → `data/abilities/` (not created yet — see Roadmap).
 
 ---

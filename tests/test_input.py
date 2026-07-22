@@ -1,11 +1,20 @@
 import unittest
 from types import SimpleNamespace
 
+from engine.cutscene import CutsceneDef, CutsceneTrigger
 from engine.dialogue import DialogueBox
 from engine.game_state import GameState
-from engine.input import _confirm_shop_transaction, _open_container, handle_a_button, handle_b_button
+from engine.input import (
+    _confirm_shop_transaction,
+    _open_container,
+    cutscene_id_from_result,
+    handle_a_button,
+    handle_b_button,
+)
 from engine.inventory import Inventory, ItemDef
-from engine.menu import InventoryMenu, SaveMenu, SELL, SettingsMenu, ShopMenu, StartMenu
+from engine.menu import (
+    InventoryMenu, ItemActionMenu, PartyMenu, SaveMenu, SELL, SettingsMenu, ShopMenu, StartMenu,
+)
 from engine.npc import DialogueVariant
 from engine.player import Player, PlayerState
 from engine.roster import Roster
@@ -29,6 +38,7 @@ def _shopkeeper(name="shopkeeper1", row=1, col=0, greeting=None, farewell=None, 
     other NPC, see engine.renderer.OverworldScene._load_map)."""
     return SimpleNamespace(
         name=name, type="shop", row=row, col=col, facing="N", npc_id=None,
+        width_span=1, height_span=1,
         dialogue_variants=[DialogueVariant(pages=greeting or [])],
         farewell_variants=[DialogueVariant(pages=farewell or [])],
         stock=stock or [],
@@ -38,16 +48,42 @@ def _shopkeeper(name="shopkeeper1", row=1, col=0, greeting=None, farewell=None, 
 def _handle_a(player, npcs, objects, shop_menu, dialogue, game_state, inventory, item_defs):
     return handle_a_button(
         player, StartMenu(), SaveMenu(), InventoryMenu(), SettingsMenu(), shop_menu,
+        ItemActionMenu(), PartyMenu(),
         dialogue, npcs, objects, wrap_pages=lambda pages: pages,
         game_state=game_state, inventory=inventory, roster=Roster.fresh(), item_defs=item_defs,
         map_name="town", active_slot=1,
     )
 
 
+def _npc_fixture(name="wizard", row=1, col=0, npc_id=None, greeting=None):
+    """An `npc`-type NPC fixture -- shape matches engine.renderer.NPC's
+    dialogue-relevant fields."""
+    return SimpleNamespace(
+        name=name, type="npc", row=row, col=col, facing="N", npc_id=npc_id,
+        width_span=1, height_span=1,
+        dialogue_variants=[DialogueVariant(pages=greeting or [])],
+    )
+
+
+def _handle_a_full(player, npcs, objects, dialogue, game_state, shop_menu=None,
+                    cutscene_defs=None, map_name="town"):
+    """Same shape as _handle_a, but with the full, correct handle_a_button
+    signature (item_action_menu/party_menu included) plus cutscene_defs --
+    _handle_a's positional args are missing those two and would TypeError,
+    see TestShopTalkThenShop's pre-existing (unrelated) failures."""
+    return handle_a_button(
+        player, StartMenu(), SaveMenu(), InventoryMenu(), SettingsMenu(), shop_menu or ShopMenu(),
+        ItemActionMenu(), PartyMenu(),
+        dialogue, npcs, objects, wrap_pages=lambda pages: pages,
+        game_state=game_state, inventory=Inventory(), roster=Roster.fresh(), item_defs=_defs(),
+        map_name=map_name, active_slot=1, cutscene_defs=cutscene_defs,
+    )
+
+
 def _handle_b(player, npcs, shop_menu, dialogue, game_state):
     return handle_b_button(
         player, StartMenu(), SaveMenu(), InventoryMenu(), SettingsMenu(), shop_menu,
-        dialogue, npcs, game_state, wrap_pages=lambda pages: pages,
+        ItemActionMenu(), PartyMenu(), dialogue, npcs, game_state, wrap_pages=lambda pages: pages,
     )
 
 
@@ -222,6 +258,89 @@ class TestShopTalkThenShop(unittest.TestCase):
         self.assertFalse(shop_menu.picking_amount)
         self.assertTrue(shop_menu.is_open)
         self.assertEqual(player.state, PlayerState.IN_SHOP)
+
+
+class TestNpcTalkCutsceneTrigger(unittest.TestCase):
+    """A cutscene with an `event: npc_talk` trigger matching this NPC's
+    `name` (+ map + when/unless) plays instead of its ordinary dialogue --
+    see engine.input._npc_talk_cutscene/cutscene_id_from_result and
+    engine.renderer.OverworldScene's handling of handle_a_button's result."""
+
+    def _idle_player(self):
+        player = Player.default()
+        player.set_state(PlayerState.IDLE)
+        return player
+
+    def _cutscene_defs(self, actor="wizard", when=(), unless=(), map_name="town"):
+        cutscene = CutsceneDef(
+            id="wizard_intro", map=map_name,
+            trigger=CutsceneTrigger(event="npc_talk", actor=actor, when=list(when), unless=list(unless)),
+            steps=[],
+        )
+        return {cutscene.id: cutscene}
+
+    def test_matching_trigger_preempts_dialogue(self):
+        player = self._idle_player()
+        npc = _npc_fixture(name="wizard", greeting=["Just an ordinary line."])
+        dialogue = DialogueBox()
+        result = _handle_a_full(player, [npc], [], dialogue, GameState(),
+                                 cutscene_defs=self._cutscene_defs())
+        self.assertEqual(cutscene_id_from_result(result), "wizard_intro")
+        self.assertFalse(dialogue.is_open)   # ordinary dialogue never opened
+
+    def test_no_matching_actor_falls_through_to_ordinary_dialogue(self):
+        player = self._idle_player()
+        npc = _npc_fixture(name="wizard", greeting=["Just an ordinary line."])
+        dialogue = DialogueBox()
+        result = _handle_a_full(player, [npc], [], dialogue, GameState(),
+                                 cutscene_defs=self._cutscene_defs(actor="someone_else"))
+        self.assertIsNone(cutscene_id_from_result(result))
+        self.assertTrue(dialogue.is_open)
+        self.assertEqual(dialogue.pages, ["Just an ordinary line."])
+
+    def test_unless_flag_blocks_the_cutscene(self):
+        player = self._idle_player()
+        npc = _npc_fixture(name="wizard", npc_id="wizard", greeting=["Ordinary line."])
+        dialogue = DialogueBox()
+        game_state = GameState()
+        game_state.set_flag("cutscene_seen:wizard_intro")
+        cutscene_defs = self._cutscene_defs(unless=["cutscene_seen:wizard_intro"])
+        result = _handle_a_full(player, [npc], [], dialogue, game_state, cutscene_defs=cutscene_defs)
+        self.assertIsNone(cutscene_id_from_result(result))
+        self.assertTrue(dialogue.is_open)
+
+    def test_npc_met_flag_still_sets_when_cutscene_plays(self):
+        player = self._idle_player()
+        npc = _npc_fixture(name="wizard", npc_id="wizard")
+        dialogue = DialogueBox()
+        game_state = GameState()
+        result = _handle_a_full(player, [npc], [], dialogue, game_state,
+                                 cutscene_defs=self._cutscene_defs())
+        self.assertIsNotNone(cutscene_id_from_result(result))
+        self.assertTrue(game_state.flag("npc_met:wizard"))
+
+    def test_shop_cutscene_trigger_skips_pending_shop(self):
+        player = self._idle_player()
+        shop = _shopkeeper(greeting=["Welcome!"])
+        dialogue = DialogueBox()
+        shop_menu = ShopMenu()
+        cutscene_defs = self._cutscene_defs(actor="shopkeeper1")
+        result = _handle_a_full(player, [shop], [], dialogue, GameState(),
+                                 shop_menu=shop_menu, cutscene_defs=cutscene_defs)
+        self.assertEqual(cutscene_id_from_result(result), "wizard_intro")
+        self.assertFalse(dialogue.is_open)
+        self.assertIsNone(shop_menu.pending_shop)
+        self.assertFalse(shop_menu.is_open)
+
+    def test_wrong_map_does_not_match(self):
+        player = self._idle_player()
+        npc = _npc_fixture(name="wizard", greeting=["Ordinary line."])
+        dialogue = DialogueBox()
+        cutscene_defs = self._cutscene_defs(map_name="some_other_map")
+        result = _handle_a_full(player, [npc], [], dialogue, GameState(),
+                                 cutscene_defs=cutscene_defs, map_name="town")
+        self.assertIsNone(cutscene_id_from_result(result))
+        self.assertTrue(dialogue.is_open)
 
 
 if __name__ == "__main__":

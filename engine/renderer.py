@@ -82,6 +82,7 @@ from engine.battle import (
     load_fighter, xp_to_next_level,
 )
 from engine.config import cfg
+from engine.cutscene import CutsceneDef, CutscenePlayer, load_cutscene_defs, trigger_matches
 from engine.dialogue import DialogueBox
 from engine.enemy import (
     Enemy,
@@ -93,6 +94,7 @@ from engine.enemy import (
 )
 from engine.input import (
     HeldDirectionInput,
+    cutscene_id_from_result,
     handle_a_button,
     handle_b_button,
     handle_menu_direction,
@@ -104,6 +106,7 @@ from engine.inventory import CATEGORY_LABELS, Inventory, ItemDef, load_item_defs
 from engine.menu import (
     BUY, InventoryMenu, ItemActionMenu, PartyMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu,
 )
+from engine.movement import step_continuous
 from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue
 from engine.player import Player, PlayerState
 from engine.roster import PartyMember, Roster
@@ -282,6 +285,7 @@ _DIALOGUE_TEXT_BOTTOM = 233 - _DIALOGUE_MARGIN_PX
 _DIALOGUE_TEXT_W = _DIALOGUE_TEXT_RIGHT - _DIALOGUE_TEXT_LEFT
 _DIALOGUE_TEXT_H = _DIALOGUE_TEXT_BOTTOM - _DIALOGUE_TEXT_TOP
 _DIALOGUE_TEXT_COLOR = (255, 255, 255)
+_DIALOGUE_CHOICE_DIM_COLOR = (110, 110, 110)   # unselected response row -- see _draw_dialogue_box
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -532,26 +536,45 @@ def get_party_frame(sprites: dict[str, pygame.Surface],
 #
 # Unlike the party sheet (one shared indexed sheet + partysprites.txt), each
 # enemy gets its own small strip file under assets/sprites/enemies/ -- a
-# single horizontal row of tile_px-tall frames (frame count = width / tile_px;
-# 2 today, a south-facing walk cycle). Keyed by filename stem, matching the
-# `sprite` field in data/enemy/enemies.yaml.
+# single horizontal row of frames (2 today, a south-facing walk cycle).
+# Keyed by filename stem, matching the `sprite` field in data/enemy/enemies.yaml.
+#
+# Frame width isn't hardcoded to tile_px -- only 2-frame and 8-frame strips
+# are authored (see engine.npc's module docstring), so frame count is
+# inferred by trying 8 first, then 2: whichever evenly divides the sheet
+# width into a tile_px-multiple frame width wins. 8 is tried first because
+# it's the narrower-frame reading -- a 128px-wide sheet must stay the
+# existing 8-frame x 16px-wide walk cycle (wizard/poots/gnome/roach2 all
+# depend on this), not get reinterpreted as 2 frames x 64px wide. A sheet
+# that matches neither (e.g. some future one-off) falls back to the old
+# fixed-tile_px-width slicing so it degrades exactly like before this
+# inference existed.
 
 def load_enemy_sprites(sprites_dir: Path, tile_px: int = 16) -> dict[str, list[pygame.Surface]]:
-    """Slice every PNG in `sprites_dir` into a list of tile_px-wide animation
-    frames, keyed by filename stem. Frame height is the sheet's own height
-    (always a multiple of tile_px), not hardcoded to tile_px -- a sheet
-    taller than one tile is a normal tile_px x tile_px frame (bottom rows)
-    with extra rows stacked above it (e.g. a hat/head overhang on an NPC).
-    See _draw_entities, which anchors the bottom tile_px rows to the tile
-    and lets any extra height extend upward. Call after
+    """Slice every PNG in `sprites_dir` into a list of animation frames,
+    keyed by filename stem. Frame width is inferred (see comment above) --
+    16px for the ordinary one-tile-wide sprites, a multiple of tile_px for a
+    multi-tile-wide one (e.g. 64x32 -- 2 frames, each 32x32). Frame height is
+    the sheet's own height (always a multiple of tile_px), not hardcoded to
+    tile_px -- a sheet taller than one tile is a normal tile_px-tall frame
+    (bottom rows) with extra rows stacked above it (e.g. a hat/head overhang
+    on an NPC). See _draw_entities, which anchors the bottom-left tile_px x
+    tile_px cell to the object's tile and lets any extra height extend
+    upward and any extra width extend rightward. Call after
     pygame.display.set_mode()."""
     frames: dict[str, list[pygame.Surface]] = {}
     for path in sorted(sprites_dir.glob('*.png')):
         sheet = pygame.image.load(str(path)).convert_alpha()
         width, height = sheet.get_size()
+        frame_w = tile_px
         count = width // tile_px
+        for candidate_count in (8, 2):
+            candidate_w = width / candidate_count
+            if candidate_w == int(candidate_w) and int(candidate_w) % tile_px == 0:
+                frame_w, count = int(candidate_w), candidate_count
+                break
         frames[path.stem] = [
-            sheet.subsurface(pygame.Rect(i * tile_px, 0, tile_px, height)).copy()
+            sheet.subsurface(pygame.Rect(i * frame_w, 0, frame_w, height)).copy()
             for i in range(count)
         ]
     return frames
@@ -593,18 +616,28 @@ def get_enemy_frame(enemy_sprites: dict[str, list[pygame.Surface]],
 # assets/sprites/npcs/, keyed by filename stem (data/npcs/npc.yaml's
 # NpcSpriteSpec.file). NOT the old shared party_sprites.png +
 # partysprites.txt mechanism, which is deprecated for NPCs. A strip's frame
-# count (width / tile_px) decides how get_npc_frame animates it: 2 frames is
-# a facing-less south-only idle loop, 8 is a full walk cycle in the party
-# sheet's own S1,S2,N1,N2,W1,W2,E1,E2 order, and does respond to facing.
+# count (inferred by load_enemy_sprites -- 8 tried before 2) decides how
+# get_npc_frame animates it: 2 frames is a facing-less south-only idle loop,
+# 8 is a full walk cycle in the party sheet's own S1,S2,N1,N2,W1,W2,E1,E2
+# order, and does respond to facing.
 #
 # A strip's height, independently of frame count, may be any multiple of
 # tile_px -- e.g. 128x32 is still the 8-frame walk cycle above, just with
-# each frame 32px tall instead of 16. The bottom tile_px rows are the
-# ordinary body, treated exactly like a 16-tall sprite; anything above that
-# is drawn as a plain overhang (a hat, a tall hood, ...) with no separate
-# animation or logic of its own. load_enemy_sprites slices the full height;
-# _draw_entities anchors the bottom tile_px rows to the NPC's tile and lets
-# the rest extend upward.
+# each frame 32px tall instead of 16. Likewise a strip's *width per frame*
+# may be any multiple of tile_px -- e.g. manager is 64x32 (2 frames, each
+# 32x32 -- a 2-tile-wide, 2-tile-tall idle loop). Either way, the bottom-left
+# tile_px x tile_px cell of each frame is the ordinary body, treated exactly
+# like a 16x16 sprite; extra rows above it are a plain overhang (a hat, a
+# tall hood, ...) and extra columns to its right are the rest of a
+# wider-than-one-tile character -- neither has any separate animation or
+# logic of its own. A map's npc/shop object's row/col anchors the sprite's
+# bottom-*left* tile -- i.e. place the object where you want that lower-left
+# 16x16 cell, and the rest of the sprite extends up and to the right from
+# there. load_enemy_sprites slices the full sheet; _draw_entities anchors
+# the bottom-left tile_px x tile_px cell to the object's tile and lets the
+# rest extend upward/rightward; _passable_with_npcs and
+# Player.adjacent_interactable both block/reach the NPC's whole footprint
+# (NPC.width_span x NPC.height_span), not just that one anchor tile.
 #
 # Recoloring (see engine.npc's module docstring / NpcDef.colors /
 # NpcSpriteSpec.colors): a sprite loads once here, unrecolored; per-NPC
@@ -743,6 +776,16 @@ class MapObject:
     offset in the `facing` direction; distance 0 or unset lands exactly on
     it) *and* the direction the player faces once they land.
 
+    `cutscene_id` is only ever set for `type == "trigger"` entries: an
+    invisible, one-tile trigger zone modeled directly on `warp` (edge-
+    triggered the same way -- see OverworldScene._trigger_at/
+    _try_start_tile_trigger/_update_player_movement) except it starts a
+    cutscene instead of a map transition. The id is a key into
+    OverworldScene.cutscene_defs; that cutscene's own `trigger.event` must
+    be "tile" (checked at fire time, not here) -- this object only says
+    *which* cutscene to check, not that it unconditionally plays, since the
+    cutscene's own `when`/`unless` still has to pass.
+
     `row`/`col` are the tile this object's top-left pixel floors into —
     used for gameplay (facing/interaction checks, and for NPCs, wander
     stepping/collision). `row_exact`/`col_exact` are the same position
@@ -814,6 +857,7 @@ class MapObject:
     destination_warp: str | None = None
     facing:   str | None = None
     distance: int | None = None
+    cutscene_id:  str | None = None   # type == "trigger" only: which cutscene to check on step-on
     enemy_id:     str | None = None
     level:        int | list[int] | None = None
     enemies:      list = field(default_factory=list)
@@ -868,6 +912,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 destination_warp = data.get("destination_warp"),
                 facing    = data.get("facing"),
                 distance  = data.get("distance"),
+                cutscene_id  = data.get("cutscene_id"),
                 enemy_id     = data.get("enemy_id"),
                 level        = data.get("level"),
                 enemies      = data.get("enemies", []),
@@ -1178,6 +1223,17 @@ class NPC:
     (self.npc_frames_by_id) instead of the sprite's raw one; an inline NPC
     with no def (npc_id stays None) always draws its sprite unrecolored.
 
+    `width_span`/`height_span` are this NPC's resolved sprite's frame size in
+    tiles (1x1 for an ordinary 16x16 sprite) — resolved once at construction
+    time in _load_map, from the same frame set _npc_frames would resolve for
+    it, so they can't drift out of sync with what actually gets drawn.
+    `row`/`col` anchor the sprite's bottom-*left* tile, so its footprint is
+    columns `[col, col + width_span)` and rows `(row - height_span, row]`;
+    _passable_with_npcs and Player.adjacent_interactable both use this full
+    footprint, not just the anchor tile, so a wider-than-one-tile NPC (e.g.
+    manager, 2x2) blocks and can be talked to from any tile it visually
+    covers.
+
     `dialogue_variants` (engine.npc.DialogueVariant list) is the
     placement's own npcs_<map>.yaml `dialogue:` if it set one (parsed via
     engine.npc.parse_dialogue — a flat page list or a conditional variant
@@ -1205,6 +1261,8 @@ class NPC:
     facing:     str = "S"           # "N" | "S" | "E" | "W" -- only visible on an 8-frame sprite
     type:       str = "npc"         # "npc" | "shop"
     npc_id:     str | None = None   # key into OverworldScene.npc_defs/npc_frames_by_id, if resolved
+    width_span:  int = 1            # tiles wide, resolved sprite's frame width // tile_px -- see _load_map
+    height_span: int = 1            # tiles tall, resolved sprite's frame height // tile_px -- see _load_map
     dialogue_variants: list[DialogueVariant] = field(default_factory=list)
     stock:             list[dict] = field(default_factory=list)             # type == "shop" only
     farewell_variants: list[DialogueVariant] = field(default_factory=list)   # type == "shop" only
@@ -1222,7 +1280,8 @@ class OverworldScene:
 
     def __init__(self, map_path: Path = _HUB_MAP, player: Player | None = None,
                  inventory: Inventory | None = None, game_state: GameState | None = None,
-                 roster: Roster | None = None, active_slot: int = 1):
+                 roster: Roster | None = None, active_slot: int = 1,
+                 play_cutscene: str | None = None):
         """`player`/`inventory`/`game_state`/`roster`, if given, are what a
         save slot restores (see engine.save / maptest.py's save-slot picker)
         — omit all four for a fresh boot with no save (maptest.py's
@@ -1233,6 +1292,10 @@ class OverworldScene:
         convenience of landing on a random warp (see _load_map) rather than
         Player.default()'s meaningless (0, 0) placeholder. `active_slot` is
         only used by SAVE on the start menu, to know which slot to write.
+        `play_cutscene`, if given, starts that cutscene id (see
+        engine.cutscene) immediately once the map's loaded -- maptest.py's
+        debug `cutscene` mode uses this to play one in isolation, no save
+        involved, the same spirit as its `battles` mode.
         """
         self.tile_px = cfg.tile_px
         self.player_move_ms = cfg.player_move_ms   # ms to cross one tile at normal speed
@@ -1268,6 +1331,7 @@ class OverworldScene:
         # each npc-type object's own fields against these) happens in
         # _load_map.
         self.npc_defs = load_npc_defs()
+        self.cutscene_defs = load_cutscene_defs()   # data/cutscenes/*.yaml -- see engine.cutscene
         self.npc_sprite_specs = load_npc_sprite_specs()
         self.npc_sprites = load_npc_sprites(_NPC_SPRITES_DIR, self.tile_px)   # raw, unrecolored, by filename stem
 
@@ -1373,17 +1437,43 @@ class OverworldScene:
         # update()/handle_event()/draw().
         self._game_over = False
 
+        # Cutscene state -- see start_cutscene/_tick_cutscene/_end_cutscene.
+        # cutscene_player is None whenever no cutscene is active; while it
+        # isn't, update()/handle_event() delegate to it wholesale, same
+        # full-pause pattern as battle_scene/dialogue/menu above -- the
+        # world doesn't wander/spawn enemies/accept movement input under a
+        # running cutscene. _cutscene_spawned_ids tracks which of self.npcs
+        # this cutscene itself added (see _cutscene_step_spawn_actor) so
+        # _end_cutscene knows to remove exactly those and no others --
+        # cutscene-spawned actors are always temporary, per the build plan.
+        self.cutscene_player: CutscenePlayer | None = None
+        self._cutscene_armed_index: int | None = None   # which step index setup has already run for
+        self._cutscene_wait_remaining = 0.0
+        self._cutscene_camera_pan: dict | None = None
+        self._cutscene_spawned_ids: set[int] = set()
+        self._cutscene_next_actor_index = -1   # negative, so it can never collide with a real Tiled object id
+        self._camera_override: tuple[float, float] | None = None   # see _camera_offset_px / _cutscene_step_pan_camera
+
         spawn = (self.player.row, self.player.col) if self._loaded_save else None
         facing = self.player.facing if self._loaded_save else None
         self._load_map(map_path, spawn=spawn, facing=facing)
+        if play_cutscene is not None:
+            self.start_cutscene(play_cutscene)
 
     def _load_map(self, map_path: Path, tmap: 'TiledMap | None' = None,
-                   spawn: tuple[int, int] | None = None, facing: str | None = None) -> None:
+                   spawn: tuple[int, int] | None = None, facing: str | None = None,
+                   check_triggers: bool = True) -> None:
         """Load (or, mid-game via a warp, reload) everything specific to one
         map: the Tiled map + tileset, passability, objects/warps/NPCs, and
         the player's spawn tile. Pygame resources that don't vary by map
         (sprites, menu/dialogue assets) are loaded once in __init__ instead
         and untouched here.
+
+        `check_triggers` gates a "map_load"-triggered cutscene check (see
+        _check_cutscene_triggers) at the very end, once passability/objects/
+        NPCs/warps/spawn are all in place -- on for every real arrival
+        (fresh boot, warp, game-over revert), off only for the dev-only R-key
+        hot-reload (same map, same position, not a real "arrival").
 
         `tmap`, if given, is a TiledMap the caller already parsed — _swap_map
         has to load the destination map anyway to find the target warp
@@ -1404,8 +1494,12 @@ class OverworldScene:
         print(f'  {len(self.tile_surfaces)} tiles', flush=True)
 
         self.objects = [o for o in self.tmap.objects
-                        if o.type not in ("npc", "shop", "warp", "enemy", "spawner")]   # containers/signs
+                        if o.type not in ("npc", "shop", "warp", "enemy", "spawner", "trigger")]   # containers/signs
         self.warps = [o for o in self.tmap.objects if o.type == "warp"]
+        # Invisible, one-tile cutscene trigger zones -- not drawn/A-press
+        # interactable (excluded from self.objects above), same as warps;
+        # see _trigger_at/_try_start_tile_trigger/_update_player_movement.
+        self.triggers = [o for o in self.tmap.objects if o.type == "trigger"]
         # A shop is a person first -- built from the exact same objects as
         # any other NPC (npcs_<map>.yaml, sprite/behavior/npc_id, drawn by
         # _draw_entities the same way), not a separate static object type.
@@ -1438,13 +1532,26 @@ class OverworldScene:
             # the resolved def's own (already-parsed) variant list.
             own_dialogue = parse_dialogue(o.dialogue)
             dialogue_variants = own_dialogue or (npc_def.dialogue if npc_def else [])
+            resolved_npc_id = o.npc_id if npc_def else None
+            resolved_sprite = o.sprite or (npc_def.sprite if npc_def else None)
+            # width_span/height_span: this placement's footprint in tiles,
+            # resolved from the same frame set _npc_frames would resolve for
+            # it once the NPC exists -- computed here (instead of lazily,
+            # e.g. in _passable_with_npcs) so it's set once at load and both
+            # collision and interaction read the same stored numbers rather
+            # than re-deriving them from pixel dimensions in two places.
+            resolved_frames = self._resolve_npc_frames(resolved_npc_id, resolved_sprite)
+            width_span = (resolved_frames[0].get_width() // self.tile_px) if resolved_frames else 1
+            height_span = (resolved_frames[0].get_height() // self.tile_px) if resolved_frames else 1
             self.npcs.append(NPC(
                 index=o.id, name=o.name, row=round(o.row_exact), col=round(o.col_exact),
-                npc_sprite=o.sprite or (npc_def.sprite if npc_def else None),
+                npc_sprite=resolved_sprite,
                 behavior=o.behavior or (npc_def.behavior if npc_def else None) or "static",
                 facing=npc_def.facing if npc_def else "S",
                 type=o.type,
-                npc_id=o.npc_id if npc_def else None,
+                npc_id=resolved_npc_id,
+                width_span=width_span,
+                height_span=height_span,
                 dialogue_variants=dialogue_variants,
                 stock=o.stock,
                 farewell_variants=parse_dialogue(o.farewell),
@@ -1530,6 +1637,9 @@ class OverworldScene:
             for npc, o in zip(self.npcs, npc_map_objects)
         }
 
+        if check_triggers:
+            self._check_cutscene_triggers('map_load')
+
         print(f'Overworld: {self.tmap.height}r × {self.tmap.width}c  |  '
               f'player spawn ({self.player.row},{self.player.col})  |  '
               f'{len(self.npcs)} NPCs  |  {len(self.warps)} warps  |  {len(self.enemies)} enemies', flush=True)
@@ -1599,6 +1709,10 @@ class OverworldScene:
                 self._reload_last_save()
             return
 
+        if self.cutscene_player is not None:
+            self._handle_cutscene_event(event)
+            return
+
         if event.type == pygame.KEYDOWN:
             # DEV-ONLY: hot-reload the current map's JSON/tileset off disk
             # without restarting the process, so map edits can be checked
@@ -1606,7 +1720,8 @@ class OverworldScene:
             if event.key == pygame.K_r and self._transition_phase is None:
                 self._load_map(self.map_path,
                                 spawn=(self.player.row, self.player.col),
-                                facing=self.player.facing)
+                                facing=self.player.facing,
+                                check_triggers=False)
                 return
 
             direction = _DIR_KEY.get(event.key)
@@ -1658,15 +1773,22 @@ class OverworldScene:
                 # + sets its flag the first time, inert after that -- see
                 # engine.input) / confirms a buy/sell row while the shop
                 # screen itself is open -- see engine.input.handle_a_button.
-                handle_a_button(self.player, self.menu, self.save_menu, self.inventory_menu,
-                                 self.settings_menu, self.shop_menu,
-                                 self.item_action_menu, self.party_menu,
-                                 self.dialogue, self.npcs, self.objects,
-                                 wrap_pages=self._wrap_dialogue_pages,
-                                 game_state=self.game_state, inventory=self.inventory,
-                                 roster=self.roster,
-                                 item_defs=self.item_defs, map_name=self.map_path.stem,
-                                 active_slot=self.active_slot)
+                # A talk-triggered cutscene (event: npc_talk) preempts the
+                # NPC/shop's ordinary dialogue -- see engine.input's
+                # cutscene_defs param/cutscene_id_from_result.
+                result = handle_a_button(self.player, self.menu, self.save_menu, self.inventory_menu,
+                                          self.settings_menu, self.shop_menu,
+                                          self.item_action_menu, self.party_menu,
+                                          self.dialogue, self.npcs, self.objects,
+                                          wrap_pages=self._wrap_dialogue_pages,
+                                          game_state=self.game_state, inventory=self.inventory,
+                                          roster=self.roster,
+                                          item_defs=self.item_defs, map_name=self.map_path.stem,
+                                          active_slot=self.active_slot,
+                                          cutscene_defs=self.cutscene_defs)
+                cutscene_id = cutscene_id_from_result(result)
+                if cutscene_id is not None:
+                    self.start_cutscene(cutscene_id)
 
     # ── update ───────────────────────────────────────────────────────────────
 
@@ -1690,6 +1812,14 @@ class OverworldScene:
 
         if self._game_over:
             return   # full pause -- A-press-only, see handle_event/_reload_last_save
+
+        if self.cutscene_player is not None:
+            # A cutscene owns update/input entirely while active -- same
+            # full-pause tier as battle_scene/dialogue/menu above, so no
+            # wander/enemy/player-input ticking happens underneath it. See
+            # _tick_cutscene/_end_cutscene.
+            self._tick_cutscene(dt_ms)
+            return
 
         if self._transition_phase is not None:
             # A warp is fading out/holding/fading in — full gameplay pause,
@@ -1776,12 +1906,44 @@ class OverworldScene:
             warp = self._warp_at(*current_tile)
             if warp is not None:
                 self._begin_warp(warp)
+            trigger_obj = self._trigger_at(*current_tile)
+            if trigger_obj is not None:
+                self._try_start_tile_trigger(trigger_obj)
 
     def _warp_at(self, row: int, col: int) -> 'MapObject | None':
         for warp in self.warps:
             if warp.row == row and warp.col == col:
                 return warp
         return None
+
+    def _trigger_at(self, row: int, col: int) -> 'MapObject | None':
+        for trigger in self.triggers:
+            if trigger.row == row and trigger.col == col:
+                return trigger
+        return None
+
+    def _try_start_tile_trigger(self, trigger_obj: 'MapObject') -> None:
+        """A `trigger`-type object's own `cutscene_id` names which cutscene
+        to check the instant the player's tile becomes this object's tile
+        (see _trigger_at, called from _update_player_movement -- same
+        edge-triggered mechanism as a warp). Only actually starts it if
+        that cutscene exists, its own trigger is `event: "tile"`, and its
+        `when`/`unless` passes against live flags -- the object just says
+        *which* cutscene to check, not that it unconditionally fires every
+        time the tile's stepped on. Unknown cutscene_id or a mismatched
+        trigger event logs a warning and does nothing, same fail-soft
+        convention as an unknown npc_id/enemy_id elsewhere in this class."""
+        cutscene = self.cutscene_defs.get(trigger_obj.cutscene_id)
+        if cutscene is None:
+            print(f'trigger {trigger_obj.name!r} (id {trigger_obj.id}) references unknown '
+                  f'cutscene_id {trigger_obj.cutscene_id!r} -- ignoring', flush=True)
+            return
+        if cutscene.trigger is None or cutscene.trigger.event != 'tile':
+            print(f"trigger {trigger_obj.name!r}: cutscene {cutscene.id!r} has no "
+                  f"trigger event == 'tile' -- ignoring", flush=True)
+            return
+        if self.cutscene_player is None and trigger_matches(cutscene.trigger, self.game_state.flag):
+            self.start_cutscene(cutscene.id)
 
     @staticmethod
     def _warp_landing(warp: 'MapObject') -> tuple[tuple[int, int], str]:
@@ -1839,36 +2001,46 @@ class OverworldScene:
         spawn, facing = self._warp_landing(target)
         self._load_map(dest_path, tmap=dest_tmap, spawn=spawn, facing=facing)
 
-    def _npc_frames(self, npc: 'NPC') -> list[pygame.Surface] | None:
-        """This NPC's resolved frame list -- the recolored cache for an
-        npc_id'd NPC (self.npc_frames_by_id, set once at __init__), or its
-        sprite's raw, unrecolored frames for an inline placement with no
-        def. Shared by _draw_entities (which frame to draw) and
-        _passable_with_npcs (how many tiles tall it is, for collision) so
-        both always agree on the same frame set."""
-        frames = self.npc_frames_by_id.get(npc.npc_id) if npc.npc_id else None
+    def _resolve_npc_frames(self, npc_id: str | None, npc_sprite: str | None) -> list[pygame.Surface] | None:
+        """The frame list a given npc_id/npc_sprite pair resolves to -- the
+        recolored cache for an npc_id'd NPC (self.npc_frames_by_id, set once
+        at __init__), or its sprite's raw, unrecolored frames for an inline
+        placement with no def. Takes plain ids rather than an NPC instance
+        so _load_map can resolve an NPC's frame set (for width_span/
+        height_span) before that NPC object even exists yet."""
+        frames = self.npc_frames_by_id.get(npc_id) if npc_id else None
         if frames is None:
-            spec = self.npc_sprite_specs.get(npc.npc_sprite)
+            spec = self.npc_sprite_specs.get(npc_sprite)
             frames = self.npc_sprites.get(spec.file) if spec else None
         return frames
 
+    def _npc_frames(self, npc: 'NPC') -> list[pygame.Surface] | None:
+        """This NPC's resolved frame list -- see _resolve_npc_frames. Shared
+        by _draw_entities (which frame to draw) and _load_map (which sets
+        width_span/height_span at construction time) so both always agree
+        on the same frame set."""
+        return self._resolve_npc_frames(npc.npc_id, npc.npc_sprite)
+
     def _passable_with_npcs(self) -> list[list[bool]]:
-        """The static walkable grid with every NPC's current tile marked
-        impassable, so the player can't walk through them -- including any
-        extra tile(s) a taller-than-one-tile sprite's overhang is drawn
-        over (see load_enemy_sprites/_draw_entities): a 32px-tall NPC also
-        blocks the tile directly north of its own row/col, where its
-        hat/head is drawn, not just its body tile. Rebuilt fresh on each
+        """The static walkable grid with every NPC's current footprint
+        marked impassable, so the player can't walk through them --
+        including any extra tile(s) a bigger-than-one-tile sprite's overhang
+        is drawn over (see load_enemy_sprites/_draw_entities): e.g. a 32px-
+        tall NPC also blocks the tile directly north of its own row/col,
+        where its hat/head is drawn, and a 32px-wide one also blocks the
+        tile to its east, not just its anchor tile. Rebuilt fresh on each
         attempted step since NPCs move — engine.player stays headless and
         ignorant of NPCs entirely; it just sees a plain grid."""
         grid = [row[:] for row in self.passable]
         for npc in self.npcs:
-            frames = self._npc_frames(npc)
-            tile_span = (frames[0].get_height() // self.tile_px) if frames else 1
-            for i in range(tile_span):
+            for i in range(npc.height_span):
                 r = npc.row - i
-                if 0 <= r < len(grid):
-                    grid[r][npc.col] = False
+                if not (0 <= r < len(grid)):
+                    continue
+                for j in range(npc.width_span):
+                    c = npc.col + j
+                    if 0 <= c < len(grid[r]):
+                        grid[r][c] = False
         return grid
 
     def _tile_occupied(self, row: int, col: int, exclude_npc: 'NPC | None' = None) -> bool:
@@ -1885,33 +2057,49 @@ class OverworldScene:
     def _update_npc_wander(self) -> None:
         """One decision tick for every "wander" NPC: a coin flip decides
         whether it steps this tick, then a random cardinal direction is
-        tried against the walkable grid and current occupancy — same rules
-        as the player, just without input driving it. `facing` only turns
-        on an actual step (blocked attempts don't turn the NPC in place the
-        way the player's tap-to-turn does) -- visible only on an 8-frame
-        sprite, a no-op field otherwise."""
+        tried via _npc_step -- same rules as the player, just without input
+        driving it."""
         for npc in self.npcs:
             if npc.behavior != 'wander':
                 continue
             if self._npc_rng.random() >= _NPC_WANDER_MOVE_CHANCE:
                 continue
-            direction = self._npc_rng.choice(_NPC_WANDER_DIRECTIONS)
-            dr, dc = _DIR_DELTA[direction]
-            new_row, new_col = npc.row + dr, npc.col + dc
-            if not (0 <= new_row < self.tmap.height and 0 <= new_col < self.tmap.width):
-                continue
-            if not self.passable[new_row][new_col]:
-                continue
-            if self._tile_occupied(new_row, new_col, exclude_npc=npc):
-                continue
+            self._npc_step(npc, self._npc_rng.choice(_NPC_WANDER_DIRECTIONS))
 
-            vis = self._npc_visual_pos(npc)
-            npc.row, npc.col = new_row, new_col
-            npc.facing = direction
-            tw = self._npc_tweens[npc.index]
-            tw['src'] = vis
-            tw['dst'] = (float(new_row), float(new_col))
-            tw['elapsed'] = 0
+    def _npc_step(self, npc: 'NPC', direction: str) -> bool:
+        """Attempt one tile-step for `npc` in `direction`, against the
+        walkable grid and current occupancy -- same rules as the player.
+        On success, mutates npc.row/col, turns it to face `direction`
+        (visible only on an 8-frame sprite, a no-op field otherwise), and
+        seeds its visual tween (see _npc_visual_pos) so it animates
+        smoothly to the new tile over _NPC_MOVE_MS. Returns whether the
+        step actually happened -- a blocked attempt does nothing at all,
+        same as before this was split out of _update_npc_wander (a wander
+        NPC doesn't turn in place on a blocked attempt the way the player's
+        tap-to-turn does).
+
+        Shared by _update_npc_wander (a random direction, chosen for it)
+        and the cutscene executor's move_actor step (_cutscene_move_npc, a
+        direction chosen toward a scripted target) -- the two callers
+        differ only in *which* direction they try, not in how a step is
+        actually taken."""
+        dr, dc = _DIR_DELTA[direction]
+        new_row, new_col = npc.row + dr, npc.col + dc
+        if not (0 <= new_row < self.tmap.height and 0 <= new_col < self.tmap.width):
+            return False
+        if not self.passable[new_row][new_col]:
+            return False
+        if self._tile_occupied(new_row, new_col, exclude_npc=npc):
+            return False
+
+        vis = self._npc_visual_pos(npc)
+        npc.row, npc.col = new_row, new_col
+        npc.facing = direction
+        tw = self._npc_tweens[npc.index]
+        tw['src'] = vis
+        tw['dst'] = (float(new_row), float(new_col))
+        tw['elapsed'] = 0
+        return True
 
     def _npc_visual_pos(self, npc) -> tuple[float, float]:
         tw = self._npc_tweens.get(npc.index)
@@ -2147,6 +2335,470 @@ class OverworldScene:
                 self.dialogue_font, page, _DIALOGUE_TEXT_W, _DIALOGUE_TEXT_H))
         return screens
 
+    # ── cutscene ─────────────────────────────────────────────────────────────
+    #
+    # engine.cutscene holds the headless step list + step pointer
+    # (CutsceneDef/CutscenePlayer); everything below actually executes a
+    # step against real pygame/Tiled state -- moving/tweening an NPC or the
+    # player, opening the dialogue box, mutating a tile layer's GID grid,
+    # panning the camera. See engine.cutscene's module docstring for the
+    # step-kind/YAML shape, and the build plan (cutscene system) for why
+    # this lives here rather than in engine.cutscene itself: same
+    # headless-logic/pygame-execution split as engine.battle.BattleState
+    # vs. BattleScene.
+
+    def _check_cutscene_triggers(self, event: str) -> None:
+        """Check every loaded cutscene (self.cutscene_defs, insertion order
+        -- see engine.cutscene.load_cutscene_defs, sorted by filename) whose
+        own `trigger.event` matches `event` and whose `map` is the one
+        that's actually loaded right now, and start the first one whose
+        `when`/`unless` passes against live flags (engine.cutscene.
+        trigger_matches) -- first match wins, same "checked top-to-bottom"
+        rule engine.npc.resolve_dialogue already uses for dialogue variants.
+        A no-op if a cutscene is somehow already running, or if none match.
+
+        This is also the mechanism behind chaining a story beat across two
+        maps (see the build plan's "no mid-cutscene map switching" decision):
+        cutscene A, on map 1, ends by setting a flag; the player leaves
+        through an ordinary warp; map 2's own "map_load" check (called from
+        _load_map, at the tail end of _swap_map) sees that flag and starts
+        cutscene B -- no map-switching logic ever needed inside the executor
+        itself."""
+        if self.cutscene_player is not None:
+            return
+        map_name = self.map_path.stem
+        for cutscene in self.cutscene_defs.values():
+            trigger = cutscene.trigger
+            if trigger is None or trigger.event != event or cutscene.map != map_name:
+                continue
+            if trigger_matches(trigger, self.game_state.flag):
+                self.start_cutscene(cutscene.id)
+                return
+
+    def start_cutscene(self, cutscene_id: str) -> None:
+        """Begin playing `cutscene_id` (a key into self.cutscene_defs) from
+        its first step. Reachable two ways: a matching trigger firing (see
+        _check_cutscene_triggers -- map-load today; tile/npc-talk below) or
+        directly, e.g. maptest.py's debug `cutscene` mode. A no-op (with a
+        console warning) if the id doesn't resolve, rather than raising --
+        an author typo shouldn't crash the game."""
+        cutscene = self.cutscene_defs.get(cutscene_id)
+        if cutscene is None:
+            print(f'start_cutscene: unknown cutscene id {cutscene_id!r} -- ignoring', flush=True)
+            return
+        self.cutscene_player = CutscenePlayer(cutscene=cutscene)
+        self._cutscene_armed_index = None
+        self._cutscene_wait_remaining = 0.0
+        self._cutscene_camera_pan = None
+
+    def _end_cutscene(self) -> None:
+        """Clean up once CutscenePlayer.finished: despawn every actor this
+        cutscene itself spawned (per the build plan, cutscene-spawned
+        actors never persist), drop the camera override (so _camera_offset_px
+        goes back to following the player), and clear cutscene_player so
+        update()/handle_event()'s gates fall through to ordinary play again.
+
+        Also re-seeds _player_last_tile at wherever the cutscene actually
+        left the player -- _cutscene_move_player moves player.row/col
+        directly without touching it (unlike ordinary input-driven movement,
+        which updates it every frame in _update_player_movement), so without
+        this, the very next normal frame would see current_tile() differ
+        from a stale pre-cutscene _player_last_tile and treat that as a
+        fresh step onto whatever warp/trigger tile the cutscene happened to
+        park the player on -- an unintended, unauthored map transition or
+        cutscene the instant this one ends. Same reasoning _load_map already
+        applies right after positioning the player (fresh boot, warp
+        arrival, game-over revert) -- this is that same rule for a cutscene
+        ending. Chaining across maps (see the build plan) still works: it's
+        the player's own next *ordinary* step onto a warp, after regaining
+        control, that fires -- not a step the cutscene silently walked them
+        through as a side effect of where it stopped them."""
+        if self._cutscene_spawned_ids:
+            self.npcs = [npc for npc in self.npcs if npc.index not in self._cutscene_spawned_ids]
+            for index in self._cutscene_spawned_ids:
+                self._npc_tweens.pop(index, None)
+            self._cutscene_spawned_ids = set()
+        self._camera_override = None
+        self._cutscene_camera_pan = None
+        self.cutscene_player = None
+        self._cutscene_armed_index = None
+        self._player_last_tile = self.player.current_tile()
+
+    def _handle_cutscene_event(self, event: pygame.event.Event) -> None:
+        """Input while a cutscene is active: A advances/closes whatever
+        dialogue page is currently open (same as ordinary play), tracked
+        via _held_buttons same as normal for the fast-reveal-on-hold effect
+        (see _cutscene_step_dialogue). Movement keys are otherwise ignored
+        entirely -- a cutscene owns the player's position via move_actor
+        steps, same "full pause" reasoning as a battle or menu owning input
+        -- except while a dialogue step's response list is showing
+        (self.dialogue.is_showing_choices()), where N/S move the response
+        cursor and A confirms one instead of advancing/closing, same
+        N/S-cursor + A-confirm idiom as every other list menu in this
+        game."""
+        if event.type != pygame.KEYDOWN:
+            return
+        button = _BUTTON_KEY.get(event.key)
+        if button:
+            self._held_buttons.add(button)
+
+        if self.dialogue.is_showing_choices():
+            direction = _DIR_KEY.get(event.key)
+            if direction == 'N':
+                self.dialogue.move_choice_cursor(-1)
+            elif direction == 'S':
+                self.dialogue.move_choice_cursor(1)
+            elif button == 'A':
+                self._confirm_dialogue_choice()
+            return
+
+        if button == 'A' and self.dialogue.is_open:
+            self.dialogue.advance()
+
+    def _confirm_dialogue_choice(self) -> None:
+        """Resolve whichever response the player just confirmed on the
+        current dialogue step's choice list: splice that CutsceneChoice's
+        own `then:` steps into the running cutscene's step list, right
+        after the dialogue step that presented them, then close the
+        dialogue box. _tick_cutscene's normal advance (triggered next by
+        _cutscene_step_dialogue seeing the box closed, see below) lands
+        exactly on the first spliced-in step -- so a choice's consequences
+        get the same multi-frame handling as any other step, not a
+        separate one-shot execution path. Splices into `cp.steps` -- the
+        CutscenePlayer's own private copy (see CutscenePlayer.__post_init__)
+        -- never `cp.cutscene.steps`, which is the shared list living on
+        the cached CutsceneDef (self.cutscene_defs is built once and reused
+        for the process lifetime); splicing into the shared list would
+        permanently graft these steps onto every future play of this same
+        cutscene, including a replay after picking a different choice."""
+        cp = self.cutscene_player
+        index = self.dialogue.confirm_choice()
+        self.dialogue.close()
+        if index is None or cp is None:
+            return
+        step = cp.current_step()
+        choices = (step.args.get('choices') or []) if step is not None else []
+        if 0 <= index < len(choices):
+            cp.steps[cp.index + 1:cp.index + 1] = choices[index].then
+
+    def _tick_cutscene(self, dt_ms: int) -> None:
+        """One frame of cutscene playback: run the current step, and if it
+        reports itself finished, advance to the next one and keep going
+        within the same frame -- so a run of instantaneous steps (set_flag,
+        give_item, face, ...) all resolve on one frame, same as they would
+        if hand-written as separate lines of Python, rather than each
+        silently costing a real frame of nothing happening. Only the first
+        step run this frame gets `dt_ms`; any instantaneous steps that fall
+        through afterward get 0, so a wait/move/dialogue that immediately
+        follows doesn't lose the frame's elapsed time twice."""
+        cp = self.cutscene_player
+        while True:
+            step = cp.current_step()
+            if step is None:
+                self._end_cutscene()
+                return
+            is_new = self._cutscene_armed_index != cp.index
+            if is_new:
+                self._cutscene_armed_index = cp.index
+            finished = self._run_cutscene_step(step, dt_ms, is_new)
+            if not finished:
+                return
+            cp.advance()
+            dt_ms = 0
+
+    def _run_cutscene_step(self, step: 'CutsceneStep', dt_ms: int, is_new: bool) -> bool:
+        handler = getattr(self, f'_cutscene_step_{step.kind}', None)
+        if handler is None:
+            print(f'cutscene: unknown step kind {step.kind!r} -- skipping', flush=True)
+            return True
+        return handler(step.args, dt_ms, is_new)
+
+    def _cutscene_actor(self, name: str):
+        """Resolve a step's `actor` name to the live object it refers to --
+        the literal string "player" for self.player, otherwise a name match
+        against self.npcs (covers both a map's real NPCs and anything a
+        prior spawn_actor step in this same cutscene added, since both live
+        in that one list). Returns None (with a console warning) for an
+        unknown name rather than raising -- an author typo shouldn't crash
+        the game, same fail-soft convention as an unknown npc_id elsewhere
+        in this class."""
+        if name == 'player':
+            return self.player
+        for npc in self.npcs:
+            if npc.name == name:
+                return npc
+        print(f'cutscene: unknown actor {name!r} -- step skipped', flush=True)
+        return None
+
+    # ── cutscene: step handlers ──────────────────────────────────────────────
+    # Each takes (args, dt_ms, is_new) and returns whether the step is now
+    # finished, dispatched by name via _run_cutscene_step -- new step kinds
+    # (a future editor's action palette) just need a new _cutscene_step_*
+    # method here, no dispatcher changes.
+
+    def _cutscene_step_wait(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        if is_new:
+            self._cutscene_wait_remaining = args['ms']
+        self._cutscene_wait_remaining -= dt_ms
+        return self._cutscene_wait_remaining <= 0
+
+    def _cutscene_step_face(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        actor = self._cutscene_actor(args['actor'])
+        if actor is not None:
+            actor.facing = args['dir']
+        return True
+
+    def _cutscene_step_dialogue(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Behaves exactly like an ordinary dialogue box (see update()'s own
+        dialogue.is_open branch, which this duplicates rather than shares
+        since that branch is wired to full-pause `return`, not a
+        step-finished bool): reveals at the normal pace, and only counts as
+        finished once the box is closed -- via an ordinary A press (see
+        _handle_cutscene_event) for a plain dialogue step, same as any other
+        dialogue in the game, or via _confirm_dialogue_choice closing it once
+        a response is picked, for one authored with `choices:` (see
+        engine.cutscene.CutsceneChoice) -- either way, this method just
+        watches self.dialogue.is_open, so it doesn't need to know which."""
+        if is_new:
+            choices = args.get('choices') or []
+            self.dialogue.open(list(args['pages']), choices=[c.label for c in choices] or None)
+            return False
+        if not self.dialogue.is_open:
+            return True
+        fast = bool(self._held_buttons & {'A', 'B'})
+        ms_per_char = cfg.dialogue_char_fast_ms if fast else cfg.dialogue_char_ms
+        self.dialogue.tick(dt_ms, ms_per_char)
+        return False
+
+    def _cutscene_step_set_flag(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        self.game_state.set_flag(args['flag'], args.get('value', True))
+        return True
+
+    def _cutscene_step_clear_flag(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        self.game_state.set_flag(args['flag'], False)
+        return True
+
+    def _cutscene_step_give_item(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        self.inventory.add(args['item'], args.get('qty', 1))
+        return True
+
+    def _cutscene_step_start_cutscene(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Replace the running cutscene with a different one outright --
+        e.g. a dialogue choice's `then:` immediately kicking off a
+        flashback (see engine.cutscene's module docstring), or an ordinary
+        top-level step chaining straight into another scene. Only valid
+        targeting the *same* map as the one currently running -- the
+        executor never switches maps itself (see the build plan's "no
+        mid-cutscene map switching" decision) -- a cross-map id is a no-op,
+        logged, same fail-soft convention as an unknown npc_id/enemy_id
+        elsewhere in this class.
+
+        Always returns False (never "finished"): _tick_cutscene captured
+        the *old* CutscenePlayer in a local variable before calling this,
+        so it must return immediately rather than keep looping against a
+        player object that's no longer self.cutscene_player -- the new
+        cutscene's own first step starts fresh next frame, when
+        _tick_cutscene re-reads self.cutscene_player from scratch."""
+        cutscene_id = args['id']
+        cutscene = self.cutscene_defs.get(cutscene_id)
+        if cutscene is None:
+            print(f'cutscene: start_cutscene references unknown cutscene id {cutscene_id!r} -- '
+                  f'skipping', flush=True)
+            return False
+        if cutscene.map != self.map_path.stem:
+            print(f"cutscene: start_cutscene({cutscene_id!r}) targets map {cutscene.map!r}, but "
+                  f"the executor never switches maps mid-cutscene -- skipping", flush=True)
+            return False
+        self.cutscene_player = CutscenePlayer(cutscene=cutscene)
+        self._cutscene_armed_index = None
+        return False
+
+    def _cutscene_step_spawn_actor(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Add a temporary NPC-shaped actor for this cutscene's lifetime
+        only (see _end_cutscene) -- always resolved against an existing
+        data/npcs/npc.yaml `npc_id`, the same shared-def mechanism any real
+        placement uses, rather than a bespoke ad hoc sprite path; this way
+        a spawned actor draws through the exact same _draw_entities/
+        _npc_frames code as any other NPC, no new draw path needed."""
+        npc_id = args['npc_id']
+        npc_def = self.npc_defs.get(npc_id)
+        if npc_def is None:
+            print(f'cutscene: spawn_actor references unknown npc_id {npc_id!r} -- skipping', flush=True)
+            return True
+        frames = self._resolve_npc_frames(npc_id, npc_def.sprite)
+        width_span = (frames[0].get_width() // self.tile_px) if frames else 1
+        height_span = (frames[0].get_height() // self.tile_px) if frames else 1
+        index = self._cutscene_next_actor_index
+        self._cutscene_next_actor_index -= 1
+        npc = NPC(
+            index=index, name=args['id'], row=args['row'], col=args['col'],
+            npc_sprite=npc_def.sprite, behavior='static',
+            facing=args.get('facing', npc_def.facing), npc_id=npc_id,
+            width_span=width_span, height_span=height_span,
+        )
+        self.npcs.append(npc)
+        self._npc_tweens[index] = {
+            'src': (float(npc.row), float(npc.col)),
+            'dst': (float(npc.row), float(npc.col)),
+            'elapsed': _NPC_MOVE_MS,
+        }
+        self._cutscene_spawned_ids.add(index)
+        return True
+
+    def _cutscene_step_despawn_actor(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        actor_id = args['id']
+        for npc in self.npcs:
+            if npc.name == actor_id and npc.index in self._cutscene_spawned_ids:
+                self.npcs.remove(npc)
+                self._npc_tweens.pop(npc.index, None)
+                self._cutscene_spawned_ids.discard(npc.index)
+                return True
+        print(f'cutscene: despawn_actor {actor_id!r} not found (already despawned, or never '
+              f'spawned by this cutscene) -- ignoring', flush=True)
+        return True
+
+    def _cutscene_step_set_tile(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """One-shot GID swap on a tile layer's already-loaded grid (e.g. a
+        door's tile flipping from closed to open) -- a direct mutation of
+        TiledLayer.grid, read fresh every frame by _draw_tile_layer, so
+        there's nothing to invalidate/recompute afterward. Deliberately not
+        the animated/cycling-tile system sketched in README's roadmap --
+        that's a separate, unbuilt, unrelated feature; this is a single
+        discrete swap, done once, same as picking up a container's loot."""
+        layer = next((l for l in self.tmap.layers if l.name == args['layer'] and l.kind == 'tile'), None)
+        if layer is None:
+            print(f"cutscene: set_tile references unknown tile layer {args['layer']!r} -- skipping",
+                  flush=True)
+            return True
+        layer.grid[args['row']][args['col']] = args['gid']
+        return True
+
+    def _cutscene_step_pan_camera(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        """Move the camera to an explicit (row, col) instead of its normal
+        player-locked behavior (see _camera_offset_px), lerping smoothly
+        over `duration_ms` (default instant). `{to_player: true}` clears
+        the override immediately instead -- the camera resumes tracking
+        the player from wherever it currently is, no animation needed since
+        _camera_offset_px already recomputes from _player_vis every frame
+        once _camera_override is None."""
+        if args.get('to_player'):
+            self._camera_override = None
+            self._cutscene_camera_pan = None
+            return True
+
+        target = (float(args['to'][0]), float(args['to'][1]))
+        duration_ms = max(args.get('duration_ms', 0), 1)
+        if is_new:
+            start = self._camera_override if self._camera_override is not None else self._player_vis
+            self._cutscene_camera_pan = {'src': start, 'dst': target, 'elapsed': 0, 'duration': duration_ms}
+        pan = self._cutscene_camera_pan
+        pan['elapsed'] = min(pan['elapsed'] + dt_ms, pan['duration'])
+        t = pan['elapsed'] / pan['duration']
+        self._camera_override = (_lerp(pan['src'][0], pan['dst'][0], t), _lerp(pan['src'][1], pan['dst'][1], t))
+        return pan['elapsed'] >= pan['duration']
+
+    _CUTSCENE_MOVE_EPS = 1e-3
+
+    def _cutscene_step_move_actor(self, args: dict, dt_ms: int, is_new: bool) -> bool:
+        actor = self._cutscene_actor(args['actor'])
+        if actor is None:
+            return True
+        target = (args['to'][0], args['to'][1])
+        if actor is self.player:
+            return self._cutscene_move_player(target, dt_ms)
+        return self._cutscene_move_npc(actor, target, dt_ms)
+
+    def _cutscene_move_player(self, target: tuple[int, int], dt_ms: int) -> bool:
+        """Continuous move toward `target`, reusing engine.movement.
+        step_continuous directly (the same primitive engine.player.Player.
+        move wraps for held-key input) rather than Player.move itself,
+        since that's built around one-direction-per-axis held input, not a
+        scripted destination. Also drives the walk-cycle anim timer/frame
+        by hand (_player_walk_timer/_player_anim) since the normal update()
+        body that does this is skipped entirely while a cutscene is active
+        (see update()'s cutscene gate) -- _draw_entities reads those same
+        fields regardless of who's driving them."""
+        t_row, t_col = target
+        row, col = self.player.row, self.player.col
+        if abs(row - t_row) < self._CUTSCENE_MOVE_EPS and abs(col - t_col) < self._CUTSCENE_MOVE_EPS:
+            self.player.row, self.player.col = float(t_row), float(t_col)
+            self._player_vis = (self.player.row, self.player.col)
+            self._player_walk_timer = 0
+            self._player_anim = 0
+            return True
+
+        if round(col) == t_col:
+            direction, remaining = ('S' if t_row > row else 'N'), abs(t_row - row)
+        elif round(row) == t_row:
+            direction, remaining = ('E' if t_col > col else 'W'), abs(t_col - col)
+        else:
+            print(f'cutscene: move_actor target {target} is not a straight cardinal line '
+                  f'from the player\'s position {(row, col)} -- stopping short', flush=True)
+            return True
+
+        dist = min(self.player_speed * (dt_ms / 1000.0), remaining)
+        new_row, new_col = step_continuous(row, col, direction, dist, self._passable_with_npcs())
+        self.player.facing = direction
+
+        # A wall (or another NPC) between here and target hard-stops
+        # step_continuous at the obstacle every frame -- with no guard,
+        # `remaining` would never shrink and this step would never finish,
+        # freezing the game (cutscene input is fully locked, see
+        # _handle_cutscene_event). Same "stop short, don't hang" contract
+        # _cutscene_move_npc already has via _npc_step's bool return; this
+        # is the continuous-movement equivalent of that check. Gated on
+        # `dist` itself being non-negligible -- dt_ms is legitimately 0 on
+        # a step that starts the same frame an earlier step (e.g. a wait)
+        # just finished (see _tick_cutscene), which also produces zero
+        # movement but isn't blocked at all, just not ticked yet.
+        if dist > self._CUTSCENE_MOVE_EPS and abs(new_row - row) < self._CUTSCENE_MOVE_EPS \
+                and abs(new_col - col) < self._CUTSCENE_MOVE_EPS:
+            print(f'cutscene: move_actor target {target} is blocked from the player\'s '
+                  f'position {(row, col)} -- stopping short', flush=True)
+            self._player_walk_timer = 0
+            self._player_anim = 0
+            return True
+
+        self.player.row, self.player.col = new_row, new_col
+        self._player_vis = (new_row, new_col)
+
+        self._player_walk_timer += dt_ms
+        if self._player_walk_timer >= self.player_move_ms / 2:
+            self._player_walk_timer -= self.player_move_ms / 2
+            self._player_anim ^= 1
+        return False
+
+    def _cutscene_move_npc(self, npc: 'NPC', target: tuple[int, int], dt_ms: int) -> bool:
+        """Step `npc` toward `target` one tile at a time via _npc_step,
+        waiting out each tile's tween (_NPC_MOVE_MS) before taking the
+        next -- same per-tile cadence as wander, just aimed at a scripted
+        destination instead of a random direction. Advances the tween's
+        elapsed time here by hand (rather than relying on update()'s usual
+        per-frame tween loop, which doesn't run while a cutscene is active,
+        same reasoning as _cutscene_move_player's walk-anim timer above)."""
+        tw = self._npc_tweens[npc.index]
+        if tw['elapsed'] < _NPC_MOVE_MS:
+            tw['elapsed'] = min(tw['elapsed'] + dt_ms, _NPC_MOVE_MS)
+            return False
+        if (npc.row, npc.col) == target:
+            return True
+
+        t_row, t_col = target
+        if npc.col == t_col:
+            direction = 'S' if t_row > npc.row else 'N'
+        elif npc.row == t_row:
+            direction = 'E' if t_col > npc.col else 'W'
+        else:
+            print(f'cutscene: move_actor target {target} is not a straight cardinal line '
+                  f"from {npc.name}'s position {(npc.row, npc.col)} -- stopping short", flush=True)
+            return True
+
+        if not self._npc_step(npc, direction):
+            print(f"cutscene: {npc.name} blocked moving {direction} toward {target} -- "
+                  f'stopping short', flush=True)
+            return True
+        return False
+
     # ── camera ───────────────────────────────────────────────────────────────
 
     def _camera_offset_px(self) -> tuple[int, int]:
@@ -2154,9 +2806,16 @@ class OverworldScene:
         (tweened) position, clamped so the view never scrolls past a map edge.
         When the map is smaller than the viewport along an axis, there's no
         room to scroll at all, so that axis centers the map instead (a
-        negative offset that letterboxes the excess viewport)."""
+        negative offset that letterboxes the excess viewport).
+
+        `_camera_override`, if set, centers on that (row, col) instead --
+        a cutscene's `pan_camera` step (_cutscene_step_pan_camera) is the
+        only thing that ever sets it, and only while self.cutscene_player
+        is active; it's always cleared by the time a cutscene ends
+        (_end_cutscene), so ordinary play always centers on the player."""
         view_cols, view_rows = cfg.view_cols, cfg.view_rows
-        player_row, player_col = self._player_vis
+        player_row, player_col = (self._camera_override if self._camera_override is not None
+                                   else self._player_vis)
 
         cam_col = self._camera_axis(player_col, self.tmap.width, view_cols)
         cam_row = self._camera_axis(player_row, self.tmap.height, view_rows)
@@ -2600,9 +3259,24 @@ class OverworldScene:
 
         screen_text = self.dialogue.visible_text()
         line_h = self.dialogue_font.get_linesize()
-        for i, line in enumerate(screen_text.split("\n")):
+        text_lines = screen_text.split("\n")
+        for i, line in enumerate(text_lines):
             line_surf = self.dialogue_font.render(line, False, _DIALOGUE_TEXT_COLOR)
             surface.blit(line_surf, (_DIALOGUE_TEXT_LEFT, text_y + i * line_h))
+
+        # A cutscene dialogue step's response list (see engine.cutscene.
+        # CutsceneChoice) draws directly below the page's own text, once
+        # is_showing_choices() -- same "> " cursor-prefix idiom as every
+        # other list menu in this game (e.g. _draw_shop_screen's stock
+        # list), not a separate overlay.
+        if self.dialogue.is_showing_choices():
+            choice_top = text_y + len(text_lines) * line_h
+            for i, choice in enumerate(self.dialogue.choices):
+                selected = i == self.dialogue.choice_cursor
+                prefix = "> " if selected else "  "
+                color = _DIALOGUE_TEXT_COLOR if selected else _DIALOGUE_CHOICE_DIM_COLOR
+                line_surf = self.dialogue_font.render(f"{prefix}{choice}", False, color)
+                surface.blit(line_surf, (_DIALOGUE_TEXT_LEFT, choice_top + i * line_h))
 
     def _draw_tile_layer(self, surface: pygame.Surface, layer: 'TiledLayer', cam_x: int, cam_y: int) -> None:
         """Blit one tile layer's GID grid, offset by the camera. See draw()
