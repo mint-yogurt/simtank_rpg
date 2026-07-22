@@ -399,9 +399,16 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
     than specific to any one scene.
     """
     pygame.init()
+    # USER IS UNHAPPY WITH RENDERER HANDLING THIS BUT REAL TALK ITS BASICALLY
+    # THE MAIN ENGINE SCRIPT IT JUST HAS A GRAPHICAL SOUNDING NAME.
     pygame.joystick.init()
-    for i in range(pygame.joystick.get_count()):
-        pygame.joystick.Joystick(i).init()
+    # Reference kept alive for the life of run() -- an unstored Joystick()
+    # object gets garbage-collected almost immediately, which closes the
+    # underlying device with it: the subsystem stays "initialized" but no
+    # JOYAXISMOTION/JOYBUTTONDOWN events ever actually arrive.
+    joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
+    for js in joysticks:
+        js.init()
 
     view_w, view_h = view_size
     current_scale = scale
