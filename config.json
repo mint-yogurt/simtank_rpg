@@ -25,7 +25,7 @@
     "pygame_scale": 3,
     "view_cols": 16,
     "view_rows": 14,
-    "start_fullscreen": false
+    "start_fullscreen": true
   },
 
   "interior": {

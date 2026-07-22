@@ -159,6 +159,31 @@ _BUTTON_KEY = {
     pygame.K_x:      'A',
 }
 
+# Controller support (see joytest.py, run against an 8BitDo FC30 over
+# Bluetooth) — the D-pad reports as a fully-deflected analog axis rather
+# than a hat (axis 0: -1/W, +1/E; axis 1: -1/N, +1/S), and A/B/START are
+# plain digital buttons. Both translate to the exact same pygame key codes
+# _DIR_KEY/_BUTTON_KEY already know, via _joy_axis_key_events/_JOY_BUTTON_KEY
+# below in run() — so a controller is just another source of the same
+# KEYDOWN/KEYUP events real keyboard input produces, with no duplicate
+# handling anywhere else in this file.
+_JOY_AXIS_KEY = {
+    (0, -1): pygame.K_LEFT,
+    (0, 1):  pygame.K_RIGHT,
+    (1, -1): pygame.K_UP,
+    (1, 1):  pygame.K_DOWN,
+}
+_JOY_AXIS_DEADZONE = 0.5
+
+_JOY_BUTTON_KEY = {
+    0: pygame.K_z,       # B
+    1: pygame.K_x,       # A
+    7: pygame.K_RETURN,  # START
+    # 6 (SELECT) deliberately unmapped — reserved for future debug controls
+    # (live-reload, load save, etc.), not real gameplay input. Wire it up
+    # when that's actually built rather than guessing its scope now.
+}
+
 # Start-menu layout: top-left pixel of each option row, and the cursor's
 # resting spot (same coordinate as the row it's highlighting). The
 # highlighted row's own image shifts right by this many pixels to make room.
@@ -328,6 +353,31 @@ def _set_display_mode(view_w: int, view_h: int, scale: int, fullscreen: bool) ->
     return window, win_w, win_h
 
 
+def _joy_axis_key_events(event, axis_held: dict[int, int | None]) -> list[pygame.event.Event]:
+    """Translate one JOYAXISMOTION event into the matching synthetic
+    KEYDOWN/KEYUP event(s) via _JOY_AXIS_KEY, mutating `axis_held` (per-axis
+    currently-pressed key, keyed by axis index) so a release — or a direct
+    snap to the opposite direction on the same axis — emits the correct
+    KEYUP first. Needed because a physical axis has no separate "up"
+    event of its own the way a button does; the direction is only implied
+    by its value crossing back through _JOY_AXIS_DEADZONE toward 0."""
+    axis = event.axis
+    prev_key = axis_held.get(axis)
+    events = []
+    if abs(event.value) > _JOY_AXIS_DEADZONE:
+        sign = 1 if event.value > 0 else -1
+        new_key = _JOY_AXIS_KEY.get((axis, sign))
+        if new_key is not None and new_key != prev_key:
+            if prev_key is not None:
+                events.append(pygame.event.Event(pygame.KEYUP, key=prev_key))
+            events.append(pygame.event.Event(pygame.KEYDOWN, key=new_key))
+            axis_held[axis] = new_key
+    elif prev_key is not None:
+        events.append(pygame.event.Event(pygame.KEYUP, key=prev_key))
+        axis_held[axis] = None
+    return events
+
+
 def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> None:
     """Open the window, build the scene, then run it until closed or Escape/Q.
 
@@ -349,6 +399,17 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
     than specific to any one scene.
     """
     pygame.init()
+    # USER IS UNHAPPY WITH RENDERER HANDLING THIS BUT REAL TALK ITS BASICALLY
+    # THE MAIN ENGINE SCRIPT IT JUST HAS A GRAPHICAL SOUNDING NAME.
+    pygame.joystick.init()
+    # Reference kept alive for the life of run() -- an unstored Joystick()
+    # object gets garbage-collected almost immediately, which closes the
+    # underlying device with it: the subsystem stays "initialized" but no
+    # JOYAXISMOTION/JOYBUTTONDOWN events ever actually arrive.
+    joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
+    for js in joysticks:
+        js.init()
+
     view_w, view_h = view_size
     current_scale = scale
     current_fullscreen = cfg.start_fullscreen
@@ -359,6 +420,7 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
     scene = scene_factory()
 
     clock = pygame.time.Clock()
+    joy_axis_held: dict[int, int | None] = {}   # axis index -> currently-synthesized key
     running = True
     while running:
         dt = clock.tick(60)  # ms since last frame; caps at 60 fps
@@ -368,6 +430,17 @@ def run(scene_factory, view_size: tuple[int, int], scale: int, title: str) -> No
                 running = False
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_q):
                 running = False
+            elif event.type == pygame.JOYAXISMOTION:
+                for synthetic in _joy_axis_key_events(event, joy_axis_held):
+                    scene.handle_event(synthetic)
+            elif event.type == pygame.JOYBUTTONDOWN:
+                key = _JOY_BUTTON_KEY.get(event.button)
+                if key is not None:
+                    scene.handle_event(pygame.event.Event(pygame.KEYDOWN, key=key))
+            elif event.type == pygame.JOYBUTTONUP:
+                key = _JOY_BUTTON_KEY.get(event.button)
+                if key is not None:
+                    scene.handle_event(pygame.event.Event(pygame.KEYUP, key=key))
             else:
                 scene.handle_event(event)
 

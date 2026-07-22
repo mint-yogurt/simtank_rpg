@@ -5,8 +5,10 @@
 Uses the low-level pygame.joystick API (not the SDL2 GameController wrapper,
 which only recognizes devices already in SDL's mapping database — a real
 pad can be invisible there while still working fine at this level). Opens
-every connected joystick and prints raw button/hat/axis events live. Ctrl+C
-to quit.
+every connected joystick and prints every single raw event live, unfiltered
+— no assumptions about which axis/button/hat index means what, no deadzone
+hiding, no scripted prompts to press things in order. Press one button at a
+time and read what comes out. Ctrl+C to quit.
 """
 import pygame
 
@@ -22,7 +24,7 @@ if count == 0:
         "side with:\n"
         "  ls /dev/input/js* /dev/input/by-id/ 2>/dev/null\n"
         "  cat /proc/bus/input/devices\n"
-        "and see if an entry shows up for the 8BitDo pad.",
+        "and see if an entry shows up for the pad.",
         flush=True,
     )
     raise SystemExit(1)
@@ -33,12 +35,12 @@ for i in range(count):
     js.init()
     joysticks.append(js)
     print(
-        f"  [{i}] {js.get_name()}  "
+        f"  [{i}] {js.get_name()}  guid={js.get_guid()}  "
         f"buttons={js.get_numbuttons()} axes={js.get_numaxes()} hats={js.get_numhats()}",
         flush=True,
     )
 
-print("\nMove the D-pad / sticks and press buttons. Ctrl+C to quit.\n", flush=True)
+print("\nPress buttons one at a time. Every raw event prints below, unfiltered. Ctrl+C to quit.\n", flush=True)
 
 clock = pygame.time.Clock()
 running = True
@@ -54,8 +56,9 @@ while running:
         elif event.type == pygame.JOYHATMOTION:
             print(f"HAT          hat={event.hat} value={event.value}", flush=True)
         elif event.type == pygame.JOYAXISMOTION:
-            if abs(event.value) > 0.3:   # ignore stick drift/noise near center
-                print(f"AXIS         axis={event.axis} value={event.value:.2f}", flush=True)
+            print(f"AXIS         axis={event.axis} value={event.value:.3f}", flush=True)
+        elif event.type == pygame.JOYBALLMOTION:
+            print(f"BALL         ball={event.ball} rel={event.rel}", flush=True)
         elif event.type == pygame.JOYDEVICEREMOVED:
             print("Controller disconnected", flush=True)
             running = False
