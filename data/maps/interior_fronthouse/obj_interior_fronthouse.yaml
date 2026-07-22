@@ -20,6 +20,12 @@
 # sign -- example:
 #   dialogue: ["Just a sign."]   # always shown, no side effect, every visit
 #
+# healer -- template:
+#   dialogue:
+#
+# healer -- example:
+#   dialogue: []   # shown before the auto-appended "HP/MP FULLY RESTORED." page, every visit, free, no flag
+#
 # warp -- template:
 #   destination_map:
 #   destination_warp:
@@ -74,7 +80,23 @@
 11:
   contents: rags
   dialogue:
-  - It's better than nothing. I need to EQUIP this in the MENU.
+  - It's better than nothing. I need to EQUIP this in the MENU so I don't look completely
+    stupid.
   gold: null
   name: trashcan_roach
   type: container
+12:
+  dialogue: 
+  - A strange, earthy aroma. 
+  name: toilet_roachroom
+  type: sign
+13:
+  dialogue: 
+  - Even Melvin's stinky bed is good for a nap.
+  name: bed_heal_R
+  type: healer
+14:
+  dialogue: 
+  - Nap time.
+  name: bed_heal_L
+  type: healer

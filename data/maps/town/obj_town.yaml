@@ -277,14 +277,14 @@
   dialogue:
   - EAST - FISHIN' HOLE & HIGHWAY
   - WEST - BEMMY FACTORY
-  - NORTH - BALD-MART 
+  - NORTH - BALD-MART
   name: sign_navL
   type: sign
 30:
   dialogue:
   - EAST - FISHIN' HOLE & HIGHWAY
   - WEST - BEMMY FACTORY
-  - NORTH - BALD-MART 
+  - NORTH - BALD-MART
   name: sign_nav
   type: sign
 31:
