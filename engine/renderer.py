@@ -1872,10 +1872,15 @@ class OverworldScene:
         if self.dialogue.is_open:
             # Holding A or B types the current page in faster. Player
             # input/movement, enemy AI, and warp/trigger checks all stay
-            # fully paused -- but NPCs keep animating and wandering (see
-            # _tick_npc_animation) rather than visibly freezing mid-frame
-            # just because the player is mid-conversation with someone
-            # else, or reading a sign.
+            # fully paused, and so does NPC wander (_tick_npc_movement is
+            # deliberately NOT called here) -- an NPC mid-conversation was
+            # just turned to face the player (see engine.input.
+            # handle_a_button's target.facing assignment) and must hold
+            # that position/facing until the box closes, not wander off
+            # mid-sentence, same for every other NPC on screen while the
+            # player's attention is locked on the box. Only the ordinary
+            # idle/walk animation-frame toggle (_tick_npc_animation) keeps
+            # running, so nobody looks visibly frozen solid.
             fast = bool(self._held_buttons & {'A', 'B'})
             ms_per_char = cfg.dialogue_char_fast_ms if fast else cfg.dialogue_char_ms
             self.dialogue.tick(dt_ms, ms_per_char)
@@ -1919,6 +1924,7 @@ class OverworldScene:
             self._immunity_blink_visible = True   # self-heal if immunity expires mid-blink-off
 
         self._tick_npc_animation(dt_ms)
+        self._tick_npc_movement(dt_ms)
 
         if self._update_enemies(dt_ms):
             return   # a battle just started this frame -- see _update_enemies
@@ -1937,20 +1943,33 @@ class OverworldScene:
             self._player_anim = 0
 
     def _tick_npc_animation(self, dt_ms: int) -> None:
-        """NPC idle-frame toggle, wander-move decisions, and in-flight move
-        tweens -- split out of the main body of update() so a dialogue box
-        (see the self.dialogue.is_open branch above) can keep this ticking
-        while it fully pauses everything else (player input/movement, enemy
-        AI, warps). Deliberately ticked together rather than split further
-        (e.g. only the frame toggle): freezing a wander tween's `elapsed`
-        while still toggling `_anim_frame` would show an NPC's legs cycling
-        while it stays visually pinned mid-tile, which is arguably a worse
-        version of the frozen-solid bug this exists to fix."""
+        """The global idle/walk animation-frame toggle every NPC sprite
+        draws off (see get_npc_frame) -- split out of the main body of
+        update() so a dialogue box (see the self.dialogue.is_open branch
+        above) can keep this ticking on its own, without also resuming
+        wander movement (see _tick_npc_movement, deliberately NOT called
+        from that branch). A 2-frame sprite's pair and an 8-frame sprite's
+        per-facing pair both animate continuously regardless of whether
+        the NPC is actually walking anywhere -- that's what makes it safe
+        to keep running on a stationary, mid-conversation NPC without it
+        looking like it's about to take a step."""
         self._anim_timer += dt_ms
         if self._anim_timer >= _NPC_ANIM_MS:
             self._anim_frame ^= 1
             self._anim_timer -= _NPC_ANIM_MS
 
+    def _tick_npc_movement(self, dt_ms: int) -> None:
+        """Wander-move decisions plus in-flight move-tween advancement --
+        the part of NPC upkeep that actually changes an NPC's tile/facing,
+        as opposed to _tick_npc_animation's purely cosmetic frame toggle.
+        Not called while a dialogue box is open (see update()): the NPC
+        just turned to face the player (engine.input.handle_a_button)
+        must hold that facing and tile until the box closes, and every
+        other NPC on screen should likewise stop mid-wander rather than
+        visibly walking around while the player's attention is locked on
+        the box -- same full-pause tier as a battle/menu/warp-fade already
+        gets, just carved out from the animation toggle instead of lumped
+        in with it."""
         self._npc_move_timer += dt_ms
         if self._npc_move_timer >= _NPC_MOVE_MS:
             self._npc_move_timer -= _NPC_MOVE_MS

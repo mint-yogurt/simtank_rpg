@@ -3,31 +3,68 @@ map: interior_fronthouse
 trigger:
   event: map_load
 steps:
+- fade:
+    direction: out
+    color: '#000000'
+    duration_ms: 0
+    see_through: false
 - pan_camera:
     to:
-    - 14
+    - 15
     - 19
     duration_ms: 0
 - spawn_actor:
     id: melvin_sleepy
     npc_id: melvin_sleep
     row: 15
-    col: 20
+    col: 19
     facing: S
 - wait:
     ms: 500
 - dialogue:
     pages:
     - Melvin...
+    position: top
 - wait:
-    ms: 200
+    ms: 500
+- dialogue:
+    pages:
+    - '...'
+    - Meeeeeeelllllviinn.....
+    position: top
+- fade:
+    direction: in
+    color: '#000000'
+    duration_ms: 2000
+    see_through: false
+- dialogue:
+    pages:
+    - MELVIN!
+    position: top
 - wait:
-    ms: 150
+    ms: 500
+- despawn_actor:
+    id: melvin_sleepy
 - teleport_actor:
     actor: player
     to:
     - 15
-    - 20
+    - 19
+- face:
+    actor: player
+    dir: S
+- wait:
+    ms: 400
+- face:
+    actor: player
+    dir: E
+- wait:
+    ms: 500
+- face:
+    actor: player
+    dir: W
+- wait:
+    ms: 600
 - face:
     actor: player
     dir: S
@@ -35,5 +72,5 @@ steps:
     to:
     - 0
     - 0
-    duration_ms: 400
+    duration_ms: 2000
     to_player: true
