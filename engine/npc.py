@@ -8,8 +8,8 @@ recoloring one per NPC, drawing -- stays in engine.renderer, same as it
 does for enemies.
 
 A map's npcs_<map>.yaml entry (see data/maps/populate_yamls.py) references
-an NpcDef by `npc_id`; its own sprite/behavior/dialogue fields are optional
-per-placement overrides on top of it, resolved in
+an NpcDef by `npc_id`; its own sprite/behavior/dialogue/colors fields are
+optional per-placement overrides on top of it, resolved in
 engine.renderer.OverworldScene._load_map. An npc-type object with no
 npc_id set (or one that doesn't resolve to a def) falls back to its
 inline fields exactly like before this module existed -- npc_id is
@@ -32,7 +32,15 @@ colors actually baked into its PNG; an NpcDef's own `colors`, if set,
 recolors that sprite for this NPC specifically, position-matched against
 the sprite's placeholder list -- e.g. sprite colors[0] swaps to this NPC's
 colors[0]. Two NPCs can share one sprite strip and still look different.
-See engine.renderer.recolor_surface for the actual pixel remap.
+A placement's own npcs_<map>.yaml `colors:` (MapObject.colors/NPC.colors,
+resolved in engine.renderer.OverworldScene._load_map) goes one step
+further -- position-matched the same way, but against the sprite's
+placeholder list directly, and wins outright over the NpcDef's `colors`
+for just that one placement (it replaces, not layers on top). This is what
+lets e.g. guy1 or mutant1 -- one shared sprite strip, one npc_id or none at
+all -- show up as several differently-colored placements on the same map
+with no new npc_id needed per color. See engine.renderer.recolor_surface
+for the actual pixel remap.
 
 Dialogue can branch on engine.game_state flags -- see DialogueVariant/
 resolve_dialogue below. Every npc_id'd NPC gets a free flag,
@@ -53,19 +61,24 @@ import yaml
 _NPC_DEFS_PATH = Path(__file__).parent.parent / "data" / "npcs" / "npc.yaml"
 
 
-def _validated_colors(raw_colors: list, context: str) -> list[str]:
+def validated_colors(raw_colors: list, context: str) -> list[str]:
     """Guard against YAML's numeric auto-typing corrupting a hex color: an
     unquoted all-digit value like `000000` parses as the *integer* 0, and
     `001100` parses as *octal* 576 -- both silently wrong, no YAML error.
     A wrong color drawn silently is worse than a crash, so this fails loud
     (unlike the fail-soft convention elsewhere in this codebase, e.g.
     engine.enemy.resolve_spawn dropping bad candidates) with a message that
-    points straight at the fix: quote the value in npc.yaml."""
+    points straight at the fix: quote the value in npc.yaml.
+
+    Shared with engine.renderer.load_map_objects, which calls this on a
+    placement's own npcs_<map>.yaml `colors:` override (see MapObject.colors/
+    NPC.colors) -- same gotcha, same fail-loud rule, whether the hex list
+    lives in npc.yaml or a map's own placement file."""
     for c in raw_colors:
         if not isinstance(c, str):
             raise ValueError(
                 f"{context}: color {c!r} isn't a string (got {type(c).__name__}) -- "
-                f"hex values must be quoted in npc.yaml, e.g. \"000000\" not 000000, "
+                f"hex values must be quoted, e.g. \"000000\" not 000000, "
                 f"or YAML silently reads it as a number instead of a color"
             )
     return list(raw_colors)
@@ -169,7 +182,7 @@ def load_npc_defs(path: Path = _NPC_DEFS_PATH) -> dict[str, NpcDef]:
             sprite   = entry["sprite"],
             behavior = entry.get("behavior") or "static",
             facing   = entry.get("facing") or "S",
-            colors   = _validated_colors(colors, f"npc.yaml npcs.{npc_id}.colors") if colors else None,
+            colors   = validated_colors(colors, f"npc.yaml npcs.{npc_id}.colors") if colors else None,
             dialogue = parse_dialogue(entry.get("dialogue") or []),
         )
     return defs
@@ -181,7 +194,7 @@ def load_npc_sprite_specs(path: Path = _NPC_DEFS_PATH) -> dict[str, NpcSpriteSpe
     return {
         sprite_id: NpcSpriteSpec(
             file=entry["file"],
-            colors=_validated_colors(entry.get("colors") or [], f"npc.yaml sprites.{sprite_id}.colors"),
+            colors=validated_colors(entry.get("colors") or [], f"npc.yaml sprites.{sprite_id}.colors"),
         )
         for sprite_id, entry in (raw.get("sprites") or {}).items()
     }

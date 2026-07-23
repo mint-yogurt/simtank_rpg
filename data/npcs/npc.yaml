@@ -1,11 +1,14 @@
 # Master NPC list -- hand-edited. Loaded by engine.npc.load_npc_defs() /
 # load_npc_sprite_specs(). A map's npcs_<map>.yaml (see
 # data/maps/populate_yamls.py) references an entry here by `npc_id`; that
-# placement's own sprite/behavior/dialogue fields are optional overrides —
-# leave them blank (null / []) to inherit from the matching entry below,
-# fill one in to override it for just that one placement. (Recoloring below
-# is keyed to npc_id specifically, not overridable per-placement -- see the
-# npcs: section.)
+# placement's own sprite/behavior/dialogue/colors fields are optional
+# overrides — leave them blank (null / []) to inherit from the matching
+# entry below, fill one in to override it for just that one placement.
+# (Recoloring below, in the npcs: section, is keyed to npc_id -- every
+# placement of that npc_id shares it. A placement's own npcs_<map>.yaml
+# `colors:` goes further and overrides for just that one placement,
+# winning outright over the npc_id's -- see that file's stub comments and
+# the `colors` note under Sprites below.)
 #
 # NOTE: data/npcs/dialogue and data/npcs/ideas are unrelated personal
 # planning notes, not consumed by anything here or in the engine — nothing
@@ -63,6 +66,14 @@
 # per frame drawn), so multiple differently-colored NPCs can share one
 # sprite strip for free.
 #
+# A single map placement can go further still: npcs_<map>.yaml's own
+# `colors:` field (see that file's stub comments) recolors position-matched
+# against THIS same placeholder list, same rule as above, but for just that
+# one placement -- it wins outright over the npc_id's own `colors` here,
+# rather than layering on top of it. That's what lets one shared, colorless
+# sprite (e.g. guy1, guy2, mutant1) show up as several differently-colored
+# NPCs across a map with no new npc_id needed per color.
+#
 # ALWAYS QUOTE hex values, everywhere in this file -- "000000", not 000000.
 # YAML reads an unquoted all-digit value as a number, not text, and it does
 # NOT just reinterpret the digits: "000000" unquoted parses as the integer
@@ -82,7 +93,7 @@
 sprites:
   npc01:
     file: npc01
-    colors: ["ff83c1", "3f51cf", "c03570"]   # 32x16 -- 2 frames, south-only idle
+    colors: ["ff83c1", "3f51cf", "c03570"]   # skin, pants, lips
   poots:
     file: poots
     colors: ["000000", "ffffff", "ade231"]   # 128x16 -- 8 frames, full facing
@@ -110,6 +121,15 @@ sprites:
   melvin_sleep:
     file: melvin_sleep
     colors: []
+  mutant1:
+    file: mutant1
+    colors: ["edc39a", "2f6082"] # skin, pants
+  guy1: 
+    file: guy1
+    colors: ["edc39a", "36936e", "d67bba"] # skin, hat+shirt, overalls
+  guy2:
+    file: guy2
+    colors: ["d67bba", "edc39a", "d8a066"] # pants, skin, skin shade
 
 # ── NPCs ──────────────────────────────────────────────────────────────────
 #

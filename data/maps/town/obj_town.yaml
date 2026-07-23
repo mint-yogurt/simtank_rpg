@@ -292,3 +292,7 @@
   - SMUGCHUD TUNNEL
   name: sign_tunnel
   type: sign
+33:
+  dialogue: []
+  name: missile_silo
+  type: sign

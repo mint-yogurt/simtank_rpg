@@ -81,7 +81,7 @@ STUB_FIELDS = {
     "container": {"contents": None, "gold": None, "dialogue": []},
     "sign": {"dialogue": []},
     "healer": {"dialogue": []},
-    "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None, "npc_id": None},
+    "npc": {"dialogue": [], "event": None, "sprite": None, "behavior": None, "npc_id": None, "colors": None},
     "warp": {"destination_map": None, "destination_warp": None, "facing": None, "distance": None},
     "trigger": {"cutscene_id": None},
     "enemy": {"enemy_id": None, "level": None},
@@ -91,7 +91,7 @@ STUB_FIELDS = {
     # than making you remember the enemy_id/chance shape from scratch.
     "spawner": {"enemies": [{"enemy_id": None, "chance": None}], "spawn_chance": None, "level": None},
     "shop": {"dialogue": [], "event": None, "sprite": None, "behavior": None,
-             "npc_id": None, "stock": [], "farewell": []},
+             "npc_id": None, "colors": None, "stock": [], "farewell": []},
 }
 
 # Canonical display order for whichever of these types show up in one file's
@@ -184,6 +184,7 @@ TYPE_DOCS = {
 #   behavior:
 #   event:
 #   dialogue:
+#   colors:
 #
 # npc -- example:
 #   npc_id: grocer      # key from data/npcs/npc.yaml, or null for a one-off character authored entirely here
@@ -194,6 +195,9 @@ TYPE_DOCS = {
 #     - unless: ["npc_met:grocer"]       # first time ever (before this flag is set)
 #       pages: ["First time seeing you!"]
 #     - pages: ["Hey again."]            # fallback -- checked top-to-bottom, first match wins
+#   colors: ["edc39a", "36936e"]   # recolors this placement's sprite, position-matched against its OWN placeholder
+#                                  # colors in npc.yaml's sprites: section -- wins over npc.yaml's npcs: colors for
+#                                  # just this one placement; null = use npc_id's colors, or the sprite as authored
 """,
     "shop": """\
 # shop -- template:
@@ -202,6 +206,7 @@ TYPE_DOCS = {
 #   behavior:
 #   event:
 #   dialogue:
+#   colors:
 #   stock:
 #     - item:
 #       price:
@@ -213,6 +218,8 @@ TYPE_DOCS = {
 #   behavior: static
 #   event: null
 #   dialogue: ["Welcome to Pizza Hut!"]   # greeting -- opens before the buy/sell screen, every visit
+#   colors: ["ff0000"]   # recolors this placement's sprite, position-matched against its OWN placeholder colors in
+#                         # npc.yaml's sprites: section -- null = use npc_id's colors, or the sprite as authored
 #   stock:
 #     - item: forgotten_onion   # key from data/items/items.yaml
 #       price: 8                # gold cost to BUY one -- independent of that item's own `value` (what selling it pays out)

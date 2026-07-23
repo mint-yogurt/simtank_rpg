@@ -35,7 +35,7 @@ _try_start_tile_trigger and engine.input.handle_a_button's cutscene_defs
 param. A cutscene can also always be started directly regardless of its
 trigger, e.g. maptest.py's debug picker (OverworldScene.start_cutscene).
 The field is named `event`, not `on` -- PyYAML (like npc.yaml's
-unquoted-hex-color gotcha, see engine.npc._validated_colors) reads a bare
+unquoted-hex-color gotcha, see engine.npc.validated_colors) reads a bare
 `on`/`off`/`yes`/`no` YAML key or value as the *boolean* True/False, not the
 string "on" -- `on: map_load` would silently parse as `{True: "map_load"}`
 and this field would never be found. `event` sidesteps the whole class of

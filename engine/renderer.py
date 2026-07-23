@@ -107,7 +107,7 @@ from engine.menu import (
     BUY, InventoryMenu, ItemActionMenu, PartyMenu, SaveMenu, SettingsMenu, ShopMenu, StartMenu,
 )
 from engine.movement import step_continuous
-from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue
+from engine.npc import DialogueVariant, load_npc_defs, load_npc_sprite_specs, parse_dialogue, validated_colors
 from engine.player import Player, PlayerState
 from engine.roster import PartyMember, Roster
 from engine.save import load_from_slot, slot_exists
@@ -775,14 +775,19 @@ class MapObject:
     (dialogue plus an item grant — see `contents` below), and `type ==
     "npc"` entries hand theirs off to NPC (see below, built from these in
     OverworldScene._load_map) which is interactable the same way.
-    `sprite`/`behavior`/`npc_id` are
+    `sprite`/`behavior`/`npc_id`/`colors` are
     only ever set for `type == "npc"` entries — `npc_id`, if set, is a key
     into engine.npc.load_npc_defs()'s result (data/npcs/npc.yaml); this
-    object's own `sprite`/`behavior`/`dialogue` are then optional overrides
-    on top of that shared definition — set, they win for this one
+    object's own `sprite`/`behavior`/`dialogue`/`colors` are then optional
+    overrides on top of that shared definition — set, they win for this one
     placement, left blank (None / empty list) they fall back to the
     NpcDef's — resolved in OverworldScene._load_map, not here (this class
-    just carries whatever was in the YAML, unmerged).
+    just carries whatever was in the YAML, unmerged). `colors` is
+    position-matched against the resolved sprite's own placeholder colors,
+    same rule as engine.npc.NpcDef.colors, but wins outright over the
+    NpcDef's `colors` for just this one placement instead of every
+    placement sharing that npc_id — see engine.npc's module docstring and
+    OverworldScene._resolve_npc_frames.
     `destination_map`/`destination_warp`/`facing`/`distance` are only ever
     set for `type == "warp"` entries — see
     OverworldScene._update_player_movement/_swap_map. `facing`/`distance` do double
@@ -868,6 +873,7 @@ class MapObject:
     sprite:   str | None = None
     behavior: str | None = None
     npc_id:   str | None = None
+    colors:   list[str] | None = None   # type == "npc"/"shop" only: per-placement recolor override, see docstring above
     destination_map:  str | None = None
     destination_warp: str | None = None
     facing:   str | None = None
@@ -907,6 +913,13 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
             row_exact = y / tile_px
             col_exact = obj["x"] / tile_px
             data = content.get(obj["id"], {})
+            # Empty-list vs unset both mean "no override" -- collapse `[]`
+            # to None here so downstream resolution (OverworldScene.
+            # _resolve_npc_frames) only ever has to check one falsy case,
+            # same normalization npc.yaml's own sprite/NpcDef colors get.
+            raw_colors = data.get("colors") or None
+            colors = (validated_colors(raw_colors, f"{map_name}/npcs_{map_name}.yaml id {obj['id']}.colors")
+                      if raw_colors else None)
             objects.append(MapObject(
                 id        = obj["id"],
                 name      = obj["name"],
@@ -923,6 +936,7 @@ def load_map_objects(raw: dict, tile_px: int, map_dir: Path, map_name: str) -> l
                 sprite    = data.get("sprite"),
                 behavior  = data.get("behavior"),
                 npc_id    = data.get("npc_id"),
+                colors    = colors,
                 destination_map  = data.get("destination_map"),
                 destination_warp = data.get("destination_warp"),
                 facing    = data.get("facing"),
@@ -1236,7 +1250,17 @@ class NPC:
     resolved against a real def — draw-time (OverworldScene._draw_entities)
     uses it to pick that def's precomputed *recolored* frame set
     (self.npc_frames_by_id) instead of the sprite's raw one; an inline NPC
-    with no def (npc_id stays None) always draws its sprite unrecolored.
+    with no def (npc_id stays None) always draws its sprite unrecolored,
+    unless `colors` (below) is set.
+
+    `colors`, if set, is this placement's own npcs_<map>.yaml `colors:`
+    override (MapObject.colors), already resolved by _load_map -- when
+    present it wins outright over npc_id's def-level recolor (see
+    engine.npc's module docstring), position-matched against the resolved
+    sprite's own placeholder colors. OverworldScene._npc_frames/
+    _resolve_npc_frames key a separate cache off (npc_sprite, colors) for
+    this case, same "recolor once, not per frame drawn" rule as the
+    npc_id-level cache.
 
     `width_span`/`height_span` are this NPC's resolved sprite's frame size in
     tiles (1x1 for an ordinary 16x16 sprite) — resolved once at construction
@@ -1276,6 +1300,7 @@ class NPC:
     facing:     str = "S"           # "N" | "S" | "E" | "W" -- only visible on an 8-frame sprite
     type:       str = "npc"         # "npc" | "shop"
     npc_id:     str | None = None   # key into OverworldScene.npc_defs/npc_frames_by_id, if resolved
+    colors:     list[str] | None = None   # this placement's own recolor override, if set -- see docstring above
     width_span:  int = 1            # tiles wide, resolved sprite's frame width // tile_px -- see _load_map
     height_span: int = 1            # tiles tall, resolved sprite's frame height // tile_px -- see _load_map
     dialogue_variants: list[DialogueVariant] = field(default_factory=list)
@@ -1372,6 +1397,15 @@ class OverworldScene:
                 continue
             to_colors = npc_def.colors if npc_def.colors is not None else spec.colors
             self.npc_frames_by_id[npc_id] = [recolor_surface(f, spec.colors, to_colors) for f in base_frames]
+
+        # Per-placement recolor overrides (NPC.colors / MapObject.colors,
+        # npcs_<map>.yaml's own `colors:`) are rarer than the def-level case
+        # above and not known until _load_map resolves each placement, so
+        # this cache fills in lazily there instead of eagerly here -- keyed
+        # by (sprite id, target colors) rather than npc_id, since the same
+        # override can be shared across several placements (or npc_ids) of
+        # the same sprite. See _resolve_npc_frames.
+        self.npc_color_override_frames: dict[tuple, list[pygame.Surface]] = {}
 
         self.menu = StartMenu()
         self.save_menu = SaveMenu()   # confirm-save overlay, opened from SAVE on self.menu
@@ -1570,7 +1604,7 @@ class OverworldScene:
             # e.g. in _passable_with_npcs) so it's set once at load and both
             # collision and interaction read the same stored numbers rather
             # than re-deriving them from pixel dimensions in two places.
-            resolved_frames = self._resolve_npc_frames(resolved_npc_id, resolved_sprite)
+            resolved_frames = self._resolve_npc_frames(resolved_npc_id, resolved_sprite, o.colors)
             width_span = (resolved_frames[0].get_width() // self.tile_px) if resolved_frames else 1
             height_span = (resolved_frames[0].get_height() // self.tile_px) if resolved_frames else 1
             self.npcs.append(NPC(
@@ -1580,6 +1614,7 @@ class OverworldScene:
                 facing=npc_def.facing if npc_def else "S",
                 type=o.type,
                 npc_id=resolved_npc_id,
+                colors=o.colors,
                 width_span=width_span,
                 height_span=height_span,
                 dialogue_variants=dialogue_variants,
@@ -1858,7 +1893,17 @@ class OverworldScene:
             # A cutscene owns update/input entirely while active -- same
             # full-pause tier as battle_scene/dialogue/menu above, so no
             # wander/enemy/player-input ticking happens underneath it. See
-            # _tick_cutscene/_end_cutscene.
+            # _tick_cutscene/_end_cutscene. The purely cosmetic idle/walk
+            # animation-frame toggle keeps running regardless though, same
+            # reasoning as the ordinary dialogue.is_open branch below -- an
+            # NPC standing around mid-cutscene (spawn_actor's sleeping
+            # Melvin, Billy stood at the foot of the bed, ...) shouldn't
+            # look frozen solid just because nothing else about it is
+            # moving. _tick_npc_movement (wander/tween advancement) stays
+            # untouched here -- a cutscene actor's actual position is
+            # driven by its own step (move_actor/teleport_actor), not
+            # ordinary wander.
+            self._tick_npc_animation(dt_ms)
             self._tick_cutscene(dt_ms)
             return
 
@@ -2092,25 +2137,44 @@ class OverworldScene:
         spawn, facing = self._warp_landing(target)
         self._load_map(dest_path, tmap=dest_tmap, spawn=spawn, facing=facing)
 
-    def _resolve_npc_frames(self, npc_id: str | None, npc_sprite: str | None) -> list[pygame.Surface] | None:
-        """The frame list a given npc_id/npc_sprite pair resolves to -- the
-        recolored cache for an npc_id'd NPC (self.npc_frames_by_id, set once
-        at __init__), or its sprite's raw, unrecolored frames for an inline
-        placement with no def. Takes plain ids rather than an NPC instance
-        so _load_map can resolve an NPC's frame set (for width_span/
-        height_span) before that NPC object even exists yet."""
-        frames = self.npc_frames_by_id.get(npc_id) if npc_id else None
-        if frames is None:
-            spec = self.npc_sprite_specs.get(npc_sprite)
-            frames = self.npc_sprites.get(spec.file) if spec else None
-        return frames
+    def _resolve_npc_frames(self, npc_id: str | None, npc_sprite: str | None,
+                             colors: list[str] | None = None) -> list[pygame.Surface] | None:
+        """The frame list a given npc_id/npc_sprite/colors triple resolves
+        to. `colors`, if given, is a placement's own npcs_<map>.yaml
+        override (NPC.colors/MapObject.colors) -- it wins outright over
+        npc_id's def-level recolor, position-matched against the sprite's
+        own placeholder colors (engine.npc.NpcSpriteSpec.colors), same rule
+        NpcDef.colors uses. Recolored once per unique (sprite, colors) pair
+        and cached in self.npc_color_override_frames, not per frame drawn,
+        same spirit as the npc_id-level cache below.
+
+        With no override, this is the recolored cache for an npc_id'd NPC
+        (self.npc_frames_by_id, set once at __init__), or its sprite's raw,
+        unrecolored frames for an inline placement with no def. Takes plain
+        ids rather than an NPC instance so _load_map can resolve a frame set
+        (for width_span/height_span) before that NPC object even exists
+        yet."""
+        if colors is None:
+            frames = self.npc_frames_by_id.get(npc_id) if npc_id else None
+            if frames is not None:
+                return frames
+        spec = self.npc_sprite_specs.get(npc_sprite)
+        base_frames = self.npc_sprites.get(spec.file) if spec else None
+        if colors is None or spec is None or not base_frames:
+            return base_frames
+        key = (npc_sprite, tuple(colors))
+        cached = self.npc_color_override_frames.get(key)
+        if cached is None:
+            cached = [recolor_surface(f, spec.colors, colors) for f in base_frames]
+            self.npc_color_override_frames[key] = cached
+        return cached
 
     def _npc_frames(self, npc: 'NPC') -> list[pygame.Surface] | None:
         """This NPC's resolved frame list -- see _resolve_npc_frames. Shared
         by _draw_entities (which frame to draw) and _load_map (which sets
         width_span/height_span at construction time) so both always agree
         on the same frame set."""
-        return self._resolve_npc_frames(npc.npc_id, npc.npc_sprite)
+        return self._resolve_npc_frames(npc.npc_id, npc.npc_sprite, npc.colors)
 
     def _passable_with_npcs(self) -> list[list[bool]]:
         """The static walkable grid with every NPC's current footprint

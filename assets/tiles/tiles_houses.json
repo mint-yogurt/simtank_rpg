@@ -1,11 +1,11 @@
 { "columns":32,
  "image":"tiles_houses.png",
- "imageheight":512,
+ "imageheight":768,
  "imagewidth":512,
  "margin":0,
  "name":"tiles_houses",
  "spacing":0,
- "tilecount":1024,
+ "tilecount":1536,
  "tiledversion":"1.12.2",
  "tileheight":16,
  "tiles":[
@@ -2278,6 +2278,33 @@
                 }]
         }, 
         {
+         "id":983,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":984,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":985,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
          "id":1004,
          "properties":[
                 {
@@ -2369,6 +2396,42 @@
         }, 
         {
          "id":1014,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":1015,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":1016,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":1496,
+         "properties":[
+                {
+                 "name":"walkable",
+                 "type":"bool",
+                 "value":true
+                }]
+        }, 
+        {
+         "id":1497,
          "properties":[
                 {
                  "name":"walkable",

@@ -4,5 +4,57 @@
 # a field you've filled in, as long as this object's id still exists in the
 # map's object layer.
 #
+# npc -- template:
+#   npc_id:
+#   sprite:
+#   behavior:
+#   event:
+#   dialogue:
+#   colors:
+#
+# npc -- example:
+#   npc_id: grocer      # key from data/npcs/npc.yaml, or null for a one-off character authored entirely here
+#   sprite: null         # overrides npc.yaml's sprite for this placement only -- null = inherit it
+#   behavior: null       # overrides npc.yaml's behavior ("static"/"wander") for this placement only -- null = inherit it
+#   event: null          # reserved, not wired to anything yet
+#   dialogue:            # flat page list, OR a list of variants gated on engine.game_state flags
+#     - unless: ["npc_met:grocer"]       # first time ever (before this flag is set)
+#       pages: ["First time seeing you!"]
+#     - pages: ["Hey again."]            # fallback -- checked top-to-bottom, first match wins
+#   colors: ["edc39a", "36936e"]   # recolors this placement's sprite, position-matched against its OWN placeholder
+#                                  # colors in npc.yaml's sprites: section -- wins over npc.yaml's npcs: colors for
+#                                  # just this one placement; null = use npc_id's colors, or the sprite as authored
+#
 
-{}
+34:
+  behavior: wander
+  colors: null
+  dialogue: []
+  event: null
+  name: town_npc_01
+  npc_id: null
+  sprite: guy2
+  type: npc
+35:
+  behavior: wander
+  colors: null
+  dialogue: 
+  - You seen that jackwagon's house up on the hill?
+  - The guy keeps his Halloween decorations up year round, and his house is full of Christmas junk!
+  event: null
+  name: town_npc_04
+  npc_id: null
+  sprite: guy1
+  type: npc
+36:
+  behavior: wander
+  colors: null
+  dialogue:
+  - Melvin! The Side House is done packed up and gone!
+  - I was just walkin' on by lookin fer scrap, and I seen this big patch of dirt where
+    the daggum Side House used to be!
+  event: null
+  name: npc_sidehouse_yard
+  npc_id: null
+  sprite: mutant1
+  type: npc
